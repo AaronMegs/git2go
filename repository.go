@@ -78,6 +78,22 @@ func OpenRepository(path string) (*Repository, error) {
 	return newRepositoryFromC(ptr), nil
 }
 
+func OpenBareRepository(path string) (*Repository, error) {
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	var ptr *C.git_repository
+	ret := C.git_repository_open_bare(&ptr, cpath)
+	if ret < 0 {
+		return nil, MakeGitError(ret)
+	}
+
+	return newRepositoryFromC(ptr), nil
+}
+
 type RepositoryOpenFlag int
 
 const (
