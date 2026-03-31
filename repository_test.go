@@ -157,3 +157,31 @@ func TestRepositoryItemPath(t *testing.T) {
 		t.Error("expected not empty gitDir")
 	}
 }
+
+func TestCommitParents(t *testing.T) {
+	t.Parallel()
+	repo := createTestRepo(t)
+	defer cleanupTestRepo(t, repo)
+
+	seedTestRepo(t, repo)
+
+	parents, err := repo.CommitParents()
+	checkFatal(t, err)
+
+	if len(parents) != 1 {
+		t.Fatalf("expected 1 parent, got %d", len(parents))
+	}
+
+	// The parent should be HEAD
+	head, err := repo.Head()
+	checkFatal(t, err)
+	defer head.Free()
+
+	if !parents[0].Id().Equal(head.Target()) {
+		t.Fatalf("expected parent to be HEAD (%s), got %s", head.Target(), parents[0].Id())
+	}
+
+	for _, p := range parents {
+		p.Free()
+	}
+}
