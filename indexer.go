@@ -6,7 +6,7 @@ package git
 extern const char * git_indexer_name(const git_indexer *idx);
 extern int git_indexer_append(git_indexer *idx, const void *data, size_t size, git_transfer_progress *stats);
 extern int git_indexer_commit(git_indexer *idx, git_transfer_progress *stats);
-extern int _go_git_indexer_new(git_indexer **out, const char *path, unsigned int mode, git_odb *odb, void *progress_cb_payload);
+extern int _go_git_indexer_new(git_indexer **out, const char *path, unsigned int mode, git_odb *odb, int oid_type, void *progress_cb_payload);
 extern void git_indexer_free(git_indexer *idx);
 */
 import "C"
@@ -26,7 +26,18 @@ type Indexer struct {
 }
 
 // NewIndexer creates a new indexer instance.
+//
+// The object id type defaults to the libgit2 default (SHA1). To create an
+// indexer for a SHA256 packfile, use NewIndexerForOidType (only available in
+// the experimental SHA256 build).
 func NewIndexer(packfilePath string, odb *Odb, callback TransferProgressCallback) (indexer *Indexer, err error) {
+	return newIndexerWithOidType(packfilePath, odb, 0, callback)
+}
+
+// newIndexerWithOidType is the shared implementation behind NewIndexer and the
+// experimental NewIndexerForOidType. oidType follows git_oid_t (0 = libgit2
+// default / SHA1); it is ignored by the underlying shim in the default build.
+func newIndexerWithOidType(packfilePath string, odb *Odb, oidType C.int, callback TransferProgressCallback) (indexer *Indexer, err error) {
 	var odbPtr *C.git_odb = nil
 	if odb != nil {
 		odbPtr = odb.ptr
@@ -41,7 +52,7 @@ func NewIndexer(packfilePath string, odb *Odb, callback TransferProgressCallback
 	cstr := C.CString(packfilePath)
 	defer C.free(unsafe.Pointer(cstr))
 
-	ret := C._go_git_indexer_new(&indexer.ptr, cstr, 0, odbPtr, indexer.ccallbacks.payload)
+	ret := C._go_git_indexer_new(&indexer.ptr, cstr, 0, odbPtr, oidType, indexer.ccallbacks.payload)
 	runtime.KeepAlive(odb)
 	if ret < 0 {
 		untrackCallbacksPayload(&indexer.ccallbacks)

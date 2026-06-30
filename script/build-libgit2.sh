@@ -66,6 +66,17 @@ if [ "${USE_CHROMIUM_ZLIB}" = "ON" ]; then
 	USE_BUNDLED_ZLIB="Chromium"
 fi
 
+# Opt-in experimental SHA256 support. Set the EXPERIMENTAL_SHA256 environment
+# variable to "ON" to build libgit2 with the experimental SHA256 object id
+# support. This must be paired with building git2go using the
+# `git_experimental_sha256` go build tag. Note that this changes the libgit2
+# ABI (the git_oid struct grows a type byte and a 32-byte id), so the resulting
+# library is NOT compatible with the default (SHA1-only) git2go build.
+BUILD_EXPERIMENTAL_SHA256="OFF"
+if [ "${EXPERIMENTAL_SHA256}" = "ON" ]; then
+	BUILD_EXPERIMENTAL_SHA256="ON"
+fi
+
 mkdir -p "${BUILD_PATH}/build" &&
 cd "${BUILD_PATH}/build" &&
 cmake -DTHREADSAFE=ON \
@@ -75,6 +86,7 @@ cmake -DTHREADSAFE=ON \
       -DUSE_BUNDLED_ZLIB="${USE_BUNDLED_ZLIB}" \
       -DUSE_HTTPS=OFF \
       -DUSE_SSH=OFF \
+      -DEXPERIMENTAL_SHA256="${BUILD_EXPERIMENTAL_SHA256}" \
       -DCMAKE_C_FLAGS=-fPIC \
       -DCMAKE_BUILD_TYPE="RelWithDebInfo" \
       -DCMAKE_INSTALL_PREFIX="${BUILD_INSTALL_PREFIX}" \
@@ -82,9 +94,30 @@ cmake -DTHREADSAFE=ON \
       -DDEPRECATE_HARD="${BUILD_DEPRECATED_HARD}" \
       "${VENDORED_PATH}"
 
-if which make nproc >/dev/null && [ -f Makefile ]; then
-	# Make the build parallel if make is available and cmake used Makefiles.
-	exec make "-j$(nproc --all)" install
-else
-	exec cmake --build . --target install
+build_and_install() {
+	if which make nproc >/dev/null && [ -f Makefile ]; then
+		# Make the build parallel if make is available and cmake used Makefiles.
+		make "-j$(nproc --all)" install
+	else
+		cmake --build . --target install
+	fi
+}
+
+build_and_install
+
+# When building the experimental SHA256 library, libgit2 installs everything
+# under an "-experimental" suffix (libgit2-experimental.a, git2-experimental.h,
+# include/git2-experimental/, libgit2-experimental.pc) and does NOT install the
+# usual git2.h / git2/ headers. The shared git2go cgo files include <git2.h> and
+# <git2/sys/...>, so create compatibility symlinks pointing at the experimental
+# headers. The experimental build wiring (Build_bundled_static_sha256.go) links
+# the -experimental archive but includes <git2.h> via these symlinks.
+if [ "${BUILD_EXPERIMENTAL_SHA256}" = "ON" ] && [ "${BUILD_SYSTEM}" != "ON" ]; then
+	INCDIR="${BUILD_INSTALL_PREFIX}/include"
+	if [ -e "${INCDIR}/git2-experimental.h" ] && [ ! -e "${INCDIR}/git2.h" ]; then
+		ln -sf git2-experimental.h "${INCDIR}/git2.h"
+	fi
+	if [ -d "${INCDIR}/git2-experimental" ] && [ ! -e "${INCDIR}/git2" ]; then
+		ln -sf git2-experimental "${INCDIR}/git2"
+	fi
 fi

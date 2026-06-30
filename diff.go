@@ -7,6 +7,7 @@ extern void _go_git_populate_apply_callbacks(git_apply_options *options);
 extern int _go_git_diff_foreach(git_diff *diff, int eachFile, int eachHunk, int eachLine, void *payload);
 extern void _go_git_setup_diff_notify_callbacks(git_diff_options* opts);
 extern int _go_git_diff_blobs(git_blob *old, const char *old_path, git_blob *new, const char *new_path, git_diff_options *opts, int eachFile, int eachHunk, int eachLine, void *payload);
+extern int _go_git_diff_from_buffer(git_diff **out, const char *content, size_t content_len);
 */
 import "C"
 import (
@@ -1095,7 +1096,7 @@ func DiffFromBuffer(buffer []byte, repo *Repository) (*Diff, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ecode := C.git_diff_from_buffer(&diff, (*C.char)(cBuffer), C.size_t(len(buffer)))
+	ecode := C._go_git_diff_from_buffer(&diff, (*C.char)(cBuffer), C.size_t(len(buffer)))
 	if ecode < 0 {
 		return nil, MakeGitError(ecode)
 	}

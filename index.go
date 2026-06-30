@@ -6,6 +6,8 @@ package git
 extern int _go_git_index_add_all(git_index*, const git_strarray*, unsigned int, void*);
 extern int _go_git_index_update_all(git_index*, const git_strarray*, void*);
 extern int _go_git_index_remove_all(git_index*, const git_strarray*, void*);
+extern int _go_git_index_new(git_index **out);
+extern int _go_git_index_open(git_index **out, const char *index_path);
 
 */
 import "C"
@@ -121,7 +123,7 @@ func NewIndex() (*Index, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	if err := C.git_index_new(&ptr); err < 0 {
+	if err := C._go_git_index_new(&ptr); err < 0 {
 		return nil, MakeGitError(err)
 	}
 
@@ -139,7 +141,7 @@ func OpenIndex(path string) (*Index, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	if err := C.git_index_open(&ptr, cpath); err < 0 {
+	if err := C._go_git_index_open(&ptr, cpath); err < 0 {
 		return nil, MakeGitError(err)
 	}
 

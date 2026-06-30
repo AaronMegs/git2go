@@ -528,12 +528,149 @@ int _go_git_indexer_new(
 		const char *path,
 		unsigned int mode,
 		git_odb *odb,
+		int oid_type,
 		void *progress_cb_payload)
 {
 	git_indexer_options indexer_options = GIT_INDEXER_OPTIONS_INIT;
 	indexer_options.progress_cb = transfer_progress_callback;
 	indexer_options.progress_cb_payload = progress_cb_payload;
+#ifdef GIT_EXPERIMENTAL_SHA256
+	// In the experimental ABI mode and odb moved into the options struct.
+	indexer_options.mode = mode;
+	indexer_options.odb = odb;
+	if (oid_type != 0)
+		indexer_options.oid_type = (git_oid_t)oid_type;
+	return git_indexer_new(out, path, &indexer_options);
+#else
+	(void)oid_type;
 	return git_indexer_new(out, path, mode, odb, &indexer_options);
+#endif
+}
+
+// ----------------------------------------------------------------------------
+// SHA1/SHA256 compatibility shims.
+//
+// TODO(sha256-merge): when upstream removes the GIT_EXPERIMENTAL_SHA256 gate,
+// drop every `#ifdef GIT_EXPERIMENTAL_SHA256` branch below and keep only the
+// post-promotion (typed) signature. See docs/sha256-compat-design.md s4.6.
+//
+// A number of libgit2 functions gain an additional `git_oid_t` parameter (and a
+// few structs gain an `oid_type` field) only when libgit2 is built with
+// `-DEXPERIMENTAL_SHA256=ON` (which defines GIT_EXPERIMENTAL_SHA256). cgo cannot
+// conditionally call functions whose signature changes with a macro, so we
+// expose these stable-signature wrappers and select the right underlying call
+// here. The `oid_type` argument follows git_oid_t (1=SHA1, 2=SHA256); a value
+// of 0 means "use the libgit2 default" (SHA1).
+// ----------------------------------------------------------------------------
+
+int _go_git_oid_fromstrn(git_oid *out, const char *str, size_t length, int oid_type)
+{
+#ifdef GIT_EXPERIMENTAL_SHA256
+	return git_oid_fromstrn(out, str, length, oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT);
+#else
+	(void)oid_type;
+	return git_oid_fromstrn(out, str, length);
+#endif
+}
+
+int _go_git_oid_fromraw(git_oid *out, const unsigned char *raw, int oid_type)
+{
+#ifdef GIT_EXPERIMENTAL_SHA256
+	return git_oid_fromraw(out, raw, oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT);
+#else
+	(void)oid_type;
+	return git_oid_fromraw(out, raw);
+#endif
+}
+
+int _go_git_repository_init(git_repository **out, const char *path, unsigned is_bare, int oid_type)
+{
+	git_repository_init_options opts = GIT_REPOSITORY_INIT_OPTIONS_INIT;
+	if (is_bare)
+		opts.flags |= GIT_REPOSITORY_INIT_BARE;
+#ifdef GIT_EXPERIMENTAL_SHA256
+	if (oid_type != 0)
+		opts.oid_type = (git_oid_t)oid_type;
+#else
+	(void)oid_type;
+#endif
+	return git_repository_init_ext(out, path, &opts);
+}
+
+int _go_git_odb_hash(git_oid *out, const void *data, size_t len, git_object_t obj_type, int oid_type)
+{
+#ifdef GIT_EXPERIMENTAL_SHA256
+	return git_odb_hash(out, data, len, obj_type, oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT);
+#else
+	(void)oid_type;
+	return git_odb_hash(out, data, len, obj_type);
+#endif
+}
+
+int _go_git_odb_new(git_odb **out)
+{
+#ifdef GIT_EXPERIMENTAL_SHA256
+	return git_odb_new(out, NULL);
+#else
+	return git_odb_new(out);
+#endif
+}
+
+int _go_git_index_new(git_index **out)
+{
+#ifdef GIT_EXPERIMENTAL_SHA256
+	return git_index_new(out, NULL);
+#else
+	return git_index_new(out);
+#endif
+}
+
+int _go_git_index_open(git_index **out, const char *index_path)
+{
+#ifdef GIT_EXPERIMENTAL_SHA256
+	return git_index_open(out, index_path, NULL);
+#else
+	return git_index_open(out, index_path);
+#endif
+}
+
+int _go_git_diff_from_buffer(git_diff **out, const char *content, size_t content_len)
+{
+#ifdef GIT_EXPERIMENTAL_SHA256
+	return git_diff_from_buffer(out, content, content_len, NULL);
+#else
+	return git_diff_from_buffer(out, content, content_len);
+#endif
+}
+
+int _go_git_odb_backend_one_pack(git_odb_backend **out, const char *index_file)
+{
+#ifdef GIT_EXPERIMENTAL_SHA256
+	return git_odb_backend_one_pack(out, index_file, NULL);
+#else
+	return git_odb_backend_one_pack(out, index_file);
+#endif
+}
+
+int _go_git_odb_backend_loose(
+		git_odb_backend **out,
+		const char *objects_dir,
+		int compression_level,
+		int do_fsync,
+		unsigned int dir_mode,
+		unsigned int file_mode)
+{
+#ifdef GIT_EXPERIMENTAL_SHA256
+	git_odb_backend_loose_options opts = GIT_ODB_BACKEND_LOOSE_OPTIONS_INIT;
+	opts.compression_level = compression_level;
+	if (do_fsync)
+		opts.flags |= GIT_ODB_BACKEND_LOOSE_FSYNC;
+	opts.dir_mode = dir_mode;
+	opts.file_mode = file_mode;
+	return git_odb_backend_loose(out, objects_dir, &opts);
+#else
+	return git_odb_backend_loose(out, objects_dir, compression_level, do_fsync, dir_mode, file_mode);
+#endif
 }
 
 static int smart_transport_callback(

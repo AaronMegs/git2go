@@ -3,8 +3,10 @@ package git
 /*
 #include <git2.h>
 
-extern int git_odb_backend_one_pack(git_odb_backend **out, const char *index_file);
-extern int git_odb_backend_loose(git_odb_backend **out, const char *objects_dir, int compression_level, int do_fsync, unsigned int dir_mode, unsigned int file_mode);
+extern int _go_git_odb_backend_one_pack(git_odb_backend **out, const char *index_file);
+extern int _go_git_odb_backend_loose(git_odb_backend **out, const char *objects_dir, int compression_level, int do_fsync, unsigned int dir_mode, unsigned int file_mode);
+extern int _go_git_odb_new(git_odb **out);
+extern int _go_git_odb_hash(git_oid *out, const void *data, size_t len, git_object_t obj_type, int oid_type);
 extern int _go_git_odb_foreach(git_odb *db, void *payload);
 extern void _go_git_odb_backend_free(git_odb_backend *backend);
 extern int _go_git_odb_write_pack(git_odb_writepack **out, git_odb *db, void *progress_payload);
@@ -37,7 +39,7 @@ func NewOdb() (odb *Odb, err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_odb_new(&odb.ptr)
+	ret := C._go_git_odb_new(&odb.ptr)
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
@@ -85,7 +87,7 @@ func NewOdbBackendOnePack(packfileIndexPath string) (backend *OdbBackend, err er
 	defer C.free(unsafe.Pointer(cstr))
 
 	var odbOnePack *C.git_odb_backend = nil
-	ret := C.git_odb_backend_one_pack(&odbOnePack, cstr)
+	ret := C._go_git_odb_backend_one_pack(&odbOnePack, cstr)
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
@@ -106,7 +108,7 @@ func NewOdbBackendLoose(objectsDir string, compressionLevel int, doFsync bool, d
 	cstr := C.CString(objectsDir)
 	defer C.free(unsafe.Pointer(cstr))
 
-	ret := C.git_odb_backend_loose(&odbLoose, cstr, C.int(compressionLevel), doFsyncInt, C.uint(dirMode), C.uint(fileMode))
+	ret := C._go_git_odb_backend_loose(&odbLoose, cstr, C.int(compressionLevel), doFsyncInt, C.uint(dirMode), C.uint(fileMode))
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
@@ -248,7 +250,8 @@ func (v *Odb) ForEach(callback OdbForEachCallback) error {
 	return nil
 }
 
-// Hash determines the object-ID (sha1) of a data buffer.
+// Hash determines the object-ID (using the repository/library default hash
+// algorithm, i.e. SHA1) of a data buffer.
 func (v *Odb) Hash(data []byte, otype ObjectType) (oid *Oid, err error) {
 	oid = new(Oid)
 
@@ -263,7 +266,10 @@ func (v *Odb) Hash(data []byte, otype ObjectType) (oid *Oid, err error) {
 		size = C.size_t(0)
 	}
 
-	ret := C.git_odb_hash(oid.toC(), unsafe.Pointer(&data[0]), size, C.git_object_t(otype))
+	// Route through the stable-signature shim so this compiles against both the
+	// default and the experimental (SHA256-capable) libgit2 ABI. Passing 0 keeps
+	// the libgit2 default (SHA1).
+	ret := C._go_git_odb_hash(oid.toC(), unsafe.Pointer(&data[0]), size, C.git_object_t(otype), 0)
 	runtime.KeepAlive(data)
 	if ret < 0 {
 		return nil, MakeGitError(ret)

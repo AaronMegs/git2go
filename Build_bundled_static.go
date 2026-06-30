@@ -1,5 +1,5 @@
-//go:build static && !system_libgit2
-// +build static,!system_libgit2
+//go:build static && !system_libgit2 && !git_experimental_sha256
+// +build static,!system_libgit2,!git_experimental_sha256
 
 package git
 
@@ -13,5 +13,9 @@ package git
 #if LIBGIT2_VER_MAJOR != 1 || LIBGIT2_VER_MINOR < 9 || LIBGIT2_VER_MINOR > 9
 # error "Invalid libgit2 version; this git2go supports libgit2 between v1.9.0 and v1.9.x"
 #endif
+
+// TODO(sha256-merge): when bumping this guard to the libgit2 version that
+// promotes SHA256 out of the experimental gate, revisit the dual SHA1/SHA256
+// build paths and collapse them per docs/sha256-compat-design.md section 4.6.
 */
 import "C"
