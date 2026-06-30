@@ -62,3 +62,34 @@ func (v *RefdbBackend) Free() {
 	runtime.SetFinalizer(v, nil)
 	C._go_git_refdb_backend_free(v.ptr)
 }
+
+// RefdbType selects which on-disk reference storage format a repository uses.
+//
+// This mirrors the upstream libgit2 `git_refdb_t` enumeration introduced in
+// master (PR #7117). The default zero value means "use libgit2's default",
+// which is currently the traditional `files` backend (loose + packed refs).
+//
+// Reftable support requires:
+//   - a libgit2 build that includes PR #7117 (post `af1e2fa3d` on `main`);
+//     it is NOT available in released v1.9.3 / v1.9.4.
+//   - the `extensions.refStorage = reftable` configuration entry on the
+//     resulting repository (set automatically by `git_repository_init_ext`
+//     when `RefdbReftable` is requested).
+//
+// On a libgit2 build that does not understand `RefdbReftable`, attempting
+// to init a repository with this value will fail with an error from
+// libgit2 itself.
+type RefdbType int
+
+const (
+	// RefdbDefault asks libgit2 to use its default backend (currently "files").
+	// Equivalent to passing 0 in the C API.
+	RefdbDefault RefdbType = 0
+	// RefdbFiles selects the traditional loose + packed refs storage.
+	// Maps to GIT_REFDB_FILES (= 1) upstream.
+	RefdbFiles RefdbType = 1
+	// RefdbReftable selects the reftable storage backend.
+	// Maps to GIT_REFDB_REFTABLE (= 2) upstream. Requires a libgit2 build
+	// that includes reftable support (see RefdbType doc comment).
+	RefdbReftable RefdbType = 2
+)

@@ -142,6 +142,147 @@ func InitRepository(path string, isbare bool) (*Repository, error) {
 	return newRepositoryFromC(ptr), nil
 }
 
+// RepositoryInitFlag is a bitmask of options for InitRepositoryExt.
+// Mirrors `git_repository_init_flag_t` from include/git2/repository.h.
+type RepositoryInitFlag uint32
+
+const (
+	// RepositoryInitBare creates a bare repository (no working directory).
+	RepositoryInitBare RepositoryInitFlag = C.GIT_REPOSITORY_INIT_BARE
+	// RepositoryInitNoReinit returns GIT_EEXISTS if the path already looks
+	// like a git repository, instead of re-initializing it.
+	RepositoryInitNoReinit RepositoryInitFlag = C.GIT_REPOSITORY_INIT_NO_REINIT
+	// RepositoryInitMkdir creates the trailing component of the repo / workdir
+	// paths if missing.
+	RepositoryInitMkdir RepositoryInitFlag = C.GIT_REPOSITORY_INIT_MKDIR
+	// RepositoryInitMkpath recursively creates all components of the repo /
+	// workdir paths.
+	RepositoryInitMkpath RepositoryInitFlag = C.GIT_REPOSITORY_INIT_MKPATH
+	// RepositoryInitExternalTemplate uses an external template directory,
+	// taken from TemplatePath or `init.templatedir` config.
+	RepositoryInitExternalTemplate RepositoryInitFlag = C.GIT_REPOSITORY_INIT_EXTERNAL_TEMPLATE
+	// RepositoryInitRelativeGitlink uses relative paths for the gitdir and
+	// core.worktree when an alternate workdir is specified.
+	RepositoryInitRelativeGitlink RepositoryInitFlag = C.GIT_REPOSITORY_INIT_RELATIVE_GITLINK
+)
+
+// RepositoryInitMode controls the file permissions of the new repository.
+// Mirrors `git_repository_init_mode_t`. Custom octal values may also be used.
+type RepositoryInitMode uint32
+
+const (
+	// RepositoryInitSharedUmask uses the permissions configured by umask (default).
+	RepositoryInitSharedUmask RepositoryInitMode = C.GIT_REPOSITORY_INIT_SHARED_UMASK
+	// RepositoryInitSharedGroup mirrors `--shared=group`: group-writable + g+sx.
+	RepositoryInitSharedGroup RepositoryInitMode = C.GIT_REPOSITORY_INIT_SHARED_GROUP
+	// RepositoryInitSharedAll mirrors `--shared=all`: adds world readability.
+	RepositoryInitSharedAll RepositoryInitMode = C.GIT_REPOSITORY_INIT_SHARED_ALL
+)
+
+// RepositoryInitOptions is the Go-side counterpart of
+// `git_repository_init_options` used by `git_repository_init_ext`.
+//
+// All fields are optional; the zero value is equivalent to passing
+// `GIT_REPOSITORY_INIT_OPTIONS_INIT` in C and produces the same default
+// behaviour as the simpler `InitRepository(path, false)`.
+type RepositoryInitOptions struct {
+	// Flags is a bitmask of RepositoryInitFlag values.
+	Flags RepositoryInitFlag
+	// Mode controls the file permissions of the new repository.
+	// May be one of the RepositoryInitMode constants or a custom octal value.
+	Mode RepositoryInitMode
+	// WorkdirPath overrides the working directory location.
+	// If relative, it is evaluated relative to the repository path.
+	WorkdirPath string
+	// Description overrides the content of the `description` file.
+	Description string
+	// TemplatePath is the template directory used when
+	// RepositoryInitExternalTemplate is set in Flags.
+	TemplatePath string
+	// InitialHead is the name of HEAD's initial branch (e.g. "main").
+	// If empty, libgit2 falls back to "master" or the configured
+	// `init.defaultBranch`.
+	InitialHead string
+	// OriginURL, if set, adds an "origin" remote pointing to this URL
+	// after initialization.
+	OriginURL string
+	// RefdbType selects the on-disk reference storage backend.
+	//
+	// Mapped to the `refdb_type` field of `git_repository_init_options`
+	// that was added by upstream PR #7117. Use RefdbReftable to request
+	// the reftable backend; the zero value (RefdbDefault) keeps libgit2's
+	// default ("files").
+	//
+	// NOTE: reftable is only available on libgit2 master builds that
+	// include PR #7117. Released v1.9.3 / v1.9.4 will reject this field.
+	RefdbType RefdbType
+}
+
+// InitRepositoryExt initializes a repository using the extended options API
+// (`git_repository_init_ext`). Compared to InitRepository, this exposes the
+// full surface of init flags, working-directory and template overrides, the
+// initial HEAD branch, an optional origin URL, and (on libgit2 master) the
+// reference database backend selection (`refdb_type`).
+//
+// Passing a nil opts is equivalent to passing a zero-value RepositoryInitOptions,
+// which behaves like `InitRepository(path, false)`.
+func InitRepositoryExt(path string, opts *RepositoryInitOptions) (*Repository, error) {
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+
+	var copts C.git_repository_init_options
+	if ret := C.git_repository_init_options_init(&copts, C.GIT_REPOSITORY_INIT_OPTIONS_VERSION); ret < 0 {
+		return nil, MakeGitError(ret)
+	}
+
+	if opts != nil {
+		copts.flags = C.uint32_t(opts.Flags)
+		copts.mode = C.uint32_t(opts.Mode)
+
+		if opts.WorkdirPath != "" {
+			cwd := C.CString(opts.WorkdirPath)
+			defer C.free(unsafe.Pointer(cwd))
+			copts.workdir_path = cwd
+		}
+		if opts.Description != "" {
+			cdesc := C.CString(opts.Description)
+			defer C.free(unsafe.Pointer(cdesc))
+			copts.description = cdesc
+		}
+		if opts.TemplatePath != "" {
+			ctmpl := C.CString(opts.TemplatePath)
+			defer C.free(unsafe.Pointer(ctmpl))
+			copts.template_path = ctmpl
+		}
+		if opts.InitialHead != "" {
+			chead := C.CString(opts.InitialHead)
+			defer C.free(unsafe.Pointer(chead))
+			copts.initial_head = chead
+		}
+		if opts.OriginURL != "" {
+			curl := C.CString(opts.OriginURL)
+			defer C.free(unsafe.Pointer(curl))
+			copts.origin_url = curl
+		}
+		// refdb_type was added by upstream PR #7117 (libgit2 master).
+		// Assigning 0 is always safe on builds that have the field;
+		// builds without the field will fail to compile and require a
+		// vendor upgrade (see docs/reftable-research.md).
+		copts.refdb_type = C.git_refdb_t(opts.RefdbType)
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	var ptr *C.git_repository
+	ret := C.git_repository_init_ext(&ptr, cpath, &copts)
+	if ret < 0 {
+		return nil, MakeGitError(ret)
+	}
+
+	return newRepositoryFromC(ptr), nil
+}
+
 func NewRepositoryWrapOdb(odb *Odb) (repo *Repository, err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
