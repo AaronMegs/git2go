@@ -8,6 +8,8 @@ extern void _go_git_refdb_backend_free(git_refdb_backend *backend);
 */
 import "C"
 import (
+	"os"
+	"path/filepath"
 	"runtime"
 	"unsafe"
 )
@@ -58,6 +60,126 @@ func (v *Refdb) SetBackend(backend *RefdbBackend) (err error) {
 	return nil
 }
 
+// Refdb returns the reference database for this repository.
+//
+// If no custom refdb has been set, libgit2 returns the default database for
+// the repository (files or reftable, depending on `extensions.refStorage`).
+// The returned Refdb must be freed once it is no longer used.
+//
+// Wraps `git_repository_refdb`.
+func (v *Repository) Refdb() (refdb *Refdb, err error) {
+	var ptr *C.git_refdb
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	ret := C.git_repository_refdb(&ptr, v.ptr)
+	runtime.KeepAlive(v)
+	if ret < 0 {
+		return nil, MakeGitError(ret)
+	}
+
+	refdb = &Refdb{ptr: ptr, r: v}
+	runtime.SetFinalizer(refdb, (*Refdb).Free)
+	return refdb, nil
+}
+
+// OpenRefdb creates a new reference database and automatically adds the
+// repository's default backend (files or reftable, as configured by
+// `extensions.refStorage`).
+//
+// Unlike NewRefdb, the returned Refdb is immediately usable for read/write
+// without calling SetBackend.
+//
+// Wraps `git_refdb_open`.
+func (v *Repository) OpenRefdb() (refdb *Refdb, err error) {
+	var ptr *C.git_refdb
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	ret := C.git_refdb_open(&ptr, v.ptr)
+	runtime.KeepAlive(v)
+	if ret < 0 {
+		return nil, MakeGitError(ret)
+	}
+
+	refdb = &Refdb{ptr: ptr, r: v}
+	runtime.SetFinalizer(refdb, (*Refdb).Free)
+	return refdb, nil
+}
+
+// Compress suggests that the refdb compress or optimize its references.
+//
+// The exact behaviour is backend specific:
+//   - for the files backend this packs loose references;
+//   - for the reftable backend this compacts the reftable stack.
+//
+// Wraps `git_refdb_compress`.
+func (v *Refdb) Compress() error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	ret := C.git_refdb_compress(v.ptr)
+	runtime.KeepAlive(v)
+	if ret < 0 {
+		return MakeGitError(ret)
+	}
+	return nil
+}
+
+// NewRefdbBackendFs explicitly constructs the filesystem-based (loose +
+// packed refs) refdb backend for a repository.
+//
+// Under normal usage this backend is created for you when a repository is
+// opened; this is provided for advanced scenarios such as wrapping or
+// stacking backends manually.
+//
+// Wraps `git_refdb_backend_fs`.
+func (v *Repository) NewRefdbBackendFs() (backend *RefdbBackend, err error) {
+	var ptr *C.git_refdb_backend
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	ret := C.git_refdb_backend_fs(&ptr, v.ptr)
+	runtime.KeepAlive(v)
+	if ret < 0 {
+		return nil, MakeGitError(ret)
+	}
+
+	backend = &RefdbBackend{ptr: ptr}
+	return backend, nil
+}
+
+// NewRefdbBackendReftable explicitly constructs the reftable-based refdb
+// backend for a repository.
+//
+// Under normal usage this backend is created for you when a repository that
+// uses the reftable format is opened; this is provided for advanced scenarios
+// where you want to construct the reftable backend explicitly (for example to
+// attach it to a Refdb created with NewRefdb).
+//
+// Requires a libgit2 build that includes reftable support (PR #7117 or later
+// on master). On builds without reftable support this returns an error.
+//
+// Wraps `git_refdb_backend_reftable`.
+func (v *Repository) NewRefdbBackendReftable() (backend *RefdbBackend, err error) {
+	var ptr *C.git_refdb_backend
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	ret := C.git_refdb_backend_reftable(&ptr, v.ptr)
+	runtime.KeepAlive(v)
+	if ret < 0 {
+		return nil, MakeGitError(ret)
+	}
+
+	backend = &RefdbBackend{ptr: ptr}
+	return backend, nil
+}
+
 func (v *RefdbBackend) Free() {
 	runtime.SetFinalizer(v, nil)
 	C._go_git_refdb_backend_free(v.ptr)
@@ -93,3 +215,83 @@ const (
 	// that includes reftable support (see RefdbType doc comment).
 	RefdbReftable RefdbType = 2
 )
+
+// String returns the canonical `extensions.refStorage` config value for the
+// backend, matching the tokens used by both git and libgit2 ("files" /
+// "reftable"). RefdbDefault reports "files" since that is libgit2's current
+// default.
+func (t RefdbType) String() string {
+	switch t {
+	case RefdbReftable:
+		return "reftable"
+	case RefdbFiles, RefdbDefault:
+		return "files"
+	default:
+		return "unknown"
+	}
+}
+
+// RefStorageFormat reports which reference storage backend the repository is
+// using, by reading the `extensions.refStorage` configuration entry.
+//
+// A repository without that extension set uses the traditional files backend,
+// so this returns RefdbFiles in that case. A value of "reftable" maps to
+// RefdbReftable.
+//
+// This is the recommended way to detect reftable repositories at runtime,
+// since libgit2 does not expose a GIT_FEATURE_REFTABLE feature flag.
+func (v *Repository) RefStorageFormat() (RefdbType, error) {
+	cfg, err := v.Config()
+	if err != nil {
+		return RefdbDefault, err
+	}
+	defer cfg.Free()
+
+	val, err := cfg.LookupString("extensions.refStorage")
+	if err != nil {
+		if IsErrorCode(err, ErrorCodeNotFound) {
+			// No extension configured: default files backend.
+			return RefdbFiles, nil
+		}
+		return RefdbDefault, err
+	}
+
+	switch val {
+	case "reftable":
+		return RefdbReftable, nil
+	case "files", "":
+		return RefdbFiles, nil
+	default:
+		// Unknown/future value: surface it to the caller as files-compatible
+		// default rather than guessing, but do not error.
+		return RefdbFiles, nil
+	}
+}
+
+// IsReftableSupported reports whether the linked libgit2 build supports the
+// reftable reference storage backend.
+//
+// libgit2 does not expose a GIT_FEATURE_REFTABLE flag, so this probes support
+// by attempting to initialize a throwaway bare repository with the reftable
+// backend in a temporary directory. The probe repository is always removed
+// before returning.
+//
+// The result is not cached; callers that need it repeatedly should cache it
+// themselves.
+func IsReftableSupported() bool {
+	dir, err := os.MkdirTemp("", "git2go-reftable-probe")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(dir)
+
+	repo, err := InitRepositoryExt(filepath.Join(dir, "probe"), &RepositoryInitOptions{
+		Flags:     RepositoryInitMkpath | RepositoryInitBare,
+		RefdbType: RefdbReftable,
+	})
+	if err != nil {
+		return false
+	}
+	repo.Free()
+	return true
+}
