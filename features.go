@@ -2,8 +2,11 @@ package git
 
 /*
 #include <git2.h>
+#include <git2/common.h>
 */
 import "C"
+
+import "fmt"
 
 type Feature int
 
@@ -51,4 +54,39 @@ func Features() Feature {
 	features := C.git_libgit2_features()
 
 	return Feature(features)
+}
+
+// Version returns the major, minor and revision numbers of the libgit2
+// library that git2go is linked against, as reported at runtime by
+// git_libgit2_version.
+//
+// This is the runtime counterpart to the compile-time version guard in
+// git2go_version_check.h, and is the recommended way to make version-dependent
+// decisions at runtime (the compile-time guard only enforces a lower bound).
+func Version() (major, minor, patch int) {
+	var cmajor, cminor, cpatch C.int
+	C.git_libgit2_version(&cmajor, &cminor, &cpatch)
+	return int(cmajor), int(cminor), int(cpatch)
+}
+
+// Prerelease returns the prerelease tag of the linked libgit2, or an empty
+// string for a stable release.
+//
+// libgit2 built from an unreleased branch (e.g. the `main` build that carries
+// reftable support) reports a non-empty prerelease string, whereas tagged
+// releases like v1.9.4 return "". Combined with Version this lets callers
+// distinguish a development build from a stable one.
+func Prerelease() string {
+	return C.GoString(C.git_libgit2_prerelease())
+}
+
+// VersionString returns a human-readable libgit2 version, e.g. "1.9.0" or
+// "1.9.0-alpha" when a prerelease tag is present.
+func VersionString() string {
+	major, minor, patch := Version()
+	base := fmt.Sprintf("%d.%d.%d", major, minor, patch)
+	if pre := Prerelease(); pre != "" {
+		return base + "-" + pre
+	}
+	return base
 }
