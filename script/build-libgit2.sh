@@ -51,7 +51,13 @@ if [ -n "${BUILD_LIBGIT_REF}" ]; then
 	trap "git submodule update --init" EXIT
 fi
 
-BUILD_DEPRECATED_HARD="ON"
+# git2go still calls a few deprecated libgit2 symbols (e.g. git_odb_hash),
+# which are compiled out when DEPRECATE_HARD=ON. On libgit2 v1.9.x these
+# symbols were not hard-deprecated so the bundled build happened to link, but
+# on newer libgit2 (main, with reftable) they moved behind DEPRECATE_HARD and
+# the static link fails with "Undefined symbols: _git_odb_hash". Keep
+# deprecated symbols available by default; can be overridden via the env var.
+BUILD_DEPRECATED_HARD="${BUILD_DEPRECATED_HARD-OFF}"
 if [ "${BUILD_SYSTEM}" = "ON" ]; then
 	BUILD_INSTALL_PREFIX=${SYSTEM_INSTALL_PREFIX-"/usr"}
 	# Most system-wide installations won't intentionally omit deprecated symbols.
@@ -75,6 +81,8 @@ cmake -DTHREADSAFE=ON \
       -DUSE_BUNDLED_ZLIB="${USE_BUNDLED_ZLIB}" \
       -DUSE_HTTPS=OFF \
       -DUSE_SSH=OFF \
+      -DUSE_AUTH_NTLM=OFF \
+      -DUSE_AUTH_NEGOTIATE=OFF \
       -DCMAKE_C_FLAGS=-fPIC \
       -DCMAKE_BUILD_TYPE="RelWithDebInfo" \
       -DCMAKE_INSTALL_PREFIX="${BUILD_INSTALL_PREFIX}" \

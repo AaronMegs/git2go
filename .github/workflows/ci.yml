@@ -57,6 +57,43 @@ jobs:
     - name: Test
       run: make TEST_ARGS=-test.v test-dynamic
 
+  # Reference-storage backend matrix.
+  #
+  # The vendored libgit2 submodule is pinned to a main commit that includes
+  # reftable support (PR #7117 + #7327). This job builds the bundled library
+  # and runs the reftable/refdb test suite, which exercises the reftable
+  # backend end-to-end (init, backend construction, compaction, branch CRUD).
+  #
+  # On a libgit2 build WITHOUT reftable support (e.g. a released v1.9.x), those
+  # tests skip gracefully via t.Skipf, so the same suite stays green on the
+  # stable system builds below — giving us the "stable vs main" dual track.
+  build-reftable:
+    strategy:
+      fail-fast: false
+    name: Reftable (bundled main)
+
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+      id: go
+    - name: Check out code into the Go module directory
+      uses: actions/checkout@v4
+    - name: Build libgit2 (bundled, main w/ reftable)
+      run: |
+        git submodule update --init
+        make build-libgit2-static
+    - name: Run reftable/refdb test suite
+      run: |
+        go test --count=1 --tags static -v \
+          -run 'Reftable|Refdb|RefStorage|InitRepositoryExt|IsReftableSupported|OpenRefdb' ./...
+    - name: Verify a reftable repo is really created
+      run: |
+        go test --count=1 --tags static -v -run 'TestInitRepositoryExtReftable|TestReftableBranchLifecycle' ./...
+
   build-system-dynamic:
     strategy:
       fail-fast: false
