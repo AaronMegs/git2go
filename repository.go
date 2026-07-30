@@ -226,6 +226,21 @@ type RepositoryInitOptions struct {
 //
 // Passing a nil opts is equivalent to passing a zero-value RepositoryInitOptions,
 // which behaves like `InitRepository(path, false)`.
+//
+// Example (bare repository with an explicit initial branch):
+//
+//	repo, err := git.InitRepositoryExt("/path/to/repo", &git.RepositoryInitOptions{
+//		Flags:       git.RepositoryInitMkpath | git.RepositoryInitBare,
+//		InitialHead: "main",
+//	})
+//
+// Example (reftable backend; requires a libgit2 build with reftable support,
+// see IsReftableSupported):
+//
+//	repo, err := git.InitRepositoryExt("/path/to/repo", &git.RepositoryInitOptions{
+//		Flags:     git.RepositoryInitMkpath | git.RepositoryInitBare,
+//		RefdbType: git.RefdbReftable,
+//	})
 func InitRepositoryExt(path string, opts *RepositoryInitOptions) (*Repository, error) {
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))

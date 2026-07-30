@@ -82,6 +82,54 @@ One thing to take into account is that since Go expects the `pkg-config` file to
 
     replace github.com/libgit2/git2go/v35 => ../../libgit2/git2go
 
+Reference storage backends (reftable)
+-------------------------------------
+
+git2go can create and operate on repositories that use the **reftable**
+reference storage backend in addition to the traditional `files` backend
+(loose + packed refs).
+
+> **Availability:** reftable is only present in libgit2's `main` branch
+> (PR #7117 and later). It is **not** in any released libgit2 (v1.9.3 / v1.9.4
+> do not have it). You therefore need the vendored/static `main` build
+> (`make install-static` + `-tags static`); a system-installed released
+> libgit2 will not support reftable.
+
+Detecting support and a repository's format at runtime (there is no
+`GIT_FEATURE_REFTABLE` flag upstream):
+
+```go
+if git.IsReftableSupported() {
+    // this libgit2 build can create reftable repositories
+}
+
+format, _ := repo.RefStorageFormat() // git.RefdbFiles or git.RefdbReftable
+```
+
+Initializing a repository with the reftable backend:
+
+```go
+repo, err := git.InitRepositoryExt("/path/to/repo", &git.RepositoryInitOptions{
+    Flags:     git.RepositoryInitMkpath | git.RepositoryInitBare,
+    RefdbType: git.RefdbReftable, // omit / RefdbDefault keeps the files backend
+})
+if err != nil {
+    // On a libgit2 build without reftable support this fails; handle or fall
+    // back to the default files backend.
+}
+```
+
+Once created, all the usual reference APIs (`CreateBranch`, `LookupBranch`,
+`References`, committing to `HEAD`, etc.) work unchanged — reftable is a
+transparent backend. You can also ask the backend to compact/optimize its
+storage:
+
+```go
+refdb, _ := repo.OpenRefdb()
+defer refdb.Free()
+_ = refdb.Compress() // files: pack refs; reftable: compact the reftable stack
+```
+
 Parallelism and network operations
 ----------------------------------
 

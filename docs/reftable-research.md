@@ -332,9 +332,9 @@ vendor 升级到 main 后，`TestApplyDiffAddfile` 出现 `SIGBUS PC=0x12`。经
    - 待验证修复：换 regex 后端重建 / `git bisect` libgit2 main / 上报上游。
    - 历史问题 `TestConfigLookups` / `TestConfigEntryBackendType` 共享 `./temp.gitconfig` 的并发竞争，独立处理。
 
-4. **文档与 README**
-   - README 新增"Reference Storage Backends"小节，明确 `RefdbReftable` 的可用前提与风险。
-   - `RepositoryInitOptions` / `NewRefdbBackendReftable` GoDoc 补充用例。
+4. **文档与 README** ✅ 已完成
+   - README 新增 "Reference storage backends (reftable)" 小节：可用前提/风险、`IsReftableSupported` / `RefStorageFormat` 探测、`InitRepositoryExt` + `RefdbReftable` 初始化、`Refdb.Compress` 用例。
+   - `InitRepositoryExt` / `NewRefdbBackendReftable` GoDoc 补充可运行风格的用例注释。
 
 ### 5.3 中期
 

@@ -164,6 +164,15 @@ func (v *Repository) NewRefdbBackendFs() (backend *RefdbBackend, err error) {
 // Requires a libgit2 build that includes reftable support (PR #7117 or later
 // on master). On builds without reftable support this returns an error.
 //
+// Example (attach an explicit reftable backend to a fresh refdb):
+//
+//	refdb, err := repo.NewRefdb()
+//	if err != nil { /* ... */ }
+//	backend, err := repo.NewRefdbBackendReftable()
+//	if err != nil { /* reftable unsupported by this build */ }
+//	if err := refdb.SetBackend(backend); err != nil { /* ... */ }
+//	repo.SetRefdb(refdb)
+//
 // Wraps `git_refdb_backend_reftable`.
 func (v *Repository) NewRefdbBackendReftable() (backend *RefdbBackend, err error) {
 	var ptr *C.git_refdb_backend
