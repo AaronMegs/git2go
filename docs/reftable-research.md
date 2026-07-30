@@ -350,9 +350,11 @@ vendor 升级到 main 后，`TestApplyDiffAddfile` 出现 `SIGBUS PC=0x12`。经
    - 默认构建：`Makefile` 的 `STATIC_TAGS = static libgit2_reftable`（vendored 是 main），默认启用 reftable；可用 `make ... REFTABLE_TAG=` 关闭。
    - CI：`build-reftable`（tag on，跑全部 reftable 测试）+ `build-reftable-disabled`（tag off，验证 stable 子集可编译且 reftable 测试跳过）双 job。
 
-2. **版本守卫策略**
-   - libgit2 主线 bump 到 1.10 / 2.0 时同步 `Build_*.go` 版本范围。
-   - 考虑运行时 `git_libgit2_version()` 兜底（vs 编译期 `#if`）。
+2. **版本守卫策略** ✅ 已完成
+   - **编译期守卫集中化**：三个 `Build_*.go` 里重复的 `#if LIBGIT2_VER_...` 抽到单一头文件 `git2go_version_check.h`（三处均 `#include`）。守卫从"锁死 minor==9"改为"**仅下界** ≥ 1.9，无上界"——libgit2 bump 到 1.10 / 2.0 时**不再编译失败**，仍拦截过旧版本。提升最低支持版本现在是该头里的一行改动。
+   - **运行时兜底**：`features.go` 新增 `Version() (major, minor, patch int)`（`git_libgit2_version`）、`Prerelease() string`（`git_libgit2_prerelease`）、`VersionString() string`，用于运行时做版本相关决策。
+   - 注：当前 vendored main 的 `version.h` 仍标 `1.9.0` 且未设 prerelease，故 `Prerelease()` 返回空——运行时**可靠**区分 reftable 能力仍应用 `IsReftableSupported()`；`Version`/`Prerelease` 忠实反映 libgit2 上报值，供通用版本判断。
+   - 测试：`features_test.go` 校验 `Version()` 满足 ≥1.9 下界、`VersionString()` 前缀与 prerelease 拼接正确。
 
 ### 5.4 长期
 
