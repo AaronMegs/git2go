@@ -186,13 +186,14 @@ const (
 - `USE_AUTH_NEGOTIATE=OFF`：避免 GSS.framework 静态链接缺失符号。
 - `DEPRECATE_HARD=OFF`：保留 `git_odb_hash`（git2go `odb.go:266` 仍在使用）。
 
-### 3.4 vendor 升级暴露的独立问题（非本任务范围）
+### 3.4 vendor 升级暴露的独立问题（非 reftable 绑定本身）
 
-| 问题 | 现象 | 建议 |
+| 问题 | 现象 | 状态 |
 | --- | --- | --- |
-| `TestApplyDiffAddfile` SIGBUS | `git_apply` 在 cgo 调用中崩溃 | 独立排查 master 上 `git_apply` 的 ABI / 行为变化 |
-| 构建脚本 `script/build-libgit2.sh` 默认参数与 master 不兼容 | NTLM/HTTPS/Deprecate-Hard 组合冲突 | 后续 PR 中更新脚本默认参数或新增 `--master` 模式 |
-| `script/build-libgit2.sh` 默认 `DEPRECATE_HARD=ON` 与 git2go 使用 `git_odb_hash` 冲突 | 链接缺失 `_git_odb_hash` | 把 `git_odb_hash` 替换为 `git_odb_hash_object`，或脚本改用 `DEPRECATE_HARD=OFF` |
+| xdiff 崩溃（含 `TestApplyDiffAddfile`） | 所有基于 xdiff 的 diff 在 cgo 中 SIGBUS | 已深入定性，见 §3.6，待上游/构建侧修复 |
+| `script/build-libgit2.sh` 与 main 不兼容（NTLM） | `USE_HTTPS=OFF` 时 ntlmclient CMake 报错 | ✅ 已修复（脚本加 `USE_AUTH_NTLM=OFF`） |
+| GSS.framework 静态链接缺符号 | `Undefined symbols _gss_*` | ✅ 已修复（脚本加 `USE_AUTH_NEGOTIATE=OFF`） |
+| `DEPRECATE_HARD=ON` 移除 `git_odb_hash` | 链接缺失 `_git_odb_hash` | ✅ 已修复（脚本 bundled 构建默认 `DEPRECATE_HARD=OFF`） |
 
 ### 3.5 第二轮（07-29）：完整 refdb/reftable API 绑定
 
@@ -232,6 +233,46 @@ vendor 进一步升级到最新 main `ddf3b5c85`（含 reftable 修复 PR #7327�
 | **`TestReftableBranchLifecycle`** | **reftable 仓库上完整分支 CRUD**（seed commit → CreateBranch → LookupBranch → Target 校验 → Delete → 确认删除） |
 
 > `TestReftableBranchLifecycle` 是本轮最有价值的验证：它证明 git2go 现有的高层引用 API（`CreateCommit` / `CreateBranch` / `LookupBranch` / `Branch.Delete`）在 reftable 后端上**行为完全兼容**，无需任何针对性改造——这正是 reftable 作为"透明后端"的设计目标。
+
+### 3.6 xdiff SIGBUS 深入调研（`git_apply` 崩溃根因）
+
+vendor 升级到 main 后，`TestApplyDiffAddfile` 出现 `SIGBUS PC=0x12`。经完整排查，结论如下：
+
+**调研过程与证据**
+
+1. **隔离复现**：单独运行 `TestApplyDiffAddfile` 仍崩溃，**排除并发/竞争**。
+2. **范围界定**：`TestDiffTreeToTree`、`TestDiffBlobs`（纯 diff，不经 apply）**同样** SIGBUS PC=0x12。→ **不是 `git_apply` 特有，而是整个 xdiff 机制在本次构建下全崩**。
+3. **原生回溯**（lldb）：
+   ```
+   frame #0: 0x0000000000000012            ← 跳转到损坏地址
+   frame #1: xdl_prepare_env + 1380
+   frame #2: xdl_do_diff + 40
+   frame #3: xdl_diff + 84
+   frame #4: git_xdiff + 220
+   frame #5: patch_generated_create + 396
+   frame #6: git_patch_generated_from_diff + 776
+   frame #7: apply_deltas + 196
+   frame #8: git_apply + 436
+   ```
+4. **崩溃指令**：`ldr x8, [x27, #0x40]; blr x8` —— 调用某结构体（`x27`）偏移 `0x40` 处的函数指针，其值为垃圾 `0x12`。相邻指令也是同模式的函数指针调用，说明 `x27` 指向一个**函数指针表**（疑似 libgit2 全局 allocator vtable `git_allocator`，由 `XDL_CALLOC_ARRAY` → `git__calloc` 内联展开）。
+5. **排除项**：
+   - `git_apply` 调用时 `opts=NULL`，**git2go 未传任何结构体**，排除 Go/cgo 层。
+   - git2go **未**注册自定义 allocator（`grep` 无 `GIT_OPT_SET_ALLOCATOR`）。
+   - bundled xdiff 的数据结构（`xdfile_t`/`chastore_t`/`xrecord_t`）均无函数指针成员，`xdl_hash_record` 为普通函数。
+   - `git_apply_options` 结构布局与 git2go 预期一致（version/delta_cb/hunk_cb/payload/flags），非 options 不匹配。
+6. **版本对比**：v1.9.4 正常；main 的 `32b564e63` 与 `ddf3b5c85` **都崩**。→ 是 master bump 通用问题，**非** reftable PR #7327 引入。
+
+**定性结论**
+
+崩溃发生在 libgit2 内置 xdiff 的内联分配路径上，通过一个函数指针表偏移 0x40 调用到垃圾指针。这是 **libgit2 main 层面 / 工具链层面**的问题（疑与 bundled xdiff 更新 + 构建配置交互有关），**不属于 git2go 绑定代码**，也**不影响 reftable 相关功能**（reftable 测试全部通过）。
+
+**待验证的修复方向**（因构建命令未获授权，未在本轮完成）
+
+- 用不同 regex 后端重建（`-DREGEX_BACKEND=regcomp` 替代 `builtin`），验证是否 builtin(pcre2)+新 xdiff 的交互；
+- 对 libgit2 main 在 `v1.9.4..32b564e63` 之间做 `git bisect`，定位引入 commit；
+- 向上游 libgit2 提交 issue（附本节回溯）。
+
+> 注：此问题在第一轮（`32b564e63`）就已存在，与 reftable 适配相互独立；本报告将其完整记录以便后续独立跟进。
 
 ---
 
@@ -280,16 +321,18 @@ vendor 进一步升级到最新 main `ddf3b5c85`（含 reftable 修复 PR #7327�
 
 ### 5.2 短期（下一个 PR 周期）
 
-1. **修复 vendor 升级暴露的独立回归**
-   - `TestApplyDiffAddfile` SIGBUS：排查 main 上 `git_apply` 的 ABI/行为变化（见 §3.4）。
-   - 更新 `script/build-libgit2.sh`：加入 `USE_AUTH_NTLM=OFF` / `USE_AUTH_NEGOTIATE=OFF` / `DEPRECATE_HARD=OFF`，或新增 `--master` 模式，使脚本能直接构建当前 vendor。
-   - 已知历史问题 `TestConfigLookups` / `TestConfigEntryBackendType` 共享 `./temp.gitconfig` 的并发竞争，独立处理。
+1. **构建脚本适配 main** ✅ 已完成
+   - `script/build-libgit2.sh` 已加入 `USE_AUTH_NTLM=OFF` / `USE_AUTH_NEGOTIATE=OFF`，bundled 构建默认 `DEPRECATE_HARD=OFF`（可用环境变量覆盖）。现可直接构建当前 vendor。
 
-2. **CI 矩阵**
-   - 在 CI 上跑两种 vendor：发布版 `v1.9.x`（reftable 测试自动 skip）与 main HEAD（跑全部 reftable 测试）。
-   - 现有测试已通过 `t.Skipf` 在无 reftable 构建上优雅跳过，天然支持双轨。
+2. **CI 矩阵** ✅ 已完成
+   - `.github/workflows/ci.yml` 新增 `build-reftable` job：构建 bundled main（含 reftable）并跑 reftable/refdb 测试子集，含 reftable 仓库创建与分支生命周期专项验证。
+   - 稳定版（system build）上 reftable 测试通过 `t.Skipf` 优雅跳过，形成 stable/main 双轨。
 
-3. **文档与 README**
+3. **xdiff SIGBUS**（见 §3.6，独立于 reftable）
+   - 待验证修复：换 regex 后端重建 / `git bisect` libgit2 main / 上报上游。
+   - 历史问题 `TestConfigLookups` / `TestConfigEntryBackendType` 共享 `./temp.gitconfig` 的并发竞争，独立处理。
+
+4. **文档与 README**
    - README 新增"Reference Storage Backends"小节，明确 `RefdbReftable` 的可用前提与风险。
    - `RepositoryInitOptions` / `NewRefdbBackendReftable` GoDoc 补充用例。
 

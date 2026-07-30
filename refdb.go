@@ -8,6 +8,7 @@ extern void _go_git_refdb_backend_free(git_refdb_backend *backend);
 */
 import "C"
 import (
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -279,7 +280,7 @@ func (v *Repository) RefStorageFormat() (RefdbType, error) {
 // The result is not cached; callers that need it repeatedly should cache it
 // themselves.
 func IsReftableSupported() bool {
-	dir, err := os.MkdirTemp("", "git2go-reftable-probe")
+	dir, err := ioutil.TempDir("", "git2go-reftable-probe")
 	if err != nil {
 		return false
 	}
