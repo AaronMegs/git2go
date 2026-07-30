@@ -279,11 +279,14 @@ func InitRepositoryExt(path string, opts *RepositoryInitOptions) (*Repository, e
 			defer C.free(unsafe.Pointer(curl))
 			copts.origin_url = curl
 		}
-		// refdb_type was added by upstream PR #7117 (libgit2 master).
-		// Assigning 0 is always safe on builds that have the field;
-		// builds without the field will fail to compile and require a
-		// vendor upgrade (see docs/reftable-research.md).
-		copts.refdb_type = C.git_refdb_t(opts.RefdbType)
+		// The reference-storage backend (refdb_type) is only present on
+		// libgit2 main. applyRefdbType is a no-op unless git2go is built
+		// with the `libgit2_reftable` build tag; this keeps InitRepositoryExt
+		// compilable against released libgit2 (v1.9.x) that lacks the field.
+		// See repository_reftable.go / repository_noreftable.go.
+		if err := applyRefdbType(&copts, opts.RefdbType); err != nil {
+			return nil, err
+		}
 	}
 
 	runtime.LockOSThread()

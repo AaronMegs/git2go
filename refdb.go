@@ -8,9 +8,6 @@ extern void _go_git_refdb_backend_free(git_refdb_backend *backend);
 */
 import "C"
 import (
-	"io/ioutil"
-	"os"
-	"path/filepath"
 	"runtime"
 	"unsafe"
 )
@@ -154,41 +151,9 @@ func (v *Repository) NewRefdbBackendFs() (backend *RefdbBackend, err error) {
 }
 
 // NewRefdbBackendReftable explicitly constructs the reftable-based refdb
-// backend for a repository.
-//
-// Under normal usage this backend is created for you when a repository that
-// uses the reftable format is opened; this is provided for advanced scenarios
-// where you want to construct the reftable backend explicitly (for example to
-// attach it to a Refdb created with NewRefdb).
-//
-// Requires a libgit2 build that includes reftable support (PR #7117 or later
-// on master). On builds without reftable support this returns an error.
-//
-// Example (attach an explicit reftable backend to a fresh refdb):
-//
-//	refdb, err := repo.NewRefdb()
-//	if err != nil { /* ... */ }
-//	backend, err := repo.NewRefdbBackendReftable()
-//	if err != nil { /* reftable unsupported by this build */ }
-//	if err := refdb.SetBackend(backend); err != nil { /* ... */ }
-//	repo.SetRefdb(refdb)
-//
-// Wraps `git_refdb_backend_reftable`.
-func (v *Repository) NewRefdbBackendReftable() (backend *RefdbBackend, err error) {
-	var ptr *C.git_refdb_backend
-
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	ret := C.git_refdb_backend_reftable(&ptr, v.ptr)
-	runtime.KeepAlive(v)
-	if ret < 0 {
-		return nil, MakeGitError(ret)
-	}
-
-	backend = &RefdbBackend{ptr: ptr}
-	return backend, nil
-}
+// backend for a repository. It is only available when git2go is built with
+// the `libgit2_reftable` build tag against a libgit2 that has reftable
+// support (see refdb_reftable.go / refdb_noreftable.go).
 
 func (v *RefdbBackend) Free() {
 	runtime.SetFinalizer(v, nil)
@@ -276,32 +241,4 @@ func (v *Repository) RefStorageFormat() (RefdbType, error) {
 		// default rather than guessing, but do not error.
 		return RefdbFiles, nil
 	}
-}
-
-// IsReftableSupported reports whether the linked libgit2 build supports the
-// reftable reference storage backend.
-//
-// libgit2 does not expose a GIT_FEATURE_REFTABLE flag, so this probes support
-// by attempting to initialize a throwaway bare repository with the reftable
-// backend in a temporary directory. The probe repository is always removed
-// before returning.
-//
-// The result is not cached; callers that need it repeatedly should cache it
-// themselves.
-func IsReftableSupported() bool {
-	dir, err := ioutil.TempDir("", "git2go-reftable-probe")
-	if err != nil {
-		return false
-	}
-	defer os.RemoveAll(dir)
-
-	repo, err := InitRepositoryExt(filepath.Join(dir, "probe"), &RepositoryInitOptions{
-		Flags:     RepositoryInitMkpath | RepositoryInitBare,
-		RefdbType: RefdbReftable,
-	})
-	if err != nil {
-		return false
-	}
-	repo.Free()
-	return true
 }
