@@ -59,6 +59,30 @@ typedef enum {
 
 > 注：本项目非 system 构建脚本 `script/build-libgit2.sh` 默认 `DEPRECATE_HARD=ON`，因此**继续依赖 `GIT_OID_HEXSZ` 存在编译断裂风险**，应迁移到 `GIT_OID_SHA1_HEXSIZE` / `GIT_OID_MAX_HEXSIZE`。
 
+### 1.6 上游 `main` 分支的最新演进（复核基线：main，SHA256 仍未转正）
+
+对 libgit2 **最新 `main` 分支**头文件逐一复核（`oid.h`/`odb.h`/`index.h`/`diff.h`/`indexer.h`/`repository.h`/`deprecated.h`/`version.h`），关键结论：
+
+1. **SHA256 仍是实验特性、未转正**：`main` 的 `CMakeLists.txt` 仍有 `option(EXPERIMENTAL_SHA256 ... OFF)`，`git_oid.type`、`GIT_OID_SHA256` 枚举、SHA256 尺寸宏依旧被 `#ifdef GIT_EXPERIMENTAL_SHA256` 门控。→ **本项目的双构建策略依然成立，"阶段四合并"的触发条件尚未满足。**
+
+2. **实验 API 形态发生系统性重构（overload → 拆分为 `_ext`/`_from_` 新函数）**——这是相较 pin 的 1.9.4 **最重要的破坏性差异**：
+
+| 关注点 | pin 的 1.9.4（本项目实际编译目标） | libgit2 `main`（未来目标） |
+|---|---|---|
+| oid 带类型解析 | **重载** `git_oid_fromstr/fromstrn/fromstrp/fromraw`（原名 +`git_oid_t`） | 旧名冻结为无类型 SHA1；**新增** `git_oid_from_string`/`git_oid_from_prefix`/`git_oid_from_raw` |
+| odb 创建 | **重载** `git_odb_new(odb, opts)` | 旧名冻结 `git_odb_new(odb)`；**新增** `git_odb_new_ext(odb, opts)` |
+| odb 打开 | 重载 | 新增 `git_odb_open_ext` |
+| odb 哈希 | 重载 `git_odb_hash(..., oid_type)` | `git_odb_hash` **被弃用**（→`git_object_id_from_buffer`），且**不带** `git_oid_t`（SHA1-only） |
+| index 创建/打开 | 重载（options 入参） | 旧名冻结；**新增** `git_index_new_ext`/`git_index_open_ext`（`git_index_options.oid_type`） |
+| diff 解析 | 重载 `git_diff_from_buffer(..., opts)` | 旧名冻结；**新增** `git_diff_from_buffer_ext`（`git_diff_parse_options.oid_type`） |
+| indexer 创建 | 重载（`mode`/`odb`→opts，+`oid_type`） | **形态相同**（仍重载，未改名） |
+| 仓库初始化 | `git_repository_init_ext` + `opts.oid_type` | **形态相同** |
+| `version.h` | 1.9.4（NUMBER=1090400） | 1.9.0（NUMBER=**1090000**，反而更低） |
+
+3. **无法用版本号区分两种形态**：`main` 的 `version.h` 仍报告 1.9.0，**低于** 1.9.4 发布版（libgit2 仅在发布分支上 bump 版本），因此 C 预处理层面**不能**用 `LIBGIT2_VERSION_NUMBER` 判别 overload/`_ext` 两种 API。→ 必须用**显式开关**选择。
+
+**对本项目的直接影响**：当前已端到端测试通过的 shim 是按 pin 的 1.9.4 **overload 形态**写的，若直接对 `main` 编译会因函数 arity/命名不符而**编译失败**。适配方案见 §3.6。
+
 ### 1.5 函数签名变化（仅在实验宏下新增 `git_oid_t type` 入参）
 
 | 函数 | 默认签名 | 实验签名 |
@@ -211,6 +235,29 @@ func newOidFromC(coid *C.git_oid) *Oid {
 
 - `NewOid`：`C.GIT_OID_HEXSZ` → `C.GIT_OID_MAX_HEXSIZE`；长度校验由写死 20 改为按 hex 长度推断类型（40→SHA1，64→SHA256）。
 - `ShortenOids`：`make([]byte,41)` / `buf[40]` → 基于 `C.GIT_OID_MAX_HEXSIZE` 计算。
+
+### 3.6 兼容 `main` 分支的双 API 形态（overload vs `_ext`/`_from_`）
+
+为同时兼容 pin 的 1.9.4（overload 形态）与 libgit2 `main`（`_ext`/`_from_` 形态），且因两者版本号无法区分（§1.6），采用**显式构建标签 + 嵌套预处理门控**：
+
+- **新增构建标签 `libgit2_next`**（文件 `libgit2_next.go`）：注入 `-DGIT2GO_LIBGIT2_OID_EXT_API=1`，与 `git_experimental_sha256` 配套使用。
+- **`wrapper.c` 嵌套门控**：在既有 `#ifdef GIT_EXPERIMENTAL_SHA256` 之内再按 `#if defined(GIT2GO_LIBGIT2_OID_EXT_API)` 分叉：
+  - **未定义（默认）**：走 1.9.x overload 调用（`git_oid_fromstrn(...,type)`、`git_odb_new(out,opts)`、`git_odb_hash(...,oid_type)`、`git_index_new(out,opts)`、`git_diff_from_buffer(...,opts)`）——即已端到端测试的路径。
+  - **已定义（main）**：走新函数（`git_oid_from_prefix`/`git_oid_from_raw`、`git_odb_new_ext`、`git_index_new_ext`/`git_index_open_ext`、`git_diff_from_buffer_ext`）。
+- **形态相同、无需分叉**：`git_repository_init_ext`（`opts.oid_type`）、`git_indexer_new`（重载）在两分支一致，不加 `_ext` 分支。
+- **`git_odb_hash` 的 main 特例**：main 上 `git_odb_hash` 弃用且不带 `git_oid_t`，故 main 分支忽略 `oid_type`（退化为 SHA1）；带类型哈希需后续改走 `git_object_id_from_buffer`（已在代码 `TODO(libgit2-next)` 标注）。
+- **`git_odb_backend_one_pack/loose` 待核实**：其 `git2/odb_backend.h`（main）未取到，暂保留 1.9.x 形态并标注 TODO。
+- **构建脚本探测提示**：`build-libgit2.sh` 在实验构建后 `grep` 头文件是否含 `git_oid_from_string`，据此打印应使用 `libgit2_next` 与否的标签建议。
+
+**使用方式**：
+```sh
+# 针对 1.9.x（overload，本项目当前 pin，已测试）
+go build -tags "static git_experimental_sha256" ./...
+# 针对 libgit2 main（_ext/_from_）
+go build -tags "static git_experimental_sha256 libgit2_next" ./...
+```
+
+> 验证边界：`libgit2_next` 路径依据 main 头文件分析设计，**尚未**在本仓库对真实 main 构建编译（子模块仍为 1.9.4）；当子模块升级到 main 基线时需实测校验。默认（overload）路径的编译与 SHA256 端到端测试已通过。
 
 ---
 

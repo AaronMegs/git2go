@@ -120,4 +120,23 @@ if [ "${BUILD_EXPERIMENTAL_SHA256}" = "ON" ] && [ "${BUILD_SYSTEM}" != "ON" ]; t
 	if [ -d "${INCDIR}/git2-experimental" ] && [ ! -e "${INCDIR}/git2" ]; then
 		ln -sf git2-experimental "${INCDIR}/git2"
 	fi
+
+	# Detect which experimental object-id API shape the headers expose. libgit2
+	# main renamed the typed entry points to git_oid_from_string/from_prefix/
+	# from_raw (+ *_ext), while the 1.9.x release overloaded the legacy names.
+	# Since main's version.h still reports 1.9.0 the two cannot be told apart by
+	# version, so git2go selects the main shape via the `libgit2_next` build tag.
+	OIDHDR=""
+	if [ -f "${INCDIR}/git2/oid.h" ]; then
+		OIDHDR="${INCDIR}/git2/oid.h"
+	elif [ -f "${INCDIR}/git2-experimental/oid.h" ]; then
+		OIDHDR="${INCDIR}/git2-experimental/oid.h"
+	fi
+	if [ -n "${OIDHDR}" ] && grep -q "git_oid_from_string" "${OIDHDR}"; then
+		echo "NOTE: this libgit2 exposes the 'main' experimental oid API (git_oid_from_string/*_ext)." >&2
+		echo "      Build git2go with: -tags \"static git_experimental_sha256 libgit2_next\"" >&2
+	else
+		echo "NOTE: this libgit2 exposes the 1.9.x experimental oid API (overloaded legacy names)." >&2
+		echo "      Build git2go with: -tags \"static git_experimental_sha256\"" >&2
+	fi
 fi
