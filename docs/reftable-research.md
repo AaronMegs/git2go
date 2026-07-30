@@ -338,9 +338,17 @@ vendor 升级到 main 后，`TestApplyDiffAddfile` 出现 `SIGBUS PC=0x12`。经
 
 ### 5.3 中期
 
-1. **双轨编译兼容（v1.9.x + main）**
-   - 当前 `refdb.go` 直接引用 `C.git_refdb_backend_reftable` 等 main-only 符号；在 v1.9.x vendor 上会编译失败。
-   - 用 build tag（如 `//go:build libgit2_reftable`）拆分 main-only 绑定，让稳定版用户仍可编译核心功能。
+1. **双轨编译兼容（v1.9.x + main）** ✅ 已完成
+   - 通过 `libgit2_reftable` build tag 隔离所有 main-only 绑定：
+     - `reftable_on.go`（`//go:build libgit2_reftable`）：`applyRefdbType` 真实现（写 `copts.refdb_type`）、`NewRefdbBackendReftable`（`git_refdb_backend_reftable`）、`IsReftableSupported`（临时 init 探测）。
+     - `reftable_off.go`（`//go:build !libgit2_reftable`）：同名 API 的 stub——`applyRefdbType` 对非默认后端返回错误、`NewRefdbBackendReftable` 返回"需加 tag"错误、`IsReftableSupported` 返回 false。**不引用任何 main-only C 符号**。
+   - 核心文件（`refdb.go` / `repository.go`）只保留 v1.9.x 也存在的符号：`git_refdb_open` / `git_refdb_compress` / `git_repository_refdb` / `git_refdb_backend_fs` 均在 v1.9.4 存在，故 `OpenRefdb` / `Compress` / `Refdb` / `NewRefdbBackendFs` 无需 tag。`RefdbType` 枚举是纯 Go 常量（数值对应 `git_refdb_t`，不引用 C 符号），也留在核心。
+   - `InitRepositoryExt` 通过 `applyRefdbType(&copts, opts.RefdbType)` 间接层赋值，两个 tag 版本各一份实现。
+   - 验证：
+     - **不带 tag**（模拟 v1.9.x 用户）`go build -tags static ./...` 通过；reftable 测试优雅 SKIP，files 测试 PASS。
+     - **带 tag** `go build -tags "static libgit2_reftable"` 通过；reftable 测试全部 PASS。
+   - 默认构建：`Makefile` 的 `STATIC_TAGS = static libgit2_reftable`（vendored 是 main），默认启用 reftable；可用 `make ... REFTABLE_TAG=` 关闭。
+   - CI：`build-reftable`（tag on，跑全部 reftable 测试）+ `build-reftable-disabled`（tag off，验证 stable 子集可编译且 reftable 测试跳过）双 job。
 
 2. **版本守卫策略**
    - libgit2 主线 bump 到 1.10 / 2.0 时同步 `Build_*.go` 版本范围。
@@ -363,7 +371,7 @@ vendor 升级到 main 后，`TestApplyDiffAddfile` 出现 `SIGBUS PC=0x12`。经
 | 用户原先使用 v1.9.x 系统库 | `RepositoryInitOptions.RefdbType=0`（默认）行为与旧 `InitRepository` 等价；不主动启用 reftable。 |
 | 未启用 reftable 时的开销 | 零运行时开销：仅多了一个 init options 字段，C 端为 0 时走默认分支。 |
 | 文档/用户期望错配 | 在 GoDoc 与本文档明确：reftable 需 master 构建，发布版不可用。 |
-| 编译失败（v1.9.x vendor 用户） | 本轮代码在 `repository.go` 中直接引用了 `C.git_refdb_t` 与 `copts.refdb_type`，对 v1.9.x vendor 不兼容。如需双轨支持，可在后续以 build tag（`//go:build libgit2_master`）拆出 InitRepositoryExt 的 refdb_type 赋值段。 |
+| 编译失败（v1.9.x vendor 用户） | ✅ 已解决：所有 main-only 绑定用 `libgit2_reftable` build tag 隔离（`reftable_on.go` / `reftable_off.go`）。不带 tag 时核心功能照常编译，reftable API 降级为返回错误 / `IsReftableSupported()=false`。见 §5.3。 |
 
 ---
 

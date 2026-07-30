@@ -94,6 +94,14 @@ reference storage backend in addition to the traditional `files` backend
 > do not have it). You therefore need the vendored/static `main` build
 > (`make install-static` + `-tags static`); a system-installed released
 > libgit2 will not support reftable.
+>
+> **Build tag:** the reftable bindings are gated behind the `libgit2_reftable`
+> build tag. The bundled static/dynamic builds (`make install-static` /
+> `test-static`) enable it by default. If you build against a **released**
+> libgit2 (v1.9.x, which lacks the reftable C symbols), simply omit the tag:
+> git2go still compiles, `IsReftableSupported()` returns `false`, and
+> requesting `RefdbReftable` returns an error instead of failing to build.
+> Override the default with `make ... REFTABLE_TAG=` to force the stable subset.
 
 Detecting support and a repository's format at runtime (there is no
 `GIT_FEATURE_REFTABLE` flag upstream):
