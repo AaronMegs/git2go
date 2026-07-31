@@ -134,9 +134,11 @@ if [ "${BUILD_EXPERIMENTAL_SHA256}" = "ON" ] && [ "${BUILD_SYSTEM}" != "ON" ]; t
 	fi
 	if [ -n "${OIDHDR}" ] && grep -q "git_oid_from_string" "${OIDHDR}"; then
 		echo "NOTE: this libgit2 exposes the 'main' experimental oid API (git_oid_from_string/*_ext)." >&2
-		echo "      Build git2go with: -tags \"static git_experimental_sha256 libgit2_next\"" >&2
+		echo "      Test git2go with: make test-static-sha256-next" >&2
+		echo "      (equivalently: -tags \"static git_experimental_sha256 libgit2_next\")" >&2
 	else
 		echo "NOTE: this libgit2 exposes the 1.9.x experimental oid API (overloaded legacy names)." >&2
-		echo "      Build git2go with: -tags \"static git_experimental_sha256\"" >&2
+		echo "      Test git2go with: make test-static-sha256" >&2
+		echo "      (equivalently: -tags \"static git_experimental_sha256\")" >&2
 	fi
 fi

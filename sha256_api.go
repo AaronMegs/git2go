@@ -8,6 +8,7 @@ package git
 
 extern int _go_git_repository_init(git_repository **out, const char *path, unsigned is_bare, int oid_type);
 extern int _go_git_odb_hash(git_oid *out, const void *data, size_t len, git_object_t obj_type, int oid_type);
+extern int _go_git_repository_oid_type(git_repository *repo);
 */
 import "C"
 import (
@@ -19,6 +20,22 @@ import (
 // (and only compile) in the experimental SHA256 build. They are intentionally
 // kept out of the default build so the default API surface does not expose
 // object-id-type knobs that cannot actually take effect there.
+
+// OidType reports the object id type (ObjectIdSHA1 or ObjectIdSHA256) that this
+// repository uses for its objects.
+//
+// This maps to libgit2's git_repository_oid_type(), which exists on libgit2
+// main. When built against a libgit2 that predates that getter (e.g. the pinned
+// 1.9.x without the `libgit2_next` tag), the underlying shim reports SHA1, which
+// is the only type such a libgit2 supports.
+func (v *Repository) OidType() ObjectIdType {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	t := C._go_git_repository_oid_type(v.ptr)
+	runtime.KeepAlive(v)
+	return ObjectIdType(t)
+}
 
 // InitRepositoryWithOidType creates a new repository that stores objects using
 // the given object id type (ObjectIdSHA1 or ObjectIdSHA256).

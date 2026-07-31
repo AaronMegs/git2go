@@ -620,17 +620,33 @@ int _go_git_repository_init(git_repository **out, const char *path, unsigned is_
 	return git_repository_init_ext(out, path, &opts);
 }
 
+// _go_git_repository_oid_type returns the object id type of a repository as an
+// int (following git_oid_t: 1=SHA1, 2=SHA256). This getter is unconditional on
+// libgit2 main; on older libgit2 that predates it, the GIT2GO_HAVE_REPO_OID_TYPE
+// gate (injected by the libgit2_next build tag) keeps it out of the build. When
+// unavailable it reports 1 (SHA1), which is the only type those libgit2 support.
+int _go_git_repository_oid_type(git_repository *repo)
+{
+#if defined(GIT2GO_HAVE_REPO_OID_TYPE)
+	return (int)git_repository_oid_type(repo);
+#else
+	(void)repo;
+	return 1; /* GIT_OID_SHA1 */
+#endif
+}
+
 int _go_git_odb_hash(git_oid *out, const void *data, size_t len, git_object_t obj_type, int oid_type)
 {
 #ifdef GIT_EXPERIMENTAL_SHA256
 # if defined(GIT2GO_LIBGIT2_OID_EXT_API)
-	// On libgit2 main, git_odb_hash lost its oid_type parameter (it is now
-	// deprecated and SHA1-only; typed hashing moved to git_object_id_from_buffer).
-	// TODO(libgit2-next): route typed hashing through git_object_id_from_buffer
-	// so HashWithType(SHA256) is honored on the main ABI; for now the type is
-	// ignored on this path (SHA1), matching the deprecated git_odb_hash.
-	(void)oid_type;
-	return git_odb_hash(out, data, len, obj_type);
+	// On libgit2 main, git_odb_hash is deprecated and SHA1-only; typed hashing
+	// moved to git_object_id_from_buffer(oid, buf, len, git_object_id_options*),
+	// where the options carry both object_type and oid_type.
+	git_object_id_options opts = GIT_OBJECT_ID_OPTIONS_INIT;
+	opts.object_type = obj_type;
+	if (oid_type != 0)
+		opts.oid_type = (git_oid_t)oid_type;
+	return git_object_id_from_buffer(out, data, len, &opts);
 # else
 	return git_odb_hash(out, data, len, obj_type, oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT);
 # endif
@@ -692,10 +708,10 @@ int _go_git_diff_from_buffer(git_diff **out, const char *content, size_t content
 #endif
 }
 
-// TODO(libgit2-next): the main-branch shape of git_odb_backend_one_pack /
-// git_odb_backend_loose was not confirmed during research (git2/odb_backend.h
-// was not retrievable). These retain the 1.9.x experimental shape; verify and
-// add a GIT2GO_LIBGIT2_OID_EXT_API branch if main introduced *_ext variants.
+// git_odb_backend_one_pack gains a git_odb_backend_pack_options* on both the
+// 1.9.x experimental ABI and libgit2 main (same shape here), so a single
+// experimental branch covers both. git_odb_backend_loose likewise takes a
+// git_odb_backend_loose_options* under experimental on both.
 int _go_git_odb_backend_one_pack(git_odb_backend **out, const char *index_file)
 {
 #ifdef GIT_EXPERIMENTAL_SHA256

@@ -31,6 +31,6 @@ package git
 // default path and drop the tag. See docs/sha256-compat-design.md section 4.6.
 
 /*
-#cgo CFLAGS: -DGIT2GO_LIBGIT2_OID_EXT_API=1
+#cgo CFLAGS: -DGIT2GO_LIBGIT2_OID_EXT_API=1 -DGIT2GO_HAVE_REPO_OID_TYPE=1
 */
 import "C"

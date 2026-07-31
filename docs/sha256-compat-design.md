@@ -244,20 +244,20 @@ func newOidFromC(coid *C.git_oid) *Oid {
 - **`wrapper.c` 嵌套门控**：在既有 `#ifdef GIT_EXPERIMENTAL_SHA256` 之内再按 `#if defined(GIT2GO_LIBGIT2_OID_EXT_API)` 分叉：
   - **未定义（默认）**：走 1.9.x overload 调用（`git_oid_fromstrn(...,type)`、`git_odb_new(out,opts)`、`git_odb_hash(...,oid_type)`、`git_index_new(out,opts)`、`git_diff_from_buffer(...,opts)`）——即已端到端测试的路径。
   - **已定义（main）**：走新函数（`git_oid_from_prefix`/`git_oid_from_raw`、`git_odb_new_ext`、`git_index_new_ext`/`git_index_open_ext`、`git_diff_from_buffer_ext`）。
-- **形态相同、无需分叉**：`git_repository_init_ext`（`opts.oid_type`）、`git_indexer_new`（重载）在两分支一致，不加 `_ext` 分支。
-- **`git_odb_hash` 的 main 特例**：main 上 `git_odb_hash` 弃用且不带 `git_oid_t`，故 main 分支忽略 `oid_type`（退化为 SHA1）；带类型哈希需后续改走 `git_object_id_from_buffer`（已在代码 `TODO(libgit2-next)` 标注）。
-- **`git_odb_backend_one_pack/loose` 待核实**：其 `git2/odb_backend.h`（main）未取到，暂保留 1.9.x 形态并标注 TODO。
-- **构建脚本探测提示**：`build-libgit2.sh` 在实验构建后 `grep` 头文件是否含 `git_oid_from_string`，据此打印应使用 `libgit2_next` 与否的标签建议。
+- **形态相同、无需分叉**：`git_repository_init_ext`（`opts.oid_type`）、`git_indexer_new`（重载）在两分支一致，不加 `_ext` 分支。经复核 main 本地头文件，`git_odb_backend_one_pack`（`git_odb_backend_pack_options*`）与 `git_odb_backend_loose`（`git_odb_backend_loose_options*`）在 main 与 1.9.4 实验态**形态一致**，同一实验分支通用。
+- **`git_odb_hash` 的 main 特例（已落地）**：main 上 `git_odb_hash` 弃用且不带 `git_oid_t`，故 main 分支改走 `git_object_id_from_buffer(oid, buf, len, git_object_id_options*)`，其 options 携带 `object_type` 与 `oid_type`，使 `HashWithType(SHA256)` 在 main 上**真正生效**。
+- **`git_repository_oid_type`（main 新增只读 getter，已绑定）**：main 无门控暴露 `git_repository_oid_type()`（返回 `git_oid_t`）；1.9.x 无此符号。经 `_go_git_repository_oid_type` shim + `GIT2GO_HAVE_REPO_OID_TYPE`（由 `libgit2_next` 注入）门控：main 返回真实类型，旧库回退 SHA1。Go 层暴露 `(*Repository).OidType() ObjectIdType`（`sha256_api.go`）。
+- **构建脚本探测提示**：`build-libgit2.sh` 在实验构建后 `grep` 头文件是否含 `git_oid_from_string`，据此打印应使用 `make test-static-sha256` 或 `make test-static-sha256-next`。
 
 **使用方式**：
 ```sh
-# 针对 1.9.x（overload，本项目当前 pin，已测试）
-go build -tags "static git_experimental_sha256" ./...
+# 针对 1.9.x（overload，本项目原 pin，已测试）
+make test-static-sha256          # -tags "static git_experimental_sha256"
 # 针对 libgit2 main（_ext/_from_）
-go build -tags "static git_experimental_sha256 libgit2_next" ./...
+make test-static-sha256-next     # -tags "static git_experimental_sha256 libgit2_next"
 ```
 
-> 验证边界：`libgit2_next` 路径依据 main 头文件分析设计，**尚未**在本仓库对真实 main 构建编译（子模块仍为 1.9.4）；当子模块升级到 main 基线时需实测校验。默认（overload）路径的编译与 SHA256 端到端测试已通过。
+> 验证边界：`libgit2_next` 路径的 C 侧调用均已依据 **libgit2 main 本地头文件**（子模块临时切至 `ddf3b5c8`）逐一核实签名（`git_oid_from_prefix/from_raw`、`git_odb_new_ext`、`git_index_new_ext/open_ext`、`git_diff_from_buffer_ext`、`git_object_id_from_buffer`、`git_repository_oid_type`）。`make test-static-sha256-next` 的实机编译+运行需在开启 `EXPERIMENTAL_SHA256=ON` 的 main 库上执行（由使用者验证）。默认（overload）路径的编译与 SHA256 端到端测试此前已通过。
 
 ---
 
