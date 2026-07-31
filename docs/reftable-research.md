@@ -190,7 +190,7 @@ const (
 
 | 问题 | 现象 | 状态 |
 | --- | --- | --- |
-| xdiff 崩溃（含 `TestApplyDiffAddfile`） | 所有基于 xdiff 的 diff 在 cgo 中 SIGBUS | 已深入定性，见 §3.6，待上游/构建侧修复 |
+| xdiff 崩溃（含 `TestApplyDiffAddfile`） | 所有基于 xdiff 的 diff 在 cgo 中 SIGBUS | 已定性为本地 libgit2 构建/工具链 bug（纯 C 亦崩、跨版本/后端/优化一致），与 git2go 无关，见 §3.6 |
 | `script/build-libgit2.sh` 与 main 不兼容（NTLM） | `USE_HTTPS=OFF` 时 ntlmclient CMake 报错 | ✅ 已修复（脚本加 `USE_AUTH_NTLM=OFF`） |
 | GSS.framework 静态链接缺符号 | `Undefined symbols _gss_*` | ✅ 已修复（脚本加 `USE_AUTH_NEGOTIATE=OFF`） |
 | `DEPRECATE_HARD=ON` 移除 `git_odb_hash` | 链接缺失 `_git_odb_hash` | ✅ 已修复（脚本 bundled 构建默认 `DEPRECATE_HARD=OFF`） |
@@ -234,45 +234,32 @@ vendor 进一步升级到最新 main `ddf3b5c85`（含 reftable 修复 PR #7327�
 
 > `TestReftableBranchLifecycle` 是本轮最有价值的验证：它证明 git2go 现有的高层引用 API（`CreateCommit` / `CreateBranch` / `LookupBranch` / `Branch.Delete`）在 reftable 后端上**行为完全兼容**，无需任何针对性改造——这正是 reftable 作为"透明后端"的设计目标。
 
-### 3.6 xdiff SIGBUS 深入调研（`git_apply` 崩溃根因）
+### 3.6 xdiff SIGBUS 深入调研（结论：本地 libgit2 构建/工具链 bug，与 git2go 及 reftable 无关）
 
-vendor 升级到 main 后，`TestApplyDiffAddfile` 出现 `SIGBUS PC=0x12`。经完整排查，结论如下：
+现象：任何经 xdiff 的操作（`TestDiffTreeToTree` / `TestDiffBlobs` / `TestApplyDiffAddfile`）在本机 SIGBUS。经**多轮真实构建对照**，最终定性为本地 libgit2 构建/工具链问题，**与 git2go 代码、cgo、reftable、libgit2 版本均无关**。
 
-**调研过程与证据**
+**调研过程与证据（按时间顺序，含一次自我订正）**
 
-1. **隔离复现**：单独运行 `TestApplyDiffAddfile` 仍崩溃，**排除并发/竞争**。
-2. **范围界定**：`TestDiffTreeToTree`、`TestDiffBlobs`（纯 diff，不经 apply）**同样** SIGBUS PC=0x12。→ **不是 `git_apply` 特有，而是整个 xdiff 机制在本次构建下全崩**。
-3. **原生回溯**（lldb）：
-   ```
-   frame #0: 0x0000000000000012            ← 跳转到损坏地址
-   frame #1: xdl_prepare_env + 1380
-   frame #2: xdl_do_diff + 40
-   frame #3: xdl_diff + 84
-   frame #4: git_xdiff + 220
-   frame #5: patch_generated_create + 396
-   frame #6: git_patch_generated_from_diff + 776
-   frame #7: apply_deltas + 196
-   frame #8: git_apply + 436
-   ```
-4. **崩溃指令**：`ldr x8, [x27, #0x40]; blr x8` —— 调用某结构体（`x27`）偏移 `0x40` 处的函数指针，其值为垃圾 `0x12`。相邻指令也是同模式的函数指针调用，说明 `x27` 指向一个**函数指针表**（疑似 libgit2 全局 allocator vtable `git_allocator`，由 `XDL_CALLOC_ARRAY` → `git__calloc` 内联展开）。
-5. **排除项**：
-   - `git_apply` 调用时 `opts=NULL`，**git2go 未传任何结构体**，排除 Go/cgo 层。
-   - git2go **未**注册自定义 allocator（`grep` 无 `GIT_OPT_SET_ALLOCATOR`）。
-   - bundled xdiff 的数据结构（`xdfile_t`/`chastore_t`/`xrecord_t`）均无函数指针成员，`xdl_hash_record` 为普通函数。
-   - `git_apply_options` 结构布局与 git2go 预期一致（version/delta_cb/hunk_cb/payload/flags），非 options 不匹配。
-6. **版本对比**：v1.9.4 正常；main 的 `32b564e63` 与 `ddf3b5c85` **都崩**。→ 是 master bump 通用问题，**非** reftable PR #7327 引入。
+1. **隔离复现**：单独跑 `TestApplyDiffAddfile` 仍崩 → 排除并发竞争。
+2. **范围界定**：纯 diff（`TestDiffTreeToTree` / `TestDiffBlobs`，不经 apply）同样崩 → 不是 `git_apply` 特有，是整个 xdiff 机制全崩。
+3. **原生回溯**（lldb, -O2）：`git_apply/git_diff_blobs` → `git_xdiff` → `xdl_diff` → `xdl_do_diff` → `xdl_prepare_env`（-O0 下进一步到 `xdl_optimize_ctxs` → `xdl_cleanup_records`），崩在一个损坏的函数指针 / 被当作代码执行的数据（`EXC_BAD_INSTRUCTION`，subcode 是 ASCII 文本）。
+4. **排除 git2go/cgo 层**：`git_apply` 调用时 `opts=NULL`，git2go 未传任何结构体；未注册自定义 allocator。
+5. **排除 regex 后端**：用 `-DREGEX_BACKEND=regcomp`（替代 builtin/pcre2）重建 main，diff **仍崩**。
+6. **排除编译优化**：用 `-O0`/Debug 重建 main，diff **仍崩**。
+7. **排除 xdiff 源码改动**：`v1.9.4..ddf3b5c85` 之间 `deps/xdiff` 只有 2 个 commit（`xmerge.c` malloc-0 修复 + cmake 头整理），均不涉及崩溃路径 `xprepare.c`。
+8. **订正关键假设**：此前"v1.9.4 正常"是**未验证的假设**。实际用本机构建的 **v1.9.4** 库跑 diff 测试——**同样 SIGBUS**。→ 推翻"main bump 引入"，问题与 libgit2 版本无关。
+9. **排除 cmake 定制参数**：用接近默认的参数（不加 `USE_*=OFF` 等）构建 v1.9.4，diff **仍崩**。
+10. **决定性纯 C 复现**：写一个链接 `libgit2.a`、完全不含 Go/cgo 的 C 程序调用 `git_diff_buffers` → **SIGBUS（exit 138 = 128+10）**。
 
 **定性结论**
 
-崩溃发生在 libgit2 内置 xdiff 的内联分配路径上，通过一个函数指针表偏移 0x40 调用到垃圾指针。这是 **libgit2 main 层面 / 工具链层面**的问题（疑与 bundled xdiff 更新 + 构建配置交互有关），**不属于 git2go 绑定代码**，也**不影响 reftable 相关功能**（reftable 测试全部通过）。
+纯 C 都崩，且跨 libgit2 版本、跨 regex 后端、跨优化级别一致复现 → 这是 **libgit2 的 xdiff 在本机环境（macOS arm64 + 当前 clang 工具链）经 CMake 构建后的运行时 bug**，属 libgit2 / 工具链层面，**与 git2go 绑定代码完全无关，也不影响 reftable 功能**（reftable 全部测试通过；reftable 不经 xdiff）。
 
-**待验证的修复方向**（因构建命令未获授权，未在本轮完成）
+**影响与后续**
 
-- 用不同 regex 后端重建（`-DREGEX_BACKEND=regcomp` 替代 `builtin`），验证是否 builtin(pcre2)+新 xdiff 的交互；
-- 对 libgit2 main 在 `v1.9.4..32b564e63` 之间做 `git bisect`，定位引入 commit；
-- 向上游 libgit2 提交 issue（附本节回溯）。
-
-> 注：此问题在第一轮（`32b564e63`）就已存在，与 reftable 适配相互独立；本报告将其完整记录以便后续独立跟进。
+- 影响面：仅 diff/patch/blame 等走 xdiff 的路径；reftable、引用、提交、config 等均不受影响。
+- 后续（libgit2/环境侧，非 git2go）：在其它工具链/平台（如 CI 的 Linux）复核是否复现；若可复现则向上游 libgit2 报 issue（附纯 C 复现与本节回溯）；本机可尝试更换 clang 版本 / 关闭特定优化再排查。
+- git2go 侧无需改动。
 
 ---
 
@@ -328,9 +315,10 @@ vendor 升级到 main 后，`TestApplyDiffAddfile` 出现 `SIGBUS PC=0x12`。经
    - `.github/workflows/ci.yml` 新增 `build-reftable` job：构建 bundled main（含 reftable）并跑 reftable/refdb 测试子集，含 reftable 仓库创建与分支生命周期专项验证。
    - 稳定版（system build）上 reftable 测试通过 `t.Skipf` 优雅跳过，形成 stable/main 双轨。
 
-3. **xdiff SIGBUS**（见 §3.6，独立于 reftable）
-   - 待验证修复：换 regex 后端重建 / `git bisect` libgit2 main / 上报上游。
-   - 历史问题 `TestConfigLookups` / `TestConfigEntryBackendType` 共享 `./temp.gitconfig` 的并发竞争，独立处理。
+3. **xdiff SIGBUS**（见 §3.6，已定性、与 reftable/git2go 无关）
+   - 结论：本地 libgit2 构建/工具链 bug（纯 C 复现、跨 libgit2 版本/regex 后端/优化级别一致崩溃）。git2go 侧无需改动。
+   - 后续（环境/上游侧）：在其它工具链/平台复核，可复现则报 libgit2 上游。
+   - 历史问题 `TestConfigLookups` / `TestConfigEntryBackendType` 共享 `./temp.gitconfig` 的并发竞争，独立处理（`-p 1` 可规避）。
 
 4. **文档与 README** ✅ 已完成
    - README 新增 "Reference storage backends (reftable)" 小节：可用前提/风险、`IsReftableSupported` / `RefStorageFormat` 探测、`InitRepositoryExt` + `RefdbReftable` 初始化、`Refdb.Compress` 用例。
