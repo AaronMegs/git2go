@@ -648,3 +648,213 @@ void _go_git_setup_smart_subtransport_stream(_go_managed_smart_subtransport_stre
 	managed_stream->parent.write = smart_subtransport_stream_write_callback;
 	managed_stream->parent.free = smartSubtransportStreamFreeCallback;
 }
+
+/*
+ * Custom, Go-defined refdb backend.
+ *
+ * We embed git_refdb_backend as the first member of a managed struct so that a
+ * git_refdb_backend* can be cast back to _go_managed_refdb_backend*, from which
+ * we recover the Go handle. Each trampoline forwards to the matching //export
+ * Go callback, translating the thread-local error message via
+ * set_callback_error.
+ *
+ * The iterator returned to libgit2 is itself a managed git_reference_iterator
+ * whose next/free forward back into the same Go handle (the Go side tracks the
+ * active iterator on its backend state).
+ */
+typedef struct {
+	git_refdb_backend parent;
+	void *handle;
+} _go_managed_refdb_backend;
+
+typedef struct {
+	git_reference_iterator parent;
+	void *handle;
+} _go_managed_refdb_iterator;
+
+void *_go_git_refdb_backend_handle(git_refdb_backend *backend)
+{
+	return ((_go_managed_refdb_backend *)backend)->handle;
+}
+
+static int _go_refdb_exists(int *exists, git_refdb_backend *backend, const char *ref_name)
+{
+	char *error_message = NULL;
+	void *handle = ((_go_managed_refdb_backend *)backend)->handle;
+	int ret = refdbBackendExistsCallback(&error_message, exists, handle, (char *)ref_name);
+	return set_callback_error(error_message, ret);
+}
+
+static int _go_refdb_lookup(git_reference **out, git_refdb_backend *backend, const char *ref_name)
+{
+	char *error_message = NULL;
+	void *handle = ((_go_managed_refdb_backend *)backend)->handle;
+	int ret = refdbBackendLookupCallback(&error_message, out, handle, (char *)ref_name);
+	return set_callback_error(error_message, ret);
+}
+
+static int _go_refdb_iter_next(git_reference **ref, git_reference_iterator *iter)
+{
+	char *error_message = NULL;
+	void *handle = ((_go_managed_refdb_iterator *)iter)->handle;
+	int ret = refdbBackendIteratorNextCallback(&error_message, ref, handle);
+	return set_callback_error(error_message, ret);
+}
+
+static int _go_refdb_iter_next_name(const char **ref_name, git_reference_iterator *iter)
+{
+	/* Derive the name from the next reference to keep the Go API minimal. */
+	git_reference *ref = NULL;
+	int ret = _go_refdb_iter_next(&ref, iter);
+	if (ret != 0)
+		return ret;
+	*ref_name = strdup(git_reference_name(ref));
+	git_reference_free(ref);
+	return *ref_name ? 0 : -1;
+}
+
+static void _go_refdb_iter_free(git_reference_iterator *iter)
+{
+	free(iter);
+}
+
+static int _go_refdb_iterator(git_reference_iterator **out, git_refdb_backend *backend, const char *glob)
+{
+	char *error_message = NULL;
+	void *handle = ((_go_managed_refdb_backend *)backend)->handle;
+	int ret = refdbBackendIteratorCallback(&error_message, handle, (char *)glob);
+	ret = set_callback_error(error_message, ret);
+	if (ret != 0)
+		return ret;
+
+	_go_managed_refdb_iterator *iter = calloc(1, sizeof(_go_managed_refdb_iterator));
+	if (!iter)
+		return -1;
+	iter->parent.next = _go_refdb_iter_next;
+	iter->parent.next_name = _go_refdb_iter_next_name;
+	iter->parent.free = _go_refdb_iter_free;
+	iter->handle = handle;
+	*out = &iter->parent;
+	return 0;
+}
+
+static int _go_refdb_write(git_refdb_backend *backend, const git_reference *ref, int force,
+			   const git_signature *who, const char *message,
+			   const git_oid *old, const char *old_target)
+{
+	char *error_message = NULL;
+	void *handle = ((_go_managed_refdb_backend *)backend)->handle;
+	int ret = refdbBackendWriteCallback(&error_message, handle, (git_reference *)ref, force,
+					    (git_signature *)who, (char *)message,
+					    (git_oid *)old, (char *)old_target);
+	return set_callback_error(error_message, ret);
+}
+
+static int _go_refdb_rename(git_reference **out, git_refdb_backend *backend,
+			    const char *old_name, const char *new_name, int force,
+			    const git_signature *who, const char *message)
+{
+	char *error_message = NULL;
+	void *handle = ((_go_managed_refdb_backend *)backend)->handle;
+	int ret = refdbBackendRenameCallback(&error_message, out, handle, (char *)old_name,
+					     (char *)new_name, force, (git_signature *)who, (char *)message);
+	return set_callback_error(error_message, ret);
+}
+
+static int _go_refdb_del(git_refdb_backend *backend, const char *ref_name,
+			 const git_oid *old_id, const char *old_target)
+{
+	char *error_message = NULL;
+	void *handle = ((_go_managed_refdb_backend *)backend)->handle;
+	int ret = refdbBackendDeleteCallback(&error_message, handle, (char *)ref_name,
+					     (git_oid *)old_id, (char *)old_target);
+	return set_callback_error(error_message, ret);
+}
+
+static int _go_refdb_has_log(git_refdb_backend *backend, const char *refname)
+{
+	char *error_message = NULL;
+	void *handle = ((_go_managed_refdb_backend *)backend)->handle;
+	int ret = refdbBackendHasLogCallback(&error_message, handle, (char *)refname);
+	if (ret == 1)
+		return 1;
+	return set_callback_error(error_message, ret);
+}
+
+static int _go_refdb_ensure_log(git_refdb_backend *backend, const char *refname)
+{
+	char *error_message = NULL;
+	void *handle = ((_go_managed_refdb_backend *)backend)->handle;
+	int ret = refdbBackendEnsureLogCallback(&error_message, handle, (char *)refname);
+	return set_callback_error(error_message, ret);
+}
+
+static void _go_refdb_free(git_refdb_backend *backend)
+{
+	void *handle = ((_go_managed_refdb_backend *)backend)->handle;
+	refdbBackendFreeCallback(handle);
+	free(backend);
+}
+
+static int _go_refdb_reflog_read(git_reflog **out, git_refdb_backend *backend, const char *name)
+{
+	char *error_message = NULL;
+	void *handle = ((_go_managed_refdb_backend *)backend)->handle;
+	int ret = refdbBackendReflogReadCallback(&error_message, out, handle, (char *)name);
+	return set_callback_error(error_message, ret);
+}
+
+static int _go_refdb_reflog_write(git_refdb_backend *backend, git_reflog *reflog)
+{
+	char *error_message = NULL;
+	void *handle = ((_go_managed_refdb_backend *)backend)->handle;
+	int ret = refdbBackendReflogWriteCallback(&error_message, handle, reflog);
+	return set_callback_error(error_message, ret);
+}
+
+static int _go_refdb_reflog_rename(git_refdb_backend *backend, const char *old_name, const char *new_name)
+{
+	char *error_message = NULL;
+	void *handle = ((_go_managed_refdb_backend *)backend)->handle;
+	int ret = refdbBackendReflogRenameCallback(&error_message, handle, (char *)old_name, (char *)new_name);
+	return set_callback_error(error_message, ret);
+}
+
+static int _go_refdb_reflog_delete(git_refdb_backend *backend, const char *name)
+{
+	char *error_message = NULL;
+	void *handle = ((_go_managed_refdb_backend *)backend)->handle;
+	int ret = refdbBackendReflogDeleteCallback(&error_message, handle, (char *)name);
+	return set_callback_error(error_message, ret);
+}
+
+int _go_git_refdb_backend_alloc(git_refdb_backend **out, void *handle)
+{
+	_go_managed_refdb_backend *backend = calloc(1, sizeof(_go_managed_refdb_backend));
+	if (!backend)
+		return -1;
+
+	if (git_refdb_init_backend(&backend->parent, GIT_REFDB_BACKEND_VERSION) < 0) {
+		free(backend);
+		return -1;
+	}
+
+	backend->handle = handle;
+	backend->parent.exists = _go_refdb_exists;
+	backend->parent.lookup = _go_refdb_lookup;
+	backend->parent.iterator = _go_refdb_iterator;
+	backend->parent.write = _go_refdb_write;
+	backend->parent.rename = _go_refdb_rename;
+	backend->parent.del = _go_refdb_del;
+	backend->parent.has_log = _go_refdb_has_log;
+	backend->parent.ensure_log = _go_refdb_ensure_log;
+	backend->parent.free = _go_refdb_free;
+	backend->parent.reflog_read = _go_refdb_reflog_read;
+	backend->parent.reflog_write = _go_refdb_reflog_write;
+	backend->parent.reflog_rename = _go_refdb_reflog_rename;
+	backend->parent.reflog_delete = _go_refdb_reflog_delete;
+
+	*out = &backend->parent;
+	return 0;
+}
+
