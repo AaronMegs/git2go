@@ -95,3 +95,19 @@ func IsReftableSupported() bool {
 	repo.Free()
 	return true
 }
+
+// RefdbBackendInitFlag is a bitmask controlling how a custom refdb backend is
+// initialized, mirroring the upstream `git_refdb_backend_init_flag_t` enum.
+//
+// These flags are main-only (they do not exist in released libgit2 v1.9.x),
+// so they are defined only under the `libgit2_reftable` build tag.
+type RefdbBackendInitFlag uint32
+
+const (
+	// RefdbBackendInitIsWorktree indicates the refdb being initialized is for
+	// a worktree. Maps to GIT_REFDB_BACKEND_INIT_IS_WORKTREE.
+	RefdbBackendInitIsWorktree RefdbBackendInitFlag = C.GIT_REFDB_BACKEND_INIT_IS_WORKTREE
+	// RefdbBackendInitForceHead force-overwrites HEAD when the refdb is already
+	// (partially) initialized. Maps to GIT_REFDB_BACKEND_INIT_FORCE_HEAD.
+	RefdbBackendInitForceHead RefdbBackendInitFlag = C.GIT_REFDB_BACKEND_INIT_FORCE_HEAD
+)

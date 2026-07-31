@@ -346,7 +346,9 @@ vendor 进一步升级到最新 main `ddf3b5c85`（含 reftable 修复 PR #7327�
 
 ### 5.4 长期
 
-1. **自定义 refdb 后端**：绑定 `git_refdb_init_backend` + `GIT_REFDB_BACKEND_INIT_*` flags，支持用 Go 实现 refdb backend（目前仅缺此两项公开 API）。
+1. **自定义 refdb 后端**（部分完成）
+   - ✅ `RefdbBackendInitFlag` 枚举（`RefdbBackendInitIsWorktree` / `RefdbBackendInitForceHead`）已绑定，位于 `reftable_on.go`（main-only，v1.9.x 无此枚举，故随 `libgit2_reftable` tag 隔离）。
+   - ⬜ 完整"用 Go 实现自定义 refdb backend"仍待：需桥接整个 `git_refdb_backend` 回调结构（十余个 C 函数指针 ↔ Go 回调）+ `git_refdb_init_backend`。工作量大且与 reftable（内置后端）主题无关，单列为独立任务。
 2. **完整反向探测能力**：若上游补充 `GIT_FEATURE_REFTABLE` / `git_libgit2_opts` 选项，映射到 `Features()`。
 3. **per-worktree 引用语义**：若上游公开 `git_reference__is_per_worktree_ref` 或等价 API，补绑定。
 4. **SHA-256 与 reftable 组合**：reftable 是 git SHA-256 转型的关键依赖。等 `GIT_EXPERIMENTAL_SHA256` 稳定后，验证 `RefdbReftable` + Sha256 `oid_type` 组合。
