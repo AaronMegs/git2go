@@ -351,12 +351,21 @@ vendor 进一步升级到最新 main `ddf3b5c85`（含 reftable 修复 PR #7327�
    - ✅ 完整回调桥接：`RefdbBackendInterface`（13 个方法：Exists/Lookup/Iterator/Write/Rename/Delete/HasLog/EnsureLog/Free/ReflogRead/Write/Rename/Delete）+ `RefdbBackendIterator`。`NewRefdbBackendFromInterface` 用 Go 实现 refdb backend，经 `Refdb.SetBackend` 挂载。
      - C 侧（`wrapper.c`）：`_go_managed_refdb_backend` 内嵌 `git_refdb_backend`+handle，13 个 trampoline 转 `//export` Go 回调，错误经 `set_callback_error` 传递；自定义 iterator 亦为内嵌 `git_reference_iterator` 的托管结构。
      - 生命周期：`pointerHandles` 锚定 Go 实现，`free` 回调触发 Untrack；引用/reflog 对象在回调内转移所有权给 libgit2（`SetFinalizer(nil)`）。
-     - 新增最小 `Reflog` 类型（`reflog.go`）以承载 reflog 回调句柄（完整 reflog entry API 可后续补）。
+     - `Reflog` 类型（`reflog.go`）承载 reflog 回调句柄，并已扩展为**完整的 reflog entry 读写 API**（见下）。
      - 位于 `refdb_backend.go`（无 build tag，v1.9.x 也可编译——`git_refdb_backend` 结构与 `git_refdb_init_backend` 在 v1.9.4 存在）。
    - 测试：`refdb_backend_test.go` 的 `TestRefdbBackendBridge` 验证 Go 实现 attach 后，libgit2 lookup 路由进 Go 回调、`free` 回调触发、无 cgo handle 泄漏。
-2. **完整反向探测能力**：若上游补充 `GIT_FEATURE_REFTABLE` / `git_libgit2_opts` 选项，映射到 `Features()`。
-3. **per-worktree 引用语义**：若上游公开 `git_reference__is_per_worktree_ref` 或等价 API，补绑定。
-4. **SHA-256 与 reftable 组合**：reftable 是 git SHA-256 转型的关键依赖。等 `GIT_EXPERIMENTAL_SHA256` 稳定后，验证 `RefdbReftable` + Sha256 `oid_type` 组合。
+
+2. **完整 Reflog entry 读写 API** ✅ 已完成
+   - `reflog.go` 绑定 `git2/reflog.h` 全部 13 个公开函数：
+     - 仓库级：`Repository.ReadReflog` / `RenameReflog` / `DeleteReflog`。
+     - Reflog 级：`Write` / `Append` / `EntryCount` / `EntryByIndex` / `Drop`。
+     - `ReflogEntry` 访问器：`IdOld` / `IdNew` / `Committer` / `Message`。
+   - 无 build tag（reflog 在 v1.9.x 也存在），复用现有 `Signature.toC` / `newSignatureFromC` / `newOidFromC` / `Oid.toC` / `cbool`。
+   - 测试：`reflog_test.go` 三个用例覆盖 read+entries、append+write+drop+持久化、rename+delete 完整生命周期。
+
+3. **完整反向探测能力**：若上游补充 `GIT_FEATURE_REFTABLE` / `git_libgit2_opts` 选项，映射到 `Features()`。
+4. **per-worktree 引用语义**：若上游公开 `git_reference__is_per_worktree_ref` 或等价 API，补绑定。
+5. **SHA-256 与 reftable 组合**：reftable 是 git SHA-256 转型的关键依赖。等 `GIT_EXPERIMENTAL_SHA256` 稳定后，验证 `RefdbReftable` + Sha256 `oid_type` 组合。
 
 ---
 
