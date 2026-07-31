@@ -1,8 +1,11 @@
 # git2go SHA1 / SHA256 兼容性适配设计文档
 
-> 适用范围：`github.com/libgit2/git2go/v35`（对应 libgit2 1.9.x）
-> 上游基线：libgit2 子模块 pin 在 commit `f7164261c9bc0a7e0ebf767c584e5192810a8b24`
-> 目标：在**不破坏默认（SHA1-only）构建**的前提下，通过 cgo build tag + `wrapper.c` 条件 shim，为开启 `GIT_EXPERIMENTAL_SHA256` 的 libgit2 提供 SHA256 绑定支持。
+> 适用范围：`github.com/libgit2/git2go/v35`
+> **前瞻基线（推荐）**：libgit2 `main` 分支（子模块 pin 在 commit `ddf3b5c85d86a389330b1d1dd90f08f60ae05fe4`），为将来 libgit2 2.x / SHA256 转正预先对齐。
+> **兼容基线**：libgit2 1.9.x 发布版（overload 形态）通过默认编译路径继续支持，零破坏。
+> 目标：在**不破坏默认（SHA1-only）构建**的前提下，通过 cgo build tag + `wrapper.c` 条件 shim，同时支持 libgit2 `main`（`_ext`/`_from_` 形态，推荐前瞻路径）与 1.9.x（overload 形态）两种实验 SHA256 API，并为 SHA256 转正预留合并路线。
+>
+> 双轨说明：编译默认仍兼容 1.9.x 发布版（便于当前可用）；面向 main/2.x 的前瞻路径通过 `libgit2_next` 构建标签启用（见 §3.6）。子模块基线已指向 main 以对齐未来演进。
 
 ---
 
@@ -57,7 +60,7 @@ typedef enum {
 | `GIT_OID_MINPREFIXLEN` | 4 | 始终 | 前缀最小 hex 长度 |
 | `GIT_OID_HEXSZ` / `GIT_OID_RAWSZ` | 40 / 20 | **已弃用** | `DEPRECATE_HARD=ON` 时不可用 |
 
-> 注：本项目非 system 构建脚本 `script/build-libgit2.sh` 默认 `DEPRECATE_HARD=ON`，因此**继续依赖 `GIT_OID_HEXSZ` 存在编译断裂风险**，应迁移到 `GIT_OID_SHA1_HEXSIZE` / `GIT_OID_MAX_HEXSIZE`。
+> 注：为兼容以 `main` 为基线的 vendored 构建（`main` 上部分 git2go 仍绑定的符号被标记弃用，如 `git_odb_hash`），`script/build-libgit2.sh` 已将 vendored 与 system 构建的 `DEPRECATE_HARD` 统一设为 **OFF**（保留弃用但仍有效的符号可链接）。即便如此，本项目仍已把弃用宏 `GIT_OID_HEXSZ` 迁移到 `GIT_OID_SHA1_HEXSIZE` / `GIT_OID_MAX_HEXSIZE`，以防将来重新开启 HARD 或上游彻底移除。
 
 ### 1.6 上游 `main` 分支的最新演进（复核基线：main，SHA256 仍未转正）
 
@@ -67,7 +70,7 @@ typedef enum {
 
 2. **实验 API 形态发生系统性重构（overload → 拆分为 `_ext`/`_from_` 新函数）**——这是相较 pin 的 1.9.4 **最重要的破坏性差异**：
 
-| 关注点 | pin 的 1.9.4（本项目实际编译目标） | libgit2 `main`（未来目标） |
+| 关注点 | 1.9.x 发布版（兼容基线，编译默认） | libgit2 `main`（前瞻基线，子模块 pin） |
 |---|---|---|
 | oid 带类型解析 | **重载** `git_oid_fromstr/fromstrn/fromstrp/fromraw`（原名 +`git_oid_t`） | 旧名冻结为无类型 SHA1；**新增** `git_oid_from_string`/`git_oid_from_prefix`/`git_oid_from_raw` |
 | odb 创建 | **重载** `git_odb_new(odb, opts)` | 旧名冻结 `git_odb_new(odb)`；**新增** `git_odb_new_ext(odb, opts)` |
@@ -81,7 +84,7 @@ typedef enum {
 
 3. **无法用版本号区分两种形态**：`main` 的 `version.h` 仍报告 1.9.0，**低于** 1.9.4 发布版（libgit2 仅在发布分支上 bump 版本），因此 C 预处理层面**不能**用 `LIBGIT2_VERSION_NUMBER` 判别 overload/`_ext` 两种 API。→ 必须用**显式开关**选择。
 
-**对本项目的直接影响**：当前已端到端测试通过的 shim 是按 pin 的 1.9.4 **overload 形态**写的，若直接对 `main` 编译会因函数 arity/命名不符而**编译失败**。适配方案见 §3.6。
+**对本项目的直接影响**：子模块基线已指向 `main`，前瞻推荐路径为 `libgit2_next`（`_ext`/`_from_` 形态，已对真实 main 端到端验证）。为保当前可用性，**编译默认仍兼容 1.9.x 发布版**（overload 形态）；两条路径经统一 shim 收口，切换仅靠构建标签。适配方案见 §3.6。
 
 ### 1.5 函数签名变化（仅在实验宏下新增 `git_oid_t type` 入参）
 
@@ -323,11 +326,12 @@ make test-static-sha256-next     # -tags "static git_experimental_sha256 libgit2
 
 ### 4.5 本次落地的验证结论
 
-- 默认构建：`go build ./...`（链接系统 libgit2 1.9.4）通过；新增 `oid_test.go` 全部用例通过；现有 `TestOidZero` 等不回退。
-- 实验构建（**已端到端实跑通过**）：以 `EXPERIMENTAL_SHA256=ON ./script/build-libgit2.sh --static` 在 worktree 内构建实验静态 libgit2 1.9.4，`go test -tags "static git_experimental_sha256" -run SHA256 .` 全部通过：
-  - `TestSHA256RepositoryOdbWrite`：odb 写出 32 字节 SHA256 oid；`Odb.HashWithType` 与 `Write` 返回 oid 一致；读回数据 round-trip 一致。
-  - `TestSHA256RepositoryCommitRoundTrip`：index→tree→commit 各 oid 均 64-hex SHA256；`LookupCommit` 与 `NewOid` 重解析 round-trip 一致（**实证 type 前缀偏移处理正确**）。
-  - `TestSHA256IndexerForOidType`、`TestNewOidSHA256`、`TestSHA256OidIsZero` 通过。
+三条路径均已在**真实库**上端到端实跑通过：
+
+- **默认（SHA1-only）构建**：`go build ./...`（链接系统 libgit2 1.9.4）通过；`oid_test.go` 全部用例通过；`TestOidZero` 等不回退。默认路径的 shim 走 legacy 无类型函数（`git_oid_fromstrn(out,str,len)` 等），这些在 1.9.x 与 `main` 上签名一致，故对两种子模块基线都兼容。
+- **前瞻推荐：libgit2 `main`（`ddf3b5c8`）+ `libgit2_next`**：`make test-static-sha256-next` 全部通过——`TestSHA256RepositoryOidType`（`git_repository_oid_type`）、`TestSHA256RepositoryOdbWrite`（`git_object_id_from_buffer` 类型化哈希生效）、`TestSHA256RepositoryCommitRoundTrip`（`git_oid_from_prefix`/`_ext` 全链路 round-trip）、`TestSHA256IndexerForOidType` 及 oid 全套。
+- **兼容：libgit2 1.9.4 overload**：`make test-static-sha256` 全部通过（正确跳过 `libgit2_next` 门控的 `OidType` 用例）。
+- **实测发现并修复的 `main` 构建差异**：`USE_HTTPS=OFF` 时 `main` 需显式 `-DUSE_NTLMCLIENT=OFF -DUSE_GSSAPI=OFF`，否则 cmake configure / arm64 链接失败（缺 `gss_*` 符号）；已并入 `build-libgit2.sh`（对 1.9.x 亦安全）。
 - 受影响但**无需改动**的文件：`merge.go`/`graph.go`（`[]C.git_oid` 由 cgo 自动按真实结构体尺寸计算步长）、`repository.go` 的 `CreateCommitFromIds`（指针数组步长用 `unsafe.Sizeof` 指针尺寸）、`tag.go`/`note.go`/`tree.go`/`rebase.go`/`stash.go`（回调经统一收口的 `newOidFromC` 自适应）。
 
 ### 4.5 测试策略

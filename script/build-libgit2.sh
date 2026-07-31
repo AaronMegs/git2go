@@ -51,7 +51,12 @@ if [ -n "${BUILD_LIBGIT_REF}" ]; then
 	trap "git submodule update --init" EXIT
 fi
 
-BUILD_DEPRECATED_HARD="ON"
+# DEPRECATE_HARD is kept OFF so that deprecated-but-still-valid symbols remain
+# linkable. This matters because the vendored libgit2 baseline tracks the `main`
+# branch, where some symbols git2go still binds (e.g. git_odb_hash) are marked
+# deprecated; with DEPRECATE_HARD=ON those symbols would be omitted and the
+# default (SHA1) static build would fail to link.
+BUILD_DEPRECATED_HARD="OFF"
 if [ "${BUILD_SYSTEM}" = "ON" ]; then
 	BUILD_INSTALL_PREFIX=${SYSTEM_INSTALL_PREFIX-"/usr"}
 	# Most system-wide installations won't intentionally omit deprecated symbols.
