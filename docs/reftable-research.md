@@ -388,9 +388,11 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
    - 无 build tag（reflog 在 v1.9.x 也存在），复用现有 `Signature.toC` / `newSignatureFromC` / `newOidFromC` / `Oid.toC` / `cbool`。
    - 测试：`reflog_test.go` 三个用例覆盖 read+entries、append+write+drop+持久化、rename+delete 完整生命周期。
 
-3. **完整反向探测能力**：若上游补充 `GIT_FEATURE_REFTABLE` / `git_libgit2_opts` 选项，映射到 `Features()`。
-4. **per-worktree 引用语义**：若上游公开 `git_reference__is_per_worktree_ref` 或等价 API，补绑定。
-5. **SHA-256 与 reftable 组合**：reftable 是 git SHA-256 转型的关键依赖。等 `GIT_EXPERIMENTAL_SHA256` 稳定后，验证 `RefdbReftable` + Sha256 `oid_type` 组合。
+3. **完整反向探测能力**（`GIT_FEATURE_REFTABLE`）：⏸️ **已调研，上游仍未提供** —— 上游 main `d29fe50de` 的 `git_feature_t` 最大值仍为 `GIT_FEATURE_HTTP`。现有三层探测（build tag + `IsReftableSupported()` + `RefStorageFormat()`）已是最优方案，无需改动。详见 [reftable-longterm-research.md §1](./reftable-longterm-research.md)。
+4. **per-worktree 引用语义**：⏸️ **已调研，仍为内部 API** —— `git_reference__is_per_worktree_ref` 位于 `src/libgit2/refs.h`（非公开），且上游正收紧符号可见性，不应绑定。可选替代：Go 侧按 git 约定自行实现。详见 [reftable-longterm-research.md §2](./reftable-longterm-research.md)。
+5. **SHA-256 与 reftable 组合**：✅ **上游已解锁**，但 ⚠️ **触发 git2go `Oid` ABI 破坏性变更** —— 上游 PR #7261 已将 SHA256 转正（`GIT_EXPERIMENTAL_SHA256` 从公开头文件移除），`git_oid` 由 20 字节变为 33 字节（新增 `type` 字段 + `id[32]`），而 git2go 的 `Oid [20]byte` 直接 `unsafe.Pointer` 强转为 `*C.git_oid` 会**越界破坏内存**。reftable 后端已原生支持 `REFTABLE_HASH_SHA256`。落地需分三阶段（编译期尺寸守卫 → `Oid` 重构 → 组合测试矩阵）。详见 [reftable-longterm-research.md §3](./reftable-longterm-research.md)。
+
+> ⚠️ **重要风险提示**：当前 vendor（`ddf3b5c85`）尚未转正 SHA256，`git_oid` 恰为 20 字节，故一切正常。但**任何将 vendor 升级到最新 main 的操作都会触发上述内存损坏问题**，升级前必须先落地 `Oid` 尺寸守卫。
 
 ---
 
