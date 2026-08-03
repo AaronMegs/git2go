@@ -251,7 +251,8 @@ func (v *Odb) ForEach(callback OdbForEachCallback) error {
 }
 
 // Hash determines the object-ID (using the repository/library default hash
-// algorithm, i.e. SHA1) of a data buffer.
+// algorithm, i.e. SHA1) of a data buffer. To hash with an explicit object id
+// type — in particular for a SHA256 repository — use HashWithType.
 func (v *Odb) Hash(data []byte, otype ObjectType) (oid *Oid, err error) {
 	oid = new(Oid)
 

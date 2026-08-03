@@ -53,17 +53,35 @@ func newOidFromC(coid *C.git_oid) *Oid {
 // NewOidFromBytes creates a SHA1 Oid from raw (binary) bytes. To build a SHA256
 // Oid use NewOidFromBytesWithType.
 func NewOidFromBytes(b []byte) *Oid {
-	return NewOidFromBytesWithType(b, ObjectIdSHA1)
+	oid := new(Oid)
+	oid.kind = uint8(ObjectIdSHA1)
+	copy(oid.id[:C.GIT_OID_SHA1_SIZE], b[:C.GIT_OID_SHA1_SIZE])
+	return oid
 }
 
 // NewOidFromBytesWithType creates an Oid of the given type from raw (binary)
 // bytes (20 bytes for SHA1, 32 bytes for SHA256).
-func NewOidFromBytesWithType(b []byte, t ObjectIdType) *Oid {
+func NewOidFromBytesWithType(b []byte, t ObjectIdType) (*Oid, error) {
+	if t != ObjectIdSHA1 && t != ObjectIdSHA256 {
+		return nil, &GitError{
+			Message: "unknown object id type",
+			Class:   ErrorClassInvalid,
+			Code:    ErrorCodeInvalid,
+		}
+	}
+	n := rawLenForType(t)
+	if len(b) < n {
+		return nil, &GitError{
+			Message: "not enough bytes for the requested object id type",
+			Class:   ErrorClassInvalid,
+			Code:    ErrorCodeInvalid,
+		}
+	}
+
 	oid := new(Oid)
 	oid.kind = uint8(t)
-	n := rawLenForType(t)
 	copy(oid.id[:n], b[:n])
-	return oid
+	return oid, nil
 }
 
 func (oid *Oid) toC() *C.git_oid {
@@ -123,7 +141,7 @@ func NewOid(s string) (*Oid, error) {
 		return nil, &GitError{"invalid oid", ErrorClassNone, ErrorCodeGeneric}
 	}
 
-	return NewOidFromBytesWithType(slice, t), nil
+	return NewOidFromBytesWithType(slice, t)
 }
 
 func (oid *Oid) String() string {

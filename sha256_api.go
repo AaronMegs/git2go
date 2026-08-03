@@ -16,10 +16,11 @@ import (
 	"unsafe"
 )
 
-// This file collects the public, SHA256-aware helpers that are only meaningful
-// (and only compile) in the experimental SHA256 build. They are intentionally
-// kept out of the default build so the default API surface does not expose
-// object-id-type knobs that cannot actually take effect there.
+// This file collects the public, SHA256-aware helpers for the experimental
+// SHA256 build. sha256_default.go provides the same API surface in the default
+// (SHA1-only) build — where requesting ObjectIdSHA256 returns an explicit error
+// instead of silently degrading — so that a single source tree compiles either
+// way.
 
 // OidType reports the object id type (ObjectIdSHA1 or ObjectIdSHA256) that this
 // repository uses for its objects.

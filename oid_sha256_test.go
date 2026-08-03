@@ -62,19 +62,31 @@ func TestNewOidFromBytesWithTypeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rebuilt := NewOidFromBytesWithType(orig.Bytes(), ObjectIdSHA256)
+	rebuilt, err := NewOidFromBytesWithType(orig.Bytes(), ObjectIdSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !orig.Equal(rebuilt) {
 		t.Errorf("round-trip mismatch: %s != %s", orig, rebuilt)
 	}
 	if rebuilt.Type() != ObjectIdSHA256 {
 		t.Errorf("rebuilt type = %d, want SHA256", rebuilt.Type())
 	}
+
+	// Too few bytes for the requested type must be rejected, not silently
+	// truncated or a panic.
+	if _, err := NewOidFromBytesWithType(make([]byte, 20), ObjectIdSHA256); err == nil {
+		t.Error("expected an error for a 20-byte SHA256 oid")
+	}
 }
 
 func TestSHA256OidIsZero(t *testing.T) {
 	t.Parallel()
 
-	zero := NewOidFromBytesWithType(make([]byte, 32), ObjectIdSHA256)
+	zero, err := NewOidFromBytesWithType(make([]byte, 32), ObjectIdSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !zero.IsZero() {
 		t.Error("all-zero SHA256 oid should report IsZero")
 	}
