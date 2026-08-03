@@ -190,7 +190,7 @@ const (
 
 | 问题 | 现象 | 状态 |
 | --- | --- | --- |
-| xdiff 崩溃（含 `TestApplyDiffAddfile`） | 所有基于 xdiff 的 diff 在 cgo 中 SIGBUS | 已定性为本地 libgit2 构建/工具链 bug（纯 C 亦崩、跨版本/后端/优化一致），与 git2go 无关，见 §3.6 |
+| xdiff 崩溃（10 个用例，见 §3.7） | 所有基于 xdiff 的 diff/patch/blame/merge/rebase 在 cgo 中 SIGBUS | 已定性为本地 libgit2 构建/工具链 bug（纯 C 亦崩、跨版本/后端/优化一致），与 git2go 无关，见 §3.6 |
 | `script/build-libgit2.sh` 与 main 不兼容（NTLM） | `USE_HTTPS=OFF` 时 ntlmclient CMake 报错 | ✅ 已修复（脚本加 `USE_AUTH_NTLM=OFF`） |
 | GSS.framework 静态链接缺符号 | `Undefined symbols _gss_*` | ✅ 已修复（脚本加 `USE_AUTH_NEGOTIATE=OFF`） |
 | `DEPRECATE_HARD=ON` 移除 `git_odb_hash` | 链接缺失 `_git_odb_hash` | ✅ 已修复（脚本 bundled 构建默认 `DEPRECATE_HARD=OFF`） |
@@ -236,7 +236,7 @@ vendor 进一步升级到最新 main `ddf3b5c85`（含 reftable 修复 PR #7327�
 
 ### 3.6 xdiff SIGBUS 深入调研（结论：本地 libgit2 构建/工具链 bug，与 git2go 及 reftable 无关）
 
-现象：任何经 xdiff 的操作（`TestDiffTreeToTree` / `TestDiffBlobs` / `TestApplyDiffAddfile`）在本机 SIGBUS。经**多轮真实构建对照**，最终定性为本地 libgit2 构建/工具链问题，**与 git2go 代码、cgo、reftable、libgit2 版本均无关**。
+现象：任何经 xdiff 的操作在本机 SIGBUS，共影响 10 个测试用例（完整清单见 §3.7），涉及 `git_apply` / `git_blame_file` / `git_diff_*` / `git_patch_from_diff` / `git_merge_file` / `git_rebase_next`。经**多轮真实构建对照**，最终定性为本地 libgit2 构建/工具链问题，**与 git2go 代码、cgo、reftable、libgit2 版本均无关**。
 
 **调研过程与证据（按时间顺序，含一次自我订正）**
 
@@ -260,6 +260,31 @@ vendor 进一步升级到最新 main `ddf3b5c85`（含 reftable 修复 PR #7327�
 - 影响面：仅 diff/patch/blame 等走 xdiff 的路径；reftable、引用、提交、config 等均不受影响。
 - 后续（libgit2/环境侧，非 git2go）：在其它工具链/平台（如 CI 的 Linux）复核是否复现；若可复现则向上游 libgit2 报 issue（附纯 C 复现与本节回溯）；本机可尝试更换 clang 版本 / 关闭特定优化再排查。
 - git2go 侧无需改动。
+
+### 3.7 全量回归基线（2026-08-03）
+
+在 vendor = main `ddf3b5c85`、`-tags "static libgit2_reftable"` 下做了一次完整全量回归。由于 xdiff 崩溃会终止整个 test binary，采用「逐轮排除崩溃点」的方式定位全部受影响用例，最终得到干净基线。
+
+**基线结果**
+
+```sh
+go test -tags "static libgit2_reftable" -count=1 -p 1 \
+  -skip "<下表 10 个 xdiff 用例>|TestRebaseAbort$|TestRebaseNoConflicts$|TestRebaseGpgSigned$" ./...
+# → EXIT=0    PASS: 135    FAIL: 0    SKIP: 0
+```
+
+**135 个用例全绿**，涵盖本次新增的全部绑定（reftable、refdb、自定义 refdb backend 桥接、reflog、版本 API）以及既有功能（引用、分支、提交、tag、remote、note、config、tree、index 等）。
+
+**被排除用例的分类（均为 pre-existing，与本次工作无关）**
+
+| 类别 | 用例 | 原因 |
+| --- | --- | --- |
+| xdiff SIGBUS（10 个） | `TestApplyDiffAddfile`、`TestApplyToTree`、`TestRebaseInMemoryWithConflict`、`TestBlame`、`TestDiffBlobs`、`TestPatch`、`TestDiffTreeToTree`、`TestFindSimilar`、`TestMergeSameFile`、`TestMergeTreesWithoutAncestor` | §3.6 的本地 libgit2/工具链 bug。全部崩在 xdiff 相关 C 调用（`git_apply` / `git_blame_file` / `git_diff_*` / `git_patch_from_diff` / `git_merge_file` / `git_rebase_next`），纯 C 亦可复现 |
+| 环境差异（3 个） | `TestRebaseAbort`、`TestRebaseNoConflicts`、`TestRebaseGpgSigned` | 报错 `cannot locate local branch 'master'`。本机 `git config --global init.defaultBranch = main`，新建仓库实际为 `refs/heads/main`，而 `rebase_test.go` 硬编码查找 `master` |
+
+**另需注意（历史问题）**
+
+- `TestConfigLookups` 与 `TestConfigEntryBackendType` 均调用 `t.Parallel()` 且共享同一路径 `./temp.gitconfig`，并行写会产生 `temp.gitconfig.lock` 冲突。用 `-p 1` 串行即可规避；此外若此前有测试进程崩溃（如上述 xdiff SIGBUS），会遗留 `temp.gitconfig.lock` 导致后续跑测试误报失败，需先 `rm -f temp.gitconfig.lock`。
 
 ---
 
