@@ -66,23 +66,122 @@ type sshSmartSubtransport struct {
 	currentStream *sshSmartSubtransportStream
 }
 
+type sshRemoteLocation struct {
+	host string
+	port string
+	path string
+}
+
+func validateSSHComponent(name, value string, rejectOption bool) error {
+	if value == "" {
+		return fmt.Errorf("empty SSH %s", name)
+	}
+	if rejectOption && strings.HasPrefix(value, "-") {
+		return fmt.Errorf("SSH %s %q is ambiguous with a command-line option", name, value)
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("SSH %s contains a control character", name)
+		}
+	}
+	return nil
+}
+
+func parseSSHRemoteLocation(raw string) (sshRemoteLocation, error) {
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return sshRemoteLocation{}, err
+		}
+		switch u.Scheme {
+		case "ssh", "ssh+git", "git+ssh":
+		default:
+			return sshRemoteLocation{}, fmt.Errorf("unsupported SSH URL scheme %q", u.Scheme)
+		}
+		if u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+			return sshRemoteLocation{}, errors.New("SSH repository URL must not contain a query, fragment, or opaque path")
+		}
+
+		location := sshRemoteLocation{host: u.Hostname(), port: u.Port(), path: u.Path}
+		if location.port == "" {
+			location.port = "22"
+		}
+		if err := validateSSHComponent("host", location.host, true); err != nil {
+			return sshRemoteLocation{}, err
+		}
+		if err := validateSSHComponent("repository path", location.path, true); err != nil {
+			return sshRemoteLocation{}, err
+		}
+		return location, nil
+	}
+
+	// Git's SCP-like form is [user@]host:path. It is not a URL, so its path is
+	// kept literally (in particular, percent sequences are not decoded).
+	hostStart := strings.LastIndex(raw, "@") + 1
+	if hostStart >= len(raw) {
+		return sshRemoteLocation{}, errors.New("invalid SCP-like SSH remote")
+	}
+	colon := -1
+	if raw[hostStart] == '[' {
+		closeBracket := strings.IndexByte(raw[hostStart:], ']')
+		if closeBracket >= 0 {
+			candidate := hostStart + closeBracket + 1
+			if candidate < len(raw) && raw[candidate] == ':' {
+				colon = candidate
+			}
+		}
+	} else if relative := strings.IndexByte(raw[hostStart:], ':'); relative >= 0 {
+		colon = hostStart + relative
+	}
+	if colon < 0 {
+		return sshRemoteLocation{}, errors.New("invalid SCP-like SSH remote; expected [user@]host:path")
+	}
+
+	host := strings.Trim(raw[hostStart:colon], "[]")
+	location := sshRemoteLocation{host: host, port: "22", path: raw[colon+1:]}
+	if err := validateSSHComponent("host", location.host, true); err != nil {
+		return sshRemoteLocation{}, err
+	}
+	if err := validateSSHComponent("repository path", location.path, true); err != nil {
+		return sshRemoteLocation{}, err
+	}
+	return location, nil
+}
+
+func quotePOSIXShellArg(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func buildSSHRemoteCommand(action SmartServiceAction, path string) (string, error) {
+	if err := validateSSHComponent("repository path", path, true); err != nil {
+		return "", err
+	}
+
+	var service string
+	switch action {
+	case SmartServiceActionUploadpackLs, SmartServiceActionUploadpack:
+		service = "git-upload-pack"
+	case SmartServiceActionReceivepackLs, SmartServiceActionReceivepack:
+		service = "git-receive-pack"
+	default:
+		return "", fmt.Errorf("unexpected action: %v", action)
+	}
+	return service + " " + quotePOSIXShellArg(path), nil
+}
+
 func (t *sshSmartSubtransport) Action(urlString string, action SmartServiceAction) (SmartSubtransportStream, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	u, err := url.Parse(urlString)
+	location, err := parseSSHRemoteLocation(urlString)
+	if err != nil {
+		return nil, err
+	}
+	cmd, err := buildSSHRemoteCommand(action, location.path)
 	if err != nil {
 		return nil, err
 	}
 
-	// Escape \ and '.
-	uPath := strings.Replace(u.Path, `\`, `\\`, -1)
-	uPath = strings.Replace(uPath, `'`, `\'`, -1)
-
-	// TODO: Add percentage decode similar to libgit2.
-	// Refer: https://github.com/libgit2/libgit2/blob/358a60e1b46000ea99ef10b4dd709e92f75ff74b/src/str.c#L455-L481
-
-	var cmd string
 	switch action {
 	case SmartServiceActionUploadpackLs, SmartServiceActionUploadpack:
 		if t.currentStream != nil {
@@ -91,8 +190,6 @@ func (t *sshSmartSubtransport) Action(urlString string, action SmartServiceActio
 			}
 			t.Close()
 		}
-		cmd = fmt.Sprintf("git-upload-pack '%s'", uPath)
-
 	case SmartServiceActionReceivepackLs, SmartServiceActionReceivepack:
 		if t.currentStream != nil {
 			if t.lastAction == SmartServiceActionReceivepackLs {
@@ -100,10 +197,6 @@ func (t *sshSmartSubtransport) Action(urlString string, action SmartServiceActio
 			}
 			t.Close()
 		}
-		cmd = fmt.Sprintf("git-receive-pack '%s'", uPath)
-
-	default:
-		return nil, fmt.Errorf("unexpected action: %v", action)
 	}
 
 	cred, err := t.transport.SmartCredentials("", CredentialTypeSSHKey|CredentialTypeSSHMemory)
@@ -133,17 +226,17 @@ func (t *sshSmartSubtransport) Action(urlString string, action SmartServiceActio
 		return t.transport.SmartCertificateCheck(cert, true, hostname)
 	}
 
-	var addr string
-	if u.Port() != "" {
-		addr = fmt.Sprintf("%s:%s", u.Hostname(), u.Port())
-	} else {
-		addr = fmt.Sprintf("%s:22", u.Hostname())
-	}
-
+	addr := net.JoinHostPort(location.host, location.port)
 	t.client, err = ssh.Dial("tcp", addr, sshConfig)
 	if err != nil {
 		return nil, err
 	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			t.closeConnection()
+		}
+	}()
 
 	t.session, err = t.client.NewSession()
 	if err != nil {
@@ -163,6 +256,7 @@ func (t *sshSmartSubtransport) Action(urlString string, action SmartServiceActio
 	if err := t.session.Start(cmd); err != nil {
 		return nil, err
 	}
+	cleanup = false
 
 	t.lastAction = action
 	t.currentStream = &sshSmartSubtransportStream{
@@ -172,14 +266,25 @@ func (t *sshSmartSubtransport) Action(urlString string, action SmartServiceActio
 	return t.currentStream, nil
 }
 
-func (t *sshSmartSubtransport) Close() error {
-	t.currentStream = nil
+func (t *sshSmartSubtransport) closeConnection() {
+	if t.stdin != nil {
+		_ = t.stdin.Close()
+		t.stdin = nil
+	}
+	if t.session != nil {
+		_ = t.session.Close()
+		t.session = nil
+	}
 	if t.client != nil {
-		t.stdin.Close()
-		t.session.Wait()
-		t.session.Close()
+		_ = t.client.Close()
 		t.client = nil
 	}
+	t.stdout = nil
+}
+
+func (t *sshSmartSubtransport) Close() error {
+	t.currentStream = nil
+	t.closeConnection()
 	return nil
 }
 

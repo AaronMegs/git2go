@@ -267,8 +267,50 @@ func TestSHA256Clone(t *testing.T) {
 	}
 }
 
-// in-memory SHA256 index can write a tree into a SHA256 repository, and a
-// standalone (repository-less) open of a real SHA256 index file yields 64-hex
+// TestSHA256PushToLocalBare pushes a real SHA256 pack through libgit2's push /
+// receive-pack path into a bare SHA256 repository and verifies the updated ref
+// and object. It does not require an external network service.
+func TestSHA256PushToLocalBare(t *testing.T) {
+	source := createTestRepoSHA256(t)
+	defer cleanupTestRepo(t, source)
+	commitID := seedTestRepoSHA256(t, source)
+	branchName := defaultBranchName(t, source)
+
+	targetPath, err := ioutil.TempDir("", "git2go-sha256-push-target")
+	checkFatal(t, err)
+	defer os.RemoveAll(targetPath)
+	target, err := InitRepositoryWithOidType(targetPath, true, ObjectIdSHA256)
+	checkFatal(t, err)
+	defer target.Free()
+
+	remote, err := source.Remotes.Create("push-target", target.Path())
+	checkFatal(t, err)
+	defer remote.Free()
+
+	refName := "refs/heads/" + branchName
+	checkFatal(t, remote.Push([]string{refName + ":" + refName}, nil))
+
+	targetRef, err := target.References.Lookup(refName)
+	checkFatal(t, err)
+	defer targetRef.Free()
+	if got := targetRef.Target(); got == nil || !got.Equal(commitID) {
+		t.Fatalf("pushed ref target = %v, want %s", got, commitID)
+	}
+	if got := targetRef.Target(); got.Type() != ObjectIdSHA256 || len(got.String()) != 64 {
+		t.Fatalf("pushed ref target type=%d hexlen=%d, want SHA256/64", got.Type(), len(got.String()))
+	}
+
+	commit, err := target.LookupCommit(commitID)
+	checkFatal(t, err)
+	defer commit.Free()
+	if got := commit.Message(); got != "sha256 commit\n" {
+		t.Errorf("pushed commit message = %q", got)
+	}
+}
+
+// TestSHA256IndexWithOidType verifies that an in-memory SHA256 index can write a
+// tree into a SHA256 repository, and a standalone (repository-less) open of a
+// real SHA256 index file yields 64-hex
 // entry ids. Both paths go through git_index_options.oid_type, which is silently
 // SHA1 if the option is not plumbed through.
 func TestSHA256IndexWithOidType(t *testing.T) {

@@ -33,6 +33,8 @@
 - `Oid.Cmp` 现在与 libgit2 一致：先按 oid 类型排序，再比较有效原始字节。
   `Oid.NCmp` 的 `n` 现在正确解释为**十六进制字符数（nibble 数）**而不是字节数，并与
   `git_oid_ncmp` 一样只保证 0 表示匹配、非 0 表示不匹配。依赖旧的字节计数或排序值需调整。
+- 删除 `ConfigFindProgramdata`。其底层 `git_config_find_programdata` 已被上游 hard-deprecate，
+  因 Git >= 2.24 不再支持 ProgramData config；使用标准 system/global/XDG/local config 搜索 API。
 - `Oid` 的 Go 零值现在语义化为 all-zero SHA1 id；因此 `Type()` 返回 `ObjectIdSHA1`、
   `Bytes()` 返回 20 个零字节、`String()` 返回 40 个零。依赖“未初始化类型值为 0”的代码会变化。
 - `fmt` / JSON / gob / `reflect.DeepEqual` 若直接观察 `Oid` 底层表示，输出或比较结果可能变化；

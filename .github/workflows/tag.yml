@@ -1,28 +1,84 @@
-name: Tag new releases
+name: Publish v36 prerelease tag
+
 on:
-  push:
-    branches:
-    - main
-    - release-*
+  workflow_dispatch:
+    inputs:
+      prerelease_number:
+        description: Numeric N in v36.0.0-pre.N
+        required: true
+        type: string
+      target_ref:
+        description: Branch or commit to tag
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v36-prerelease-tag
+  cancel-in-progress: false
 
 jobs:
-
-  tag-release:
-    name: Bump tag in ${{ github.ref }}
-
-    runs-on: ubuntu-20.04
-
+  tag-v36-prerelease:
+    name: Validate and tag v36.0.0-pre.${{ inputs.prerelease_number }}
+    runs-on: ubuntu-latest
     steps:
-    - name: Check out code
-      uses: actions/checkout@v1
-      with:
-        fetch-depth: 0
-    - name: Bump version and push tag
-      id: bump-version
-      uses: anothrNick/github-tag-action@43ed073f5c1445ca8b80d920ce2f8fa550ae4e8d
+    - name: Validate prerelease number
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        WITH_V: true
-        DEFAULT_BUMP: patch
-        TAG_CONTEXT: branch
-        RELEASE_BRANCHES: .*
+        PRE_NUMBER: ${{ inputs.prerelease_number }}
+      run: |
+        case "$PRE_NUMBER" in
+          ''|*[!0-9]*)
+            echo "::error::prerelease_number must contain digits only"
+            exit 1
+            ;;
+          0)
+            echo "::error::prerelease_number must be greater than zero"
+            exit 1
+            ;;
+        esac
+
+    - name: Check out target
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.target_ref }}
+        fetch-depth: 0
+        submodules: recursive
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 'stable'
+
+    - name: Verify v36 module and tag availability
+      env:
+        PRE_NUMBER: ${{ inputs.prerelease_number }}
+      run: |
+        test "$(go list -m)" = "github.com/libgit2/git2go/v36" || {
+          echo "::error::go.mod is not the v36 module"
+          exit 1
+        }
+        tag="v36.0.0-pre.${PRE_NUMBER}"
+        if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
+          echo "::error::tag ${tag} already exists locally"
+          exit 1
+        fi
+        if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+          echo "::error::tag ${tag} already exists on origin"
+          exit 1
+        fi
+        echo "RELEASE_TAG=${tag}" >> "$GITHUB_ENV"
+
+    - name: Build pinned libgit2 and run full test suite
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libssh2-1-dev
+        make build-libgit2-static
+        make TEST_ARGS=-test.v test-static
+
+    - name: Create and push lightweight prerelease tag
+      run: |
+        git tag "$RELEASE_TAG"
+        git push origin "refs/tags/$RELEASE_TAG"

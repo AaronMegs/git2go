@@ -51,16 +51,20 @@ if [ -n "${BUILD_LIBGIT_REF}" ]; then
 	trap "git submodule update --init" EXIT
 fi
 
-# Keep deprecated declarations available while tracking libgit2 main. The
-# bindings use the promoted typed object-id APIs, but other legacy git2go entry
-# points may still rely on declarations that upstream has deprecated but not yet
-# removed. This can be tightened after the formal libgit2 release baseline is
-# known and all deprecated bindings have been audited.
-BUILD_DEPRECATED_HARD="OFF"
+# Keep deprecated declarations by default while tracking libgit2 main. Set
+# DEPRECATE_HARD=ON in CI/audits to prove git2go no longer depends on APIs that
+# upstream has hidden behind its hard-deprecation gate.
+BUILD_DEPRECATED_HARD="${DEPRECATE_HARD-OFF}"
+case "${BUILD_DEPRECATED_HARD}" in
+	ON|OFF) ;;
+	*)
+		echo "DEPRECATE_HARD must be ON or OFF" >&2
+		exit 1
+		;;
+esac
+
 if [ "${BUILD_SYSTEM}" = "ON" ]; then
 	BUILD_INSTALL_PREFIX=${SYSTEM_INSTALL_PREFIX-"/usr"}
-	# Most system-wide installations won't intentionally omit deprecated symbols.
-	BUILD_DEPRECATED_HARD="OFF"
 else
 	BUILD_INSTALL_PREFIX="${BUILD_PATH}/install"
 	mkdir -p "${BUILD_PATH}/install/lib"
