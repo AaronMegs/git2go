@@ -1,11 +1,13 @@
 # §5.4 长期项调研报告：反向特性探测、per-worktree 引用、SHA-256 + reftable
 
-> 调研日期：2026-08-03
-> 本项目分支：`feat-reftable`（25 commits）
+> 调研日期：2026-08-03（初版，对照上游 `d29fe50de`）；2026-08-04（复核，对照上游 `939362a3c`）
+> 本项目分支：`feat-reftable`
 > 当前 vendor：libgit2 main `ddf3b5c85`
-> 上游 main HEAD：`d29fe50de`（领先 vendor 22 个 commit）
+> 上游 main HEAD：`939362a3c`（领先 vendor 26 个 commit）
 
 本报告针对 `docs/reftable-research.md` §5.4 的三项长期项做上游状态核查、可行性分析与落地方案。
+
+> **2026-08-04 复核结论**：上游从 `d29fe50de` 前进到 `939362a3c`（新增 4 个 commit：PR #7331 `patch: accept empty-file diffs with no hunk`、PR #7332 `index: fix discarded insertion position in D/F conflict check`）。两者均为与本议题无关的 bugfix，仅触及 `src/libgit2/index.c`、`src/libgit2/patch_parse.c` 及对应测试，**未触及** reftable / oid / feature / worktree 任何代码。**三项结论全部维持不变**，本次复核另补充了 §3.3.1 的宏定义细节。
 
 ---
 
@@ -229,6 +231,34 @@ func newOidFromC(coid *C.git_oid) *Oid {
 
 > 这也解释了为何当前 vendor（`ddf3b5c85`）一切正常——它尚未转正 SHA256，`git_oid` 恰好是 20 字节。**这是一个"沉默的定时炸弹"：任何人无意中把 vendor 升到最新 main 都会触发。**
 
+#### 3.3.1 尺寸宏的确切定义（复核补充）
+
+`include/git2/oid.h`（`939362a3c`）的相关宏：
+
+| 宏 | 当前 vendor `ddf3b5c85` | 上游 main `939362a3c` |
+| --- | --- | --- |
+| `GIT_OID_SHA1_SIZE` | 20 | 20 |
+| `GIT_OID_SHA256_SIZE` | 32（仅在 `GIT_EXPERIMENTAL_SHA256` 下定义） | **32（无条件）** |
+| `GIT_OID_MAX_SIZE` | `= GIT_OID_SHA1_SIZE` → **20** | `= GIT_OID_SHA256_SIZE` → **32** |
+| `GIT_OID_MAX_HEXSIZE` | 40 | 64 |
+| `GIT_OID_RAWSZ`（deprecated） | 20 | `= GIT_OID_SHA1_SIZE` → 20 |
+
+**易误判之处**：上游 main 中SHA256 相关宏仍写作 `# define`（`#` 后有缩进空格），且上方注释仍保留 "Experimental SHA256 support is a breaking change to the API. This exists for application compatibility testing."。这只是 `#ifdef GIT_EXPERIMENTAL_SHA256` 被删除后**残留的格式与陈旧注释**，实际已是**无条件定义**：
+
+```c
+/*
+ * Experimental SHA256 support is a breaking change to the API.   ← 陈旧注释
+ * This exists for application compatibility testing.
+ */
+
+/** Size (in bytes) of a raw/binary sha256 oid */
+# define GIT_OID_SHA256_SIZE     32          ← 无 #ifdef 包裹，恒定义
+...
+#define GIT_OID_MAX_SIZE        GIT_OID_SHA256_SIZE   ← 恒为 32
+```
+
+因此 §3.4 阶段 1 的 `#if GIT_OID_MAX_SIZE != 20` 守卫是**可靠**的判据：当前 vendor 下为 20（通过），升级到含 SHA256 转正的 main 后为 32（报错）。
+
 ### 3.4 落地方案（分阶段）
 
 #### 阶段 1：立即防护（必做，低成本）
@@ -370,17 +400,26 @@ func TestReftableWithSha256(t *testing.T) {
 
 ```sh
 cd vendor/libgit2
+git fetch origin +refs/heads/main:refs/remotes/origin/main
 
-# C3: feature 标志
+# C3: feature标志（应无 GIT_FEATURE_REFTABLE）
 git show origin/main:include/git2/common.h | grep "GIT_FEATURE_"
 
-# C4: per-worktree 是否公开
-git grep "per_worktree" origin/main -- include/git2/
+# C4: per-worktree 是否公开（空 = 仍为内部 API）
+git grep -l "per_worktree" origin/main -- include/git2/
+git grep -n "is_per_worktree_ref" origin/main -- src/libgit2/refs.h
 
-# C5: SHA256 是否转正
-git grep -c "GIT_EXPERIMENTAL_SHA256" origin/main -- include/git2/   # 空 = 已转正
-git show origin/main:include/git2/oid.h | grep -A6 "typedef struct git_oid"
+# C5: SHA256 是否转正（空 = 已转正）
+git grep -c "GIT_EXPERIMENTAL_SHA256" origin/main -- include/git2/
+git show origin/main:include/git2/oid.h | grep -A8 "typedef struct git_oid"
+
+# C5: 尺寸宏（确认 GIT_OID_MAX_SIZE 是否已变为 32）
+git show origin/main:include/git2/oid.h | grep -nE "define GIT_OID_(SHA1|SHA256|MAX)_(SIZE|HEXSIZE)"
 
 # reftable 的 SHA256 支持
-git show origin/main:src/libgit2/refdb_reftable.c | grep -B4 -A6 "REFTABLE_HASH_SHA256"
+git show origin/main:src/libgit2/refdb_reftable.c | grep -B6 -A4 "REFTABLE_HASH_SHA256"
+
+# 本地实测当前 vendor 的 git_oid 尺寸（守卫判据）
+printf '#include <git2.h>\n#include <stdio.h>\nint main(void){printf("MAX_SIZE=%%d sizeof=%%d\\n",(int)GIT_OID_MAX_SIZE,(int)sizeof(git_oid));return 0;}\n' > /tmp/oidsize.c
+cc -I ../../static-build/install/include /tmp/oidsize.c -o /tmp/oidsize && /tmp/oidsize
 ```
