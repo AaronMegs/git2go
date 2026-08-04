@@ -154,7 +154,81 @@ func TestSHA256IndexerForOidType(t *testing.T) {
 	defer idx.Free()
 }
 
-// TestSHA256IndexWithOidType verifies the SHA256-aware index constructors: an
+// seedTestRepoSHA256 stages README and creates one commit on HEAD, returning the
+// commit id (a 64-hex SHA256 id).
+func seedTestRepoSHA256(t *testing.T, repo *Repository) *Oid {
+	t.Helper()
+
+	idx, err := repo.Index()
+	checkFatal(t, err)
+	checkFatal(t, idx.AddByPath("README"))
+	checkFatal(t, idx.Write())
+
+	treeID, err := idx.WriteTree()
+	checkFatal(t, err)
+
+	tree, err := repo.LookupTree(treeID)
+	checkFatal(t, err)
+	defer tree.Free()
+
+	sig := &Signature{
+		Name:  "Rand Om Hacker",
+		Email: "random@hacker.com",
+		When:  time.Date(2013, 03, 06, 14, 30, 0, 0, time.UTC),
+	}
+
+	commitID, err := repo.CreateCommit("HEAD", sig, sig, "sha256 commit\n", tree)
+	checkFatal(t, err)
+	return commitID
+}
+
+// TestSHA256Clone clones a SHA256 repository and asserts the clone keeps the
+// SHA256 object format: the transferred ref target must be a 64-hex SHA256 id and
+// the cloned commit must be readable from the clone. This exercises the
+// fetch/negotiation and pack-indexing paths, where the object format is carried
+// by libgit2's own smart transport (git_smart__oid_type) rather than by git2go.
+func TestSHA256Clone(t *testing.T) {
+	source := createTestRepoSHA256(t)
+	defer cleanupTestRepo(t, source)
+
+	commitID := seedTestRepoSHA256(t, source)
+
+	branchName := defaultBranchName(t, source)
+	srcRef, err := source.References.Lookup("refs/heads/" + branchName)
+	checkFatal(t, err)
+
+	path, err := ioutil.TempDir("", "git2go-sha256-clone")
+	checkFatal(t, err)
+	defer os.RemoveAll(path)
+
+	clone, err := Clone(source.Path(), path, &CloneOptions{Bare: true})
+	checkFatal(t, err)
+	defer clone.Free()
+
+	cloneRef, err := clone.References.Lookup("refs/heads/" + branchName)
+	checkFatal(t, err)
+
+	if srcRef.Cmp(cloneRef) != 0 {
+		t.Fatal("reference in SHA256 clone does not match the original ref")
+	}
+	if target := cloneRef.Target(); target == nil || !target.Equal(commitID) {
+		t.Fatalf("clone ref target = %v, want %s", target, commitID)
+	}
+	if target := cloneRef.Target(); target.Type() != ObjectIdSHA256 || len(target.String()) != 64 {
+		t.Errorf("clone ref target is not a SHA256 id: type=%d hexlen=%d",
+			target.Type(), len(target.String()))
+	}
+
+	// The cloned commit must be readable through the clone's own odb, proving the
+	// received pack was indexed with the right object format.
+	clonedCommit, err := clone.LookupCommit(commitID)
+	checkFatal(t, err)
+	defer clonedCommit.Free()
+	if msg := clonedCommit.Message(); msg != "sha256 commit\n" {
+		t.Errorf("cloned commit message = %q", msg)
+	}
+}
+
 // in-memory SHA256 index can write a tree into a SHA256 repository, and a
 // standalone (repository-less) open of a real SHA256 index file yields 64-hex
 // entry ids. Both paths go through git_index_options.oid_type, which is silently

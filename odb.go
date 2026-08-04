@@ -26,6 +26,13 @@ import (
 type Odb struct {
 	doNotCompare
 	ptr *C.git_odb
+
+	// oidType is the object id type this database stores, following git_oid_t
+	// (0 means "unknown / use the libgit2 default"). It is filled in by
+	// Repository.Odb() so that Hash() can follow the repository's object format
+	// instead of always hashing as SHA1. A standalone Odb (NewOdb) leaves it at
+	// 0.
+	oidType C.int
 }
 
 type OdbBackend struct {
@@ -250,9 +257,12 @@ func (v *Odb) ForEach(callback OdbForEachCallback) error {
 	return nil
 }
 
-// Hash determines the object-ID (using the repository/library default hash
-// algorithm, i.e. SHA1) of a data buffer. To hash with an explicit object id
-// type — in particular for a SHA256 repository — use HashWithType.
+// Hash determines the object-ID of a data buffer.
+//
+// The object id type follows the object database: an Odb obtained from a
+// Repository hashes with that repository's object format (so a SHA256 repository
+// yields a SHA256 id), while a standalone Odb from NewOdb uses the libgit2
+// default (SHA1). Use HashWithType to pick the type explicitly.
 func (v *Odb) Hash(data []byte, otype ObjectType) (oid *Oid, err error) {
 	oid = new(Oid)
 
@@ -268,10 +278,11 @@ func (v *Odb) Hash(data []byte, otype ObjectType) (oid *Oid, err error) {
 	}
 
 	// Route through the stable-signature shim so this compiles against both the
-	// default and the experimental (SHA256-capable) libgit2 ABI. Passing 0 keeps
-	// the libgit2 default (SHA1).
-	ret := C._go_git_odb_hash(oid.toC(), unsafe.Pointer(&data[0]), size, C.git_object_t(otype), 0)
+	// default and the experimental (SHA256-capable) libgit2 ABI. v.oidType is 0
+	// for a standalone Odb, which keeps the libgit2 default (SHA1).
+	ret := C._go_git_odb_hash(oid.toC(), unsafe.Pointer(&data[0]), size, C.git_object_t(otype), v.oidType)
 	runtime.KeepAlive(data)
+	runtime.KeepAlive(v)
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}

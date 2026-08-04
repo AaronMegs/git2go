@@ -17,11 +17,12 @@
 | 1 | 独立 `Index` / `Diff` 的 SHA256 变体 | ✅ 已完成 |
 | 2 | CI 接入多构建路径 | ✅ 已完成 |
 | 3 | 1.9.x overload 路径复验 | ✅ 已完成 |
-| 4 | SHA256 远端协商（transport `oid_type`） | ⏳ 进行中 |
-| 5 | SHA256 远端端到端用例（clone/fetch/push） | ⬜ 未开始 |
-| 6 | `Odb` 类型感知（`Hash` 自动跟随仓库类型） | ⬜ 未开始 |
+| 4 | SHA256 远端协商（transport `oid_type`） | ✅ 已完成（结论：无需适配，原判断有误已更正） |
+| 5 | SHA256 远端端到端用例（clone） | ✅ 已完成 |
+| 6 | `Odb` 类型感知（`Hash` 自动跟随仓库类型） | ✅ 已完成 |
 | 7 | 上游转正后合并双实现 | ⏸ 触发式，条件未满足 |
-| **N1** | **`TestApplyDiffAddfile` 在实验构建下 SIGBUS（本轮新发现，预存缺陷）** | ⬜ 未开始（阻塞 CI 全量） |
+| **N1** | **`TestApplyDiffAddfile` 在实验构建下 SIGBUS（新发现，预存缺陷）** | ⬜ 未开始（阻塞 CI 全量） |
+| **N2** | **3 个 `TestRebase*` 在默认构建下失败（新发现，预存缺陷）** | ⬜ 未开始 |
 
 ---
 
@@ -159,4 +160,105 @@ SHA256 的本地仓库全生命周期用例不受影响（全部通过）。
 
 ---
 
-## 4. SHA256 远端协商（transport `oid_type`） — ⏳ 进行中
+## 4. SHA256 远端协商（transport `oid_type`） — ✅ 已完成（结论：**无需适配**）
+
+**原判断（有误）**：早前基于 `git2/sys/transport.h` 的头文件阅读，把"为 git2go 的 managed smart
+transport 实现 `git_transport.oid_type` 回调"列为待办的能力增强项。
+
+**核实过程**：查上游实现而非仅头文件：
+
+1. git2go 的 transport 扩展点是 **smart subtransport**，不是 `git_transport` 本身：
+   `wrapper.c` 的 `_go_git_transport_smart()` 只填充 `git_smart_subtransport_definition`
+   然后调用 **libgit2 内置的** `git_transport_smart()`；`RegisterManagedHTTPTransport` /
+   `RegisterManagedSSHTransport` 注册的同样是 subtransport。git2go **从不**自己实现
+   `git_transport` 结构体。
+2. libgit2 内置 smart transport **已实现**该回调
+   （`src/libgit2/transports/smart.c`）：
+
+```c
+#ifdef GIT_EXPERIMENTAL_SHA256
+static int git_smart__oid_type(git_oid_t *out, git_transport *transport) {
+    if (t->caps.object_format == NULL) *out = GIT_OID_DEFAULT;
+    else *out = git_oid_type_fromstr(t->caps.object_format);
+}
+...
+t->parent.oid_type = git_smart__oid_type;   /* 内置装配 */
+#endif
+```
+
+**结论**：远端对象格式协商（读取远端 `object-format` capability）完全在 libgit2 内部完成，
+git2go 的 subtransport 只搬字节流、与 oid 类型无关。**该项 git2go 侧零代码工作量**，SHA256
+远端在实验构建下开箱可用。
+
+**改动**：仅文档更正 —— `sha256-compat-design.md` §4.3 增补"由 libgit2 内置 smart transport
+提供"的专项说明并附上游代码，清空"可选增强项"，§4.7.2 的限制表把该行标记为**已更正/无缺口**。
+
+---
+
+## 5. SHA256 远端端到端用例 — ✅ 已完成
+
+**改动**：`repository_sha256_test.go` 新增 helper `seedTestRepoSHA256`（提交一个 SHA256 commit）
+与 `TestSHA256Clone`。
+
+**断言**：克隆一个 SHA256 仓库后
+1) 源与克隆的 ref 一致（`Cmp == 0`）；
+2) 克隆 ref 的 target 等于源 commit id，且**类型为 SHA256、hex 长度 64**；
+3) 克隆能`LookupCommit` 到该 commit 并读出 message —— 证明接收到的 pack 是按正确对象格式索引的。
+
+这覆盖了 fetch/negotiation + pack 索引路径，同时**实证了第 4 项的结论**（协商由libgit2 完成，
+git2go 无需介入）。
+
+**说明**：未断言 `clone.OidType()`，因为该getter 只在 `libgit2_next` 下有真值，写进非门控测试
+会让 1.9.x overload 路径误红；上面的 64-hex 断言已足够。push未覆盖（需真实服务端）。
+
+**验证**：`TestSHA256Clone` 在 main + `libgit2_next` 路径 PASS。
+
+---
+
+## 6. `Odb` 类型感知 — ✅ 已完成
+
+**问题**：`Odb.Hash` 固定按 libgit2 默认类型（SHA1）哈希，因此在 SHA256 仓库上会返回一个与
+仓库对象格式不符的 SHA1 值——是个静默的语义陷阱。
+
+**约束**：libgit2 **没有** `git_odb` 的oid_type getter（`git_odb_options.oid_type` 只在创建时
+传入），故只能由 `Repository` 侧透传。
+
+**改动**：
+
+| 文件 | 内容 |
+|---|---|
+| `odb.go` | `Odb` 新增私有字段 `oidType C.int`（0 = 未知/用libgit2 默认）；`Hash` 改为传 `v.oidType` 而非硬编码 0；补`runtime.KeepAlive(v)` |
+| `repository.go` | `Repository.Odb()` 填充 `odb.oidType = C.int(v.OidType())` |
+
+行为：从仓库取得的 `Odb` 按仓库对象格式哈希（SHA256 仓库→SHA256 id）；`NewOdb()` 的独立
+`Odb` 保持 `oidType = 0`，即 libgit2 默认（SHA1），与历史一致。
+
+**对默认构建零影响**：默认构建下 `Repository.OidType()` 恒为 `ObjectIdSHA1`，传1 与原先传 0
+等价（且非实验分支的 shim 本就 `(void)oid_type`）。
+
+**已知限制**：1.9.x 实验构建下 `Repository.OidType()` 因缺 `git_repository_oid_type` 符号而
+回退报告 SHA1，故该路径上 SHA256 仓库的 `Odb.Hash` 仍产出 SHA1；需显式用
+`Odb.HashWithType`。main（`libgit2_next`）路径无此限制。
+
+**验证**：新增 `TestSHA256OdbHashFollowsRepository`（门控 `libgit2_next`）—— SHA256 仓库的
+`Odb.Hash` 产出 64-hex SHA256 且与 `Write()` 一致；独立 `Odb` 仍为 SHA1。
+main + next 路径 19 个用例全PASS；默认构建
+`-run 'Odb|Repository|Index|Diff|Oid|Clone|Commit'` 全过，无回退。
+
+---
+
+## N2. 3 个 `TestRebase*` 在默认构建下失败 — ⬜ 未开始（本轮新发现）
+
+**发现过程**：为验证第 6 项，首次运行**默认构建的全量**套件（此前只跑过 `-run` 过滤的子集）。
+
+**现象**：`TestRebaseAbort`、`TestRebaseNoConflicts`、`TestRebaseGpgSigned` 失败
+（输出含 `Co-authored-by:` / `Signed-off-by:` 片段，疑与 commit message trailer / 签名有关）。
+
+**归属判定（已确认）**：`git stash` 掉本轮改动、在已提交状态（`b4944da`）下同样失败 →
+**预存缺陷，与 SHA256 适配无关**。
+
+**旁证**：`gofmt -l` 显示 `rebase.go`、`rebase_test.go` 本身未格式化（同样是预存状态），
+暗示这部分代码存在遗留问题。
+
+**下一步**：单独排查 rebase 绑定与当前 libgit2 基线（`main` / 系统 1.9.4）的行为差异；
+本项与 SHA1/SHA256 兼容性无关，建议独立于 SHA256 工作线处理。

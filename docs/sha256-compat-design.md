@@ -337,15 +337,40 @@ SHA256-aware 的公共 API 在**两种构建下同名同签名**存在，差别�
 | `refdb_backend.h`：backend struct 的 `write`/`del`/`unlock` 回调（传 `const git_oid*`） | 否 | 仅指针，尺寸不变 | **无需改动**（cgo 自动适配指针） |
 | `refdb.h`：`git_refdb_new` | 否 | 无 | **无需改动** |
 | `transport.h`：`git_transport_smart`/`git_transport_new`/`negotiate_fetch`/`shallow_roots` | 否（均在 ifdef 之外） | 无 | **无需改动** |
-| `transport.h`：`git_transport` struct **新增** `oid_type` 回调成员 | 是（唯一一处） | 新增可选回调字段 | **无需改动**：该回调由 transport 实现者按需提供，git2go 现有 smart transport 不实现它即可；属"可增强"而非"必适配" |
+| `transport.h`：`git_transport` struct **新增** `oid_type` 回调成员 | 是（唯一一处） | 新增可选回调字段 | **无需改动**，且**无需实现**：见下方专项说明 |
 
-> 结论：在 pin commit `f7164261` 下，mempack / refdb / transport 三类 sys 入口**均无破坏性 arity 变化，无需新增 shim**。唯一与 SHA256 相关的是 `git_transport` 的可选 `oid_type` 回调——它是面向自定义 transport 的**能力增强点**（用于向远端协商对象类型），列为下方"可选增强项"，不阻塞双构建编译与现有功能。
+> 结论：在 pin commit `f7164261` 下，mempack / refdb / transport 三类 sys 入口**均无破坏性 arity 变化，无需新增 shim**。
+
+#### `git_transport.oid_type` 由 libgit2 内置smart transport 提供（已核实，git2go 无需实现）
+
+早期基于头文件的推断曾把该回调列为 git2go 的"可选增强项"，**这个判断是错的**，经核对上游实现后更正如下：
+
+git2go 的 transport 扩展点是 **smart subtransport**，而不是 `git_transport` 本身——`wrapper.c` 的 `_go_git_transport_smart()` 只是填充 `git_smart_subtransport_definition` 后调用 **libgit2 内置的** `git_transport_smart()`；`RegisterManagedHTTPTransport` / `RegisterManagedSSHTransport` 注册的同样是 subtransport。也就是说 git2go **从不自己实现 `git_transport` 结构体**。
+
+而 libgit2 的内置 smart transport 已经实现了该回调（`src/libgit2/transports/smart.c`）：
+
+```c
+#ifdef GIT_EXPERIMENTAL_SHA256
+static int git_smart__oid_type(git_oid_t *out, git_transport *transport)
+{
+    if (t->caps.object_format == NULL)
+        *out = GIT_OID_DEFAULT;
+    else
+        *out = git_oid_type_fromstr(t->caps.object_format);
+    ...
+}
+...
+t->parent.oid_type = git_smart__oid_type;   /* 内置装配 */
+#endif
+```
+
+即远端对象格式协商（读取远端 `object-format` capability）完全在 libgit2 内部完成，git2go 的 subtransport 只负责搬运字节流、与 oid 类型无关。**结论：SHA256 远端协商在实验构建下开箱可用，git2go 侧无代码工作量。**
 
 > 仍需关注（编译期已自动暴露、本次阶段一已处理完毕的）公共头入口：`odb_backend.h` 的 `git_odb_backend_one_pack/loose`、`odb.h` 的 `git_odb_new/hash`、`index.h` 的 `git_index_new/open`、`diff.h` 的 `git_diff_from_buffer`、`indexer.h` 的 `git_indexer_new` —— 这些因被 `git2.h` 包含、实验宏下 arity 变化会**编译报错**，已全部改走 wrapper.c 稳定签名 shim。
 
 #### 可选增强项（非必须，跟随需求推进）
 
-- 自定义 SHA256 远端协商：为 git2go 的 managed smart transport 实现 `git_transport.oid_type` 回调，使其在实验构建下能向远端声明/协商对象类型。当前不实现不影响 SHA256 本地仓库的 init/读写。
+-暂无。（原列于此处的"为 managed smart transport 实现 `git_transport.oid_type`"经核实为**误判**，该回调由 libgit2 内置 smart transport 提供，git2go 无需实现，详见上文专项说明。）
 
 ### 4.4 实施路线图
 
@@ -410,9 +435,10 @@ SHA256 在上游"转正"后，`git_oid` 的 ABI 与解析函数 arity 将统一�
 
 | 限制 | 说明 | 影响面 |
 |---|---|---|
-| SHA256 远端协商未实现 | `git_transport.oid_type` 可选回调未在 managed smart transport 中实现，故经 git2go 自定义 transport 与远端协商 SHA256 尚不支持 | 仅影响自定义 transport 的 SHA256 远端；本地 SHA256 仓库读写不受影响 |
+| ~~SHA256 远端协商未实现~~ | **已更正**：该能力由 libgit2 内置 smart transport 提供（`git_smart__oid_type` 读取远端 `object-format` capability），git2go 只提供 subtransport（字节流），无需实现 | 无缺口 |
 | `Odb.Hash` 语义为 libgit2 默认类型（SHA1） | 保持既有 API 行为不变；SHA256 需显式用 `Odb.HashWithType` | 无回退，但在 SHA256 仓库上误用会得到 SHA1 值（文档已注明） |
 | `NewIndexer` 同上 | 默认 SHA1；SHA256 用 `NewIndexerForOidType` | 同上 |
+| **`TestApplyDiffAddfile` 在实验构建下 SIGBUS** | 任何 `EXPERIMENTAL_SHA256=ON` 构建（1.9.4 与 main 均如此）下 `git_apply` 崩溃；默认 SHA1 构建正常。非本适配引入（已提交状态可复现），排查记录见 `sha256-todo-progress.md` N1 | **仅实验构建**；阻塞实验构建的全量测试套件 |
 | 实验构建下 `Oid` 不再是 `[20]byte` | 实验构建中 `Oid` 是结构体，无法 `oid[:]`/`oid[0]` 索引；须用 `Bytes()`/`String()`/`Type()` | **仅实验 tag 下**；默认构建的 `Oid [20]byte` 与历史完全一致，零破坏 |
 | `git_odb_hashfile` 未绑定 | 上游 git2go 原本也未绑定，非本次引入 | 无 |
 | 1.9.x overload 路径的最新回归 | 本轮纯 Go 层改动（`oid_sha256.go`、`sha256_default.go`）已在 `main`+`libgit2_next` 与默认构建上验证；overload 路径共用同一 Go 代码且 C 侧未变，如需完整复验：切子模块至 1.9.x → `make test-static-sha256` | 低风险 |

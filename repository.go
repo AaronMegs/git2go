@@ -694,6 +694,10 @@ func (v *Repository) Odb() (odb *Odb, err error) {
 		return nil, MakeGitError(ret)
 	}
 
+	// Remember the repository's object id type so Odb.Hash() hashes with the
+	// repository's format rather than always defaulting to SHA1.
+	odb.oidType = C.int(v.OidType())
+
 	runtime.SetFinalizer(odb, (*Odb).Free)
 	return odb, nil
 }
