@@ -51,11 +51,11 @@ if [ -n "${BUILD_LIBGIT_REF}" ]; then
 	trap "git submodule update --init" EXIT
 fi
 
-# DEPRECATE_HARD is kept OFF so that deprecated-but-still-valid symbols remain
-# linkable. This matters because the vendored libgit2 baseline tracks the `main`
-# branch, where some symbols git2go still binds (e.g. git_odb_hash) are marked
-# deprecated; with DEPRECATE_HARD=ON those symbols would be omitted and the
-# default (SHA1) static build would fail to link.
+# Keep deprecated declarations available while tracking libgit2 main. The
+# bindings use the promoted typed object-id APIs, but other legacy git2go entry
+# points may still rely on declarations that upstream has deprecated but not yet
+# removed. This can be tightened after the formal libgit2 release baseline is
+# known and all deprecated bindings have been audited.
 BUILD_DEPRECATED_HARD="OFF"
 if [ "${BUILD_SYSTEM}" = "ON" ]; then
 	BUILD_INSTALL_PREFIX=${SYSTEM_INSTALL_PREFIX-"/usr"}
@@ -69,17 +69,6 @@ fi
 USE_BUNDLED_ZLIB="ON"
 if [ "${USE_CHROMIUM_ZLIB}" = "ON" ]; then
 	USE_BUNDLED_ZLIB="Chromium"
-fi
-
-# Opt-in experimental SHA256 support. Set the EXPERIMENTAL_SHA256 environment
-# variable to "ON" to build libgit2 with the experimental SHA256 object id
-# support. This must be paired with building git2go using the
-# `git_experimental_sha256` go build tag. Note that this changes the libgit2
-# ABI (the git_oid struct grows a type byte and a 32-byte id), so the resulting
-# library is NOT compatible with the default (SHA1-only) git2go build.
-BUILD_EXPERIMENTAL_SHA256="OFF"
-if [ "${EXPERIMENTAL_SHA256}" = "ON" ]; then
-	BUILD_EXPERIMENTAL_SHA256="ON"
 fi
 
 # Force libgit2's own headers to win over any libgit2 headers already installed
@@ -110,7 +99,6 @@ cmake -DTHREADSAFE=ON \
       -DUSE_SSH=OFF \
       -DUSE_NTLMCLIENT=OFF \
       -DUSE_GSSAPI=OFF \
-      -DEXPERIMENTAL_SHA256="${BUILD_EXPERIMENTAL_SHA256}" \
       -DCMAKE_C_FLAGS="-fPIC ${LIBGIT2_INTREE_INCLUDE}" \
       -DCMAKE_BUILD_TYPE="RelWithDebInfo" \
       -DCMAKE_INSTALL_PREFIX="${BUILD_INSTALL_PREFIX}" \
@@ -128,41 +116,3 @@ build_and_install() {
 }
 
 build_and_install
-
-# When building the experimental SHA256 library, libgit2 installs everything
-# under an "-experimental" suffix (libgit2-experimental.a, git2-experimental.h,
-# include/git2-experimental/, libgit2-experimental.pc) and does NOT install the
-# usual git2.h / git2/ headers. The shared git2go cgo files include <git2.h> and
-# <git2/sys/...>, so create compatibility symlinks pointing at the experimental
-# headers. The experimental build wiring (Build_bundled_static_sha256.go) links
-# the -experimental archive but includes <git2.h> via these symlinks.
-if [ "${BUILD_EXPERIMENTAL_SHA256}" = "ON" ] && [ "${BUILD_SYSTEM}" != "ON" ]; then
-	INCDIR="${BUILD_INSTALL_PREFIX}/include"
-	if [ -e "${INCDIR}/git2-experimental.h" ] && [ ! -e "${INCDIR}/git2.h" ]; then
-		ln -sf git2-experimental.h "${INCDIR}/git2.h"
-	fi
-	if [ -d "${INCDIR}/git2-experimental" ] && [ ! -e "${INCDIR}/git2" ]; then
-		ln -sf git2-experimental "${INCDIR}/git2"
-	fi
-
-	# Detect which experimental object-id API shape the headers expose. libgit2
-	# main renamed the typed entry points to git_oid_from_string/from_prefix/
-	# from_raw (+ *_ext), while the 1.9.x release overloaded the legacy names.
-	# Since main's version.h still reports 1.9.0 the two cannot be told apart by
-	# version, so git2go selects the main shape via the `libgit2_next` build tag.
-	OIDHDR=""
-	if [ -f "${INCDIR}/git2/oid.h" ]; then
-		OIDHDR="${INCDIR}/git2/oid.h"
-	elif [ -f "${INCDIR}/git2-experimental/oid.h" ]; then
-		OIDHDR="${INCDIR}/git2-experimental/oid.h"
-	fi
-	if [ -n "${OIDHDR}" ] && grep -q "git_oid_from_string" "${OIDHDR}"; then
-		echo "NOTE: this libgit2 exposes the 'main' experimental oid API (git_oid_from_string/*_ext)." >&2
-		echo "      Test git2go with: make test-static-sha256-next" >&2
-		echo "      (equivalently: -tags \"static git_experimental_sha256 libgit2_next\")" >&2
-	else
-		echo "NOTE: this libgit2 exposes the 1.9.x experimental oid API (overloaded legacy names)." >&2
-		echo "      Test git2go with: make test-static-sha256" >&2
-		echo "      (equivalently: -tags \"static git_experimental_sha256\")" >&2
-	fi
-fi

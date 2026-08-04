@@ -534,76 +534,27 @@ int _go_git_indexer_new(
 	git_indexer_options indexer_options = GIT_INDEXER_OPTIONS_INIT;
 	indexer_options.progress_cb = transfer_progress_callback;
 	indexer_options.progress_cb_payload = progress_cb_payload;
-#ifdef GIT_EXPERIMENTAL_SHA256
-	// In the experimental ABI mode and odb moved into the options struct.
 	indexer_options.mode = mode;
 	indexer_options.odb = odb;
-	if (oid_type != 0)
-		indexer_options.oid_type = (git_oid_t)oid_type;
+	indexer_options.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
 	return git_indexer_new(out, path, &indexer_options);
-#else
-	(void)oid_type;
-	return git_indexer_new(out, path, mode, odb, &indexer_options);
-#endif
 }
 
 // ----------------------------------------------------------------------------
-// SHA1/SHA256 compatibility shims.
+// SHA1/SHA256 object-id helpers for the promoted, typed libgit2 API.
 //
-// cgo cannot conditionally call functions whose signature changes with a macro,
-// so we expose these stable-signature wrappers and select the right underlying
-// call here. The `oid_type` argument follows git_oid_t (1=SHA1, 2=SHA256); a
-// value of 0 means "use the libgit2 default" (SHA1).
-//
-// TWO upstream shapes are supported behind GIT_EXPERIMENTAL_SHA256:
-//
-//   (A) The libgit2 1.9.x experimental "overload" shape (the project's pinned
-//       submodule, f7164261 == 1.9.4): the existing functions gain an extra
-//       git_oid_t parameter / options field in place. This is the DEFAULT path
-//       here and is the one covered by the end-to-end tests.
-//
-//   (B) The libgit2 `main` "split" shape: the legacy names are frozen to SHA1
-//       and NEW, separately-named entry points carry the type
-//       (git_oid_from_string/from_prefix/from_raw, git_odb_new_ext,
-//       git_index_new_ext/open_ext, git_diff_from_buffer_ext, ...). Select this
-//       path by defining GIT2GO_LIBGIT2_OID_EXT_API (the `libgit2_next` go build
-//       tag injects it). NOTE: libgit2 main's version.h still reports 1.9.0
-//       (LOWER than the 1.9.4 release), so the two shapes cannot be told apart
-//       by LIBGIT2_VERSION_NUMBER; an explicit opt-in is required.
-//
-// Functions whose shape is IDENTICAL on both (git_repository_init_ext via
-// opts.oid_type, git_indexer_new overload) need no (B) branch.
-//
-// TODO(sha256-merge): when upstream promotes SHA256 out of GIT_EXPERIMENTAL_SHA256,
-// collapse to the (then-stable) signature. See docs/sha256-compat-design.md s4.6.
+// SHA1 remains the default and is fully supported. Callers select SHA256 by
+// passing GIT_OID_SHA256; a zero oid_type uses GIT_OID_DEFAULT (SHA1).
 // ----------------------------------------------------------------------------
 
 int _go_git_oid_fromstrn(git_oid *out, const char *str, size_t length, int oid_type)
 {
-#ifdef GIT_EXPERIMENTAL_SHA256
-# if defined(GIT2GO_LIBGIT2_OID_EXT_API)
 	return git_oid_from_prefix(out, str, length, oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT);
-# else
-	return git_oid_fromstrn(out, str, length, oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT);
-# endif
-#else
-	(void)oid_type;
-	return git_oid_fromstrn(out, str, length);
-#endif
 }
 
 int _go_git_oid_fromraw(git_oid *out, const unsigned char *raw, int oid_type)
 {
-#ifdef GIT_EXPERIMENTAL_SHA256
-# if defined(GIT2GO_LIBGIT2_OID_EXT_API)
 	return git_oid_from_raw(out, raw, oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT);
-# else
-	return git_oid_fromraw(out, raw, oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT);
-# endif
-#else
-	(void)oid_type;
-	return git_oid_fromraw(out, raw);
-#endif
 }
 
 int _go_git_repository_init(git_repository **out, const char *path, unsigned is_bare, int oid_type)
@@ -611,125 +562,52 @@ int _go_git_repository_init(git_repository **out, const char *path, unsigned is_
 	git_repository_init_options opts = GIT_REPOSITORY_INIT_OPTIONS_INIT;
 	if (is_bare)
 		opts.flags |= GIT_REPOSITORY_INIT_BARE;
-#ifdef GIT_EXPERIMENTAL_SHA256
-	if (oid_type != 0)
-		opts.oid_type = (git_oid_t)oid_type;
-#else
-	(void)oid_type;
-#endif
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
 	return git_repository_init_ext(out, path, &opts);
 }
 
-// _go_git_repository_oid_type returns the object id type of a repository as an
-// int (following git_oid_t: 1=SHA1, 2=SHA256). This getter is unconditional on
-// libgit2 main; on older libgit2 that predates it, the GIT2GO_HAVE_REPO_OID_TYPE
-// gate (injected by the libgit2_next build tag) keeps it out of the build. When
-// unavailable it reports 1 (SHA1), which is the only type those libgit2 support.
 int _go_git_repository_oid_type(git_repository *repo)
 {
-#if defined(GIT2GO_HAVE_REPO_OID_TYPE)
 	return (int)git_repository_oid_type(repo);
-#else
-	(void)repo;
-	return 1; /* GIT_OID_SHA1 */
-#endif
 }
 
 int _go_git_odb_hash(git_oid *out, const void *data, size_t len, git_object_t obj_type, int oid_type)
 {
-#ifdef GIT_EXPERIMENTAL_SHA256
-# if defined(GIT2GO_LIBGIT2_OID_EXT_API)
-	// On libgit2 main, git_odb_hash is deprecated and SHA1-only; typed hashing
-	// moved to git_object_id_from_buffer(oid, buf, len, git_object_id_options*),
-	// where the options carry both object_type and oid_type.
 	git_object_id_options opts = GIT_OBJECT_ID_OPTIONS_INIT;
 	opts.object_type = obj_type;
-	if (oid_type != 0)
-		opts.oid_type = (git_oid_t)oid_type;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
 	return git_object_id_from_buffer(out, data, len, &opts);
-# else
-	return git_odb_hash(out, data, len, obj_type, oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT);
-# endif
-#else
-	(void)oid_type;
-	return git_odb_hash(out, data, len, obj_type);
-#endif
 }
 
 int _go_git_odb_new(git_odb **out)
 {
-#ifdef GIT_EXPERIMENTAL_SHA256
-# if defined(GIT2GO_LIBGIT2_OID_EXT_API)
 	return git_odb_new_ext(out, NULL);
-# else
-	return git_odb_new(out, NULL);
-# endif
-#else
-	return git_odb_new(out);
-#endif
 }
 
 int _go_git_index_new(git_index **out, int oid_type)
 {
-#ifdef GIT_EXPERIMENTAL_SHA256
 	git_index_options opts = GIT_INDEX_OPTIONS_INIT;
-	// GIT_INDEX_OPTIONS_INIT leaves oid_type at 0, which is not a valid
-	// git_oid_t; always fill in a concrete type.
 	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
-# if defined(GIT2GO_LIBGIT2_OID_EXT_API)
 	return git_index_new_ext(out, &opts);
-# else
-	return git_index_new(out, &opts);
-# endif
-#else
-	(void)oid_type;
-	return git_index_new(out);
-#endif
 }
 
 int _go_git_index_open(git_index **out, const char *index_path, int oid_type)
 {
-#ifdef GIT_EXPERIMENTAL_SHA256
 	git_index_options opts = GIT_INDEX_OPTIONS_INIT;
 	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
-# if defined(GIT2GO_LIBGIT2_OID_EXT_API)
 	return git_index_open_ext(out, index_path, &opts);
-# else
-	return git_index_open(out, index_path, &opts);
-# endif
-#else
-	(void)oid_type;
-	return git_index_open(out, index_path);
-#endif
 }
 
 int _go_git_diff_from_buffer(git_diff **out, const char *content, size_t content_len, int oid_type)
 {
-#ifdef GIT_EXPERIMENTAL_SHA256
 	git_diff_parse_options opts = GIT_DIFF_PARSE_OPTIONS_INIT;
 	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
-# if defined(GIT2GO_LIBGIT2_OID_EXT_API)
 	return git_diff_from_buffer_ext(out, content, content_len, &opts);
-# else
-	return git_diff_from_buffer(out, content, content_len, &opts);
-# endif
-#else
-	(void)oid_type;
-	return git_diff_from_buffer(out, content, content_len);
-#endif
 }
 
-// git_odb_backend_one_pack gains a git_odb_backend_pack_options* on both the
-// 1.9.x experimental ABI and libgit2 main (same shape here), so a single
-// experimental branch covers both. git_odb_backend_loose likewise takes a
-// git_odb_backend_loose_options* under experimental on both.
 int _go_git_odb_backend_one_pack(git_odb_backend **out, const char *index_file)
 {
-#ifdef GIT_EXPERIMENTAL_SHA256
 	return git_odb_backend_one_pack(out, index_file, NULL);
-#else
-	return git_odb_backend_one_pack(out, index_file);
-#endif
 }
 
 int _go_git_odb_backend_loose(
@@ -740,7 +618,6 @@ int _go_git_odb_backend_loose(
 		unsigned int dir_mode,
 		unsigned int file_mode)
 {
-#ifdef GIT_EXPERIMENTAL_SHA256
 	git_odb_backend_loose_options opts = GIT_ODB_BACKEND_LOOSE_OPTIONS_INIT;
 	opts.compression_level = compression_level;
 	if (do_fsync)
@@ -748,9 +625,6 @@ int _go_git_odb_backend_loose(
 	opts.dir_mode = dir_mode;
 	opts.file_mode = file_mode;
 	return git_odb_backend_loose(out, objects_dir, &opts);
-#else
-	return git_odb_backend_loose(out, objects_dir, compression_level, do_fsync, dir_mode, file_mode);
-#endif
 }
 
 static int smart_transport_callback(

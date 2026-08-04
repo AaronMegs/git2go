@@ -1,6 +1,3 @@
-//go:build git_experimental_sha256
-// +build git_experimental_sha256
-
 package git
 
 /*
@@ -15,23 +12,23 @@ import (
 
 // Oid represents the id for a Git object.
 //
-// In the experimental SHA256 build the layout mirrors libgit2's git_oid struct
-// (a leading type byte followed by a GIT_OID_MAX_SIZE-byte id), so it can still
-// be compared with == and used as a map key, and toC()/newOidFromC() remain
-// zero-copy.
+// The layout mirrors libgit2's promoted git_oid struct: a leading type byte
+// followed by a GIT_OID_MAX_SIZE-byte id. Both SHA1 and SHA256 are supported;
+// SHA1 remains the default. Oid is comparable and can be used as a map key, and
+// toC()/newOidFromC() remain zero-copy.
 //
-// NOTE: unlike the default build, Oid is NOT a [20]byte array here; do not index
-// or slice it directly. Use Bytes(), String() and Type() instead.
+// Oid is no longer a [20]byte array. Do not index or slice it directly; use
+// Bytes(), String() and Type() instead.
 type Oid struct {
 	kind uint8    // mirrors C git_oid.type (git_oid_t)
-	id   [32]byte // GIT_OID_MAX_SIZE under EXPERIMENTAL_SHA256
+	id   [32]byte // GIT_OID_MAX_SIZE
 }
 
 func init() {
 	// Guard against any future divergence between the Go and C struct layouts:
 	// the zero-copy toC()/newOidFromC() conversions rely on them matching.
 	if unsafe.Sizeof(Oid{}) != unsafe.Sizeof(C.git_oid{}) {
-		panic("git2go: Oid layout does not match C git_oid; rebuild libgit2 with -DEXPERIMENTAL_SHA256=ON")
+		panic("git2go: Oid layout does not match the promoted C git_oid ABI")
 	}
 	if len(Oid{}.id) != int(C.GIT_OID_MAX_SIZE) {
 		panic("git2go: unexpected GIT_OID_MAX_SIZE")

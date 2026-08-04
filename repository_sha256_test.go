@@ -1,18 +1,13 @@
-//go:build git_experimental_sha256
-// +build git_experimental_sha256
-
 package git
 
-// End-to-end tests for the experimental SHA256 build. These only compile and
-// run when git2go is built with the `git_experimental_sha256` tag AND linked
-// against a libgit2 built with `-DEXPERIMENTAL_SHA256=ON`. They exercise the
-// full create->write->commit->lookup loop on a real SHA256 repository, which is
-// where the `git_oid` type-prefix/32-byte layout assumptions are most likely to
-// break if a binding is mis-wired.
+// End-to-end tests for SHA256 support. They exercise the full
+// create->write->commit->lookup loop on a real SHA256 repository, which is where
+// git_oid type-prefix/32-byte layout assumptions are most likely to break if a
+// binding is mis-wired.
 //
 // Run with, e.g.:
-//   EXPERIMENTAL_SHA256=ON ./script/build-libgit2.sh
-//   go test -tags "static git_experimental_sha256" -run SHA256 -v .
+//   ./script/build-libgit2.sh --static
+//   go test -tags static -run SHA256 -v .
 
 import (
 	"io/ioutil"

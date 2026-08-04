@@ -313,7 +313,7 @@ make test-static-sha256          # -tags "static git_experimental_sha256"
 make test-static-sha256-next     # -tags "static git_experimental_sha256 libgit2_next"
 ```
 
-> 验证边界：`libgit2_next` 路径的 C 侧调用均已依据 **libgit2 main 本地头文件**（子模块临时切至 `ddf3b5c8`）逐一核实签名（`git_oid_from_prefix/from_raw`、`git_odb_new_ext`、`git_index_new_ext/open_ext`、`git_diff_from_buffer_ext`、`git_object_id_from_buffer`、`git_repository_oid_type`）。`make test-static-sha256-next` 的实机编译+运行需在开启 `EXPERIMENTAL_SHA256=ON` 的 main 库上执行（由使用者验证）。默认（overload）路径的编译与 SHA256 端到端测试此前已通过。
+> 验证边界：`libgit2_next` 路径最初依据 `ddf3b5c8` 的本地头文件完成签名核实；子模块现已更新并固定到 **转正后的 `main @ 939362a3`**。在该基线上，`git_oid_from_prefix/from_raw`、`git_odb_new_ext`、`git_index_new_ext/open_ext`、`git_diff_from_buffer_ext`、`git_object_id_from_buffer`、`git_repository_oid_type` 均已成为无实验宏门控的正式 API；通过常规 `libgit2.pc` 接线后，全量测试已实机通过。1.9.x overload 兼容路径也已单独复验通过。
 
 ---
 
@@ -437,7 +437,7 @@ t->parent.oid_type = git_smart__oid_type;   /* 内置装配 */
 三条路径均已在**真实库**上端到端实跑通过：
 
 - **默认（SHA1-only）构建**：`go build ./...`（链接系统 libgit2 1.9.4）通过；`oid_test.go` 全部用例通过；`TestOidZero` 等不回退。默认路径的 shim 走 legacy 无类型函数（`git_oid_fromstrn(out,str,len)` 等），这些在 1.9.x 与 `main` 上签名一致，故对两种子模块基线都兼容。
-- **前瞻推荐：libgit2 `main`（`ddf3b5c8`）+ `libgit2_next`**：`make test-static-sha256-next` 全部通过——`TestSHA256RepositoryOidType`（`git_repository_oid_type`）、`TestSHA256RepositoryOdbWrite`（`git_object_id_from_buffer` 类型化哈希生效）、`TestSHA256RepositoryCommitRoundTrip`（`git_oid_from_prefix`/`_ext` 全链路 round-trip）、`TestSHA256IndexerForOidType` 及 oid 全套。
+- **前瞻推荐：libgit2 `main`（当前 pin：`939362a3`）+ `libgit2_next` 代码路径**：通过常规 `libgit2.pc` 接线后全量测试通过——包含 `TestSHA256RepositoryOidType`（`git_repository_oid_type`）、`TestSHA256RepositoryOdbWrite`（`git_object_id_from_buffer` 类型化哈希生效）、`TestSHA256RepositoryCommitRoundTrip`（`git_oid_from_prefix`/`_ext` 全链路 round-trip）、`TestSHA256IndexerForOidType` 及 oid 全套。注意该 main 已将 SHA256 转正，正式收敛方案见 §4.8。
 - **兼容：libgit2 1.9.4 overload**：`make test-static-sha256` 全部通过（正确跳过 `libgit2_next` 门控的 `OidType` 用例）。
 - **实测发现并修复的 `main` 构建差异**：`USE_HTTPS=OFF` 时 `main` 需显式 `-DUSE_NTLMCLIENT=OFF -DUSE_GSSAPI=OFF`，否则 cmake configure / arm64 链接失败（缺 `gss_*` 符号）；已并入 `build-libgit2.sh`（对 1.9.x 亦安全）。
 - 受影响但**无需改动**的文件：`merge.go`/`graph.go`（`[]C.git_oid` 由 cgo 自动按真实结构体尺寸计算步长）、`repository.go` 的 `CreateCommitFromIds`（指针数组步长用 `unsafe.Sizeof` 指针尺寸）、`tag.go`/`note.go`/`tree.go`/`rebase.go`/`stash.go`（回调经统一收口的 `newOidFromC` 自适应）。
@@ -504,30 +504,33 @@ SHA256 在上游"转正"后，`git_oid` 的 ABI 与解析函数 arity 将统一�
 
 ---
 
-### 4.8 转正后的收敛方案（阶段四，触发条件已满足）
+### 4.8 转正后的两步收敛方案（阶段四）
 
-§1.8 确认 SHA256 已转正，§4.6 的触发条件 1 与 3 同时满足。基于实测（`libgit2_next` 路径对
-转正版 main 编译通过且全量测试全绿），收敛方案如下。
+§1.8 确认 SHA256 已转正，§4.6 的触发条件 1 与 3 同时满足。SHA1 **没有被移除**：
+`GIT_OID_SHA1`、SHA1 尺寸宏与 SHA1-only 便利解析函数仍在，`GIT_OID_DEFAULT` 仍为 SHA1。
+收敛的是 ABI 与构建路径，不是删除 SHA1。
 
-**核心决策**：以 `oid_sha256.go` 的表示为**唯一**表示。上游 `git_oid` 已无条件带type 字节，
-`Oid [20]byte` 不再对应任何真实 ABI，必须废弃。
+#### 第一步：代码与构建收敛（本分支已完成）
 
-| 收敛动作 |涉及文件 | 说明 |
-|---|---|---|
-| `Oid` 合并为带 type 的 32 字节结构 | 删`oid_default.go`，`oid_sha256.go` 去 tag 并入 `oid.go` | **破坏性变更**：`Oid` 不再是 `[20]byte`，不可 `oid[:]`/索引 |
-| `wrapper.c` 折叠为单一形态 | `wrapper.c` | 删除全部 `#ifdef GIT_EXPERIMENTAL_SHA256` 与 `GIT2GO_LIBGIT2_OID_EXT_API` 嵌套，仅保留 `_ext`/`_from_` 调用；`git_odb_hash` 统一走 `git_object_id_from_buffer` |
-| 删除 tag 注入与降级实现 | 删 `sha256_experimental.go`、`libgit2_next.go`、`sha256_default.go` | 宏已不存在，双向 ABI 守卫与默认构建的 SHA256 降级实现同时失去意义 |
-| 构建入口收敛 | 删 `Build_bundled_static_sha256.go`；`Build_bundled_static.go` 去掉 `!git_experimental_sha256` 约束 | 转正后产物即常规 `libgit2.a` / `libgit2.pc` |
-| 构建脚本清理 | `script/build-libgit2.sh` | 移除 `EXPERIMENTAL_SHA256` 开关、`-experimental`兼容软链、API 形态探测提示；**保留** `-I` 优先修复（见进度文档 N1）|
-| SHA256 API 转为常规 API | `sha256_api.go` → 并入 `repository.go`/`odb.go`/`index.go`/`diff.go`/`indexer.go` | `Repository.OidType`、`Odb.HashWithType`、`NewIndexWithOidType`、`OpenIndexWithOidType`、`DiffFromBufferWithOidType`、`NewIndexerForOidType`、`InitRepositoryWithOidType`、`NewOidFromBytesWithType` 去门控 |
-| 测试去门控 | `repository_sha256_test.go`、`oid_sha256_test.go`、`repository_oidtype_next_test.go`、`oid_test.go` | 合并为常规测试；`oid_default` 专属断言删除 |
-| CI 收敛 | `.github/workflows/ci.yml` | 三个 SHA256 相关 job 合为一；`check-oid-abi-guard` 删除（宏已不存在，守卫无法触发）|
-| 版本守卫 | `Build_bundled_static.go`、`Build_system_*.go` | 当前限制 `LIBGIT2_VER_MINOR == 9`；main 仍报 1.9.0，转正版正式发布时（可能为 **2.0**）需同步放宽 |
-| 模块主版本 | `go.mod`、README 映射表 | `Oid` 类型变更属破坏性 API 变更，需评估 `v35→ v36` |
+- `Oid` 统一为带 type 的 32 字节结构，运行时同时表示 SHA1/SHA256；SHA1 仍为默认。
+- `wrapper.c` 删除实验宏/next 双分支，仅保留转正后的 typed / `_ext` API。
+- 删除 `oid_default.go`、`sha256_default.go`、`sha256_experimental.go`、`libgit2_next.go`、
+  `Build_bundled_static_sha256.go`；类型感知 API 与测试全部去 build tag。
+- 常规 `Build_bundled_static.go` / `libgit2.a` / `libgit2.pc` 成为唯一 bundled-static 路径。
+- `build-libgit2.sh` 移除实验开关、实验布局软链与 API 形态探测，保留 in-tree `-I` 优先修复。
+- CI 删除实验专属 job 与已失效的宏错配守卫；常规 static job覆盖 SHA1 与 SHA256 全量用例。
+- system/static/dynamic 构建增加 `GIT_OID_SHA256_SIZE` 能力守卫，旧 20 字节 `git_oid` ABI
+  会在编译期给出明确错误。
 
-**执行前置**：上游尚未发布转正版本（`main` 的 `version.h` 仍为 1.9.0）。建议在上游打出正式
-版本号后再落地收敛，以便同时确定版本守卫与模块主版本；在此之前 `libgit2_next` 路径已可用于
-对接 main。
+#### 第二步：正式版本发布时收敛（等待上游正式版本号）
+
+- 上游 main 的 `version.h` 目前仍报告 1.9.0，故暂时保留 `LIBGIT2_VER_MAJOR/MINOR == 1.9`
+  版本范围；上游发布包含转正 SHA256 的正式版本后，更新三个 `Build_*.go` 的版本守卫。
+- 决定 git2go 模块主版本（建议从 `v35` 提升），同步 `go.mod` 与 README 版本映射表。
+- 在最终 Linux / macOS / Windows CI 上验证正式发布包的 dynamic / system-static / bundled-static。
+- 将 `docs/sha256-breaking-changes.md` 的清单整理进正式 CHANGELOG / release notes。
+
+完整 breaking changes 与迁移示例见 `docs/sha256-breaking-changes.md`。
 
 ---
 

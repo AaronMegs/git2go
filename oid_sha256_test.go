@@ -1,6 +1,3 @@
-//go:build git_experimental_sha256
-// +build git_experimental_sha256
-
 package git
 
 import (
@@ -49,9 +46,19 @@ func TestNewOidTypeInferenceFromLength(t *testing.T) {
 		t.Errorf("64-hex string should infer SHA256, got %d", sha256.Type())
 	}
 
-	// Different oid types must never compare equal.
+	// Different oid types must never compare equal and comparison must order by
+	// type before examining raw bytes, matching libgit2.
 	if sha1.Equal(sha256) {
 		t.Error("SHA1 and SHA256 oids must not be equal")
+	}
+	if got := sha1.Cmp(sha256); got >= 0 {
+		t.Errorf("SHA1.Cmp(SHA256) = %d, want < 0", got)
+	}
+	if got := sha256.Cmp(sha1); got <= 0 {
+		t.Errorf("SHA256.Cmp(SHA1) = %d, want > 0", got)
+	}
+	if got := sha1.NCmp(sha256, 1); got >= 0 {
+		t.Errorf("SHA1.NCmp(SHA256, 1) = %d, want < 0", got)
 	}
 }
 

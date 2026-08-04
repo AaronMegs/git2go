@@ -1,6 +1,3 @@
-//go:build git_experimental_sha256
-// +build git_experimental_sha256
-
 package git
 
 /*
@@ -16,19 +13,13 @@ import (
 	"unsafe"
 )
 
-// This file collects the public, SHA256-aware helpers for the experimental
-// SHA256 build. sha256_default.go provides the same API surface in the default
-// (SHA1-only) build — where requesting ObjectIdSHA256 returns an explicit error
-// instead of silently degrading — so that a single source tree compiles either
-// way.
+// This file collects the public object-id-type-aware helpers. SHA1 and SHA256
+// are both supported by the promoted libgit2 API; SHA1 remains the default.
 
 // OidType reports the object id type (ObjectIdSHA1 or ObjectIdSHA256) that this
 // repository uses for its objects.
 //
-// This maps to libgit2's git_repository_oid_type(), which exists on libgit2
-// main. When built against a libgit2 that predates that getter (e.g. the pinned
-// 1.9.x without the `libgit2_next` tag), the underlying shim reports SHA1, which
-// is the only type such a libgit2 supports.
+// This maps to libgit2's git_repository_oid_type().
 func (v *Repository) OidType() ObjectIdType {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()

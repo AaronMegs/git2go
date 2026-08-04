@@ -57,23 +57,3 @@ test-static: static-build/install/lib/libgit2.a
 
 install-static: static-build/install/lib/libgit2.a
 	go install --tags "static" ./...
-
-# Experimental SHA256 static library
-# ==================================
-# Builds a libgit2 with -DEXPERIMENTAL_SHA256=ON (produces libgit2-experimental.a
-# and an -experimental include layout; the build script adds git2.h/git2 compat
-# symlinks). Use test-static-sha256 for a libgit2 with the 1.9.x experimental
-# API, or test-static-sha256-next when linking a libgit2 main (which uses the
-# git_oid_from_*/_ext API shape and requires the libgit2_next tag).
-.PHONY: build-libgit2-static-sha256
-build-libgit2-static-sha256:
-	EXPERIMENTAL_SHA256=ON ./script/build-libgit2.sh --static
-
-static-build/install/lib/libgit2-experimental.a:
-	EXPERIMENTAL_SHA256=ON ./script/build-libgit2.sh --static
-
-test-static-sha256: static-build/install/lib/libgit2-experimental.a
-	go test --tags "static git_experimental_sha256" $(TEST_ARGS) ./...
-
-test-static-sha256-next: static-build/install/lib/libgit2-experimental.a
-	go test --tags "static git_experimental_sha256 libgit2_next" $(TEST_ARGS) ./...

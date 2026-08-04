@@ -27,9 +27,8 @@ type Indexer struct {
 
 // NewIndexer creates a new indexer instance.
 //
-// The object id type defaults to the libgit2 default (SHA1). To create an
-// indexer for a SHA256 packfile, use NewIndexerForOidType (only available in
-// the experimental SHA256 build).
+// The object id type defaults to SHA1. To create an indexer for a SHA256
+// packfile, use NewIndexerForOidType.
 func NewIndexer(packfilePath string, odb *Odb, callback TransferProgressCallback) (indexer *Indexer, err error) {
 	return newIndexerWithOidType(packfilePath, odb, 0, callback)
 }

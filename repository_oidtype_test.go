@@ -1,12 +1,6 @@
-//go:build git_experimental_sha256 && libgit2_next
-// +build git_experimental_sha256,libgit2_next
-
 package git
 
-// Verifies Repository.OidType() against libgit2 main's git_repository_oid_type.
-// Gated by the libgit2_next tag because that getter only exists on a main-based
-// libgit2 (the pinned 1.9.x lacks the symbol; without this tag the shim reports
-// SHA1 unconditionally, so the assertion would not be meaningful there).
+// Verifies Repository.OidType() against libgit2's git_repository_oid_type.
 
 import "testing"
 
@@ -30,9 +24,6 @@ func TestSHA256RepositoryOidType(t *testing.T) {
 // repository hashes with that repository's object format, i.e. Odb.Hash on a
 // SHA256 repository yields a SHA256 id matching what Write() stores, while a
 // standalone Odb keeps hashing as SHA1.
-//
-// Gated by libgit2_next because the plumbing relies on Repository.OidType(),
-// which can only report the real type on a main-based libgit2.
 func TestSHA256OdbHashFollowsRepository(t *testing.T) {
 	repo := createTestRepoSHA256(t)
 	defer cleanupTestRepo(t, repo)

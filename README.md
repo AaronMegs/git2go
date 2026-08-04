@@ -82,39 +82,30 @@ One thing to take into account is that since Go expects the `pkg-config` file to
 
     replace github.com/libgit2/git2go/v35 => ../../libgit2/git2go
 
-### Experimental SHA256 support
+### SHA1 and SHA256 object IDs
 
-SHA256 object IDs are still an experimental, opt-in feature in libgit2 (gated by
-its `EXPERIMENTAL_SHA256` build option). git2go's SHA256 bindings are aligned
-against the libgit2 `main` branch (the vendored submodule is pinned to a `main`
-commit) so that this project is ready for a future libgit2 2.x / SHA256
-promotion, while the default build remains compatible with libgit2 1.9.x.
+The vendored libgit2 `main` baseline has promoted SHA256 to a regular feature.
+Both SHA1 and SHA256 are supported in the same build; SHA1 remains the default.
+No experimental CMake option or Go build tag is required.
 
-- **Default (SHA1-only) build**: unchanged. Works against both libgit2 1.9.x and
-  `main`; no extra tags needed. The `Oid` type and its API are byte-for-byte the
-  same as before.
-- **Experimental SHA256 build**: build libgit2 with `EXPERIMENTAL_SHA256=ON` and
-  add the `git_experimental_sha256` tag. Because libgit2 refactored the
-  experimental object-id API between 1.9.x (overloaded legacy functions) and
-  `main` (new `git_oid_from_*` / `*_ext` functions) — and the two cannot be told
-  apart by version number — you must additionally pass the `libgit2_next` tag
-  when linking a `main`-based libgit2:
+`Oid` now mirrors libgit2's typed object-id layout and can hold either format.
+Use `Oid.Type()` to inspect the format, `Bytes()` for the raw bytes, and
+`String()` for the 40-hex (SHA1) or 64-hex (SHA256) representation. Do not index
+or slice an `Oid` directly.
 
-      # against libgit2 main (recommended, forward-looking)
-      make test-static-sha256-next
-      # equivalently:
-      go test -tags "static git_experimental_sha256 libgit2_next" ./...
+Repositories still default to SHA1:
 
-      # against a libgit2 1.9.x experimental build
-      make test-static-sha256
-      # equivalently:
-      go test -tags "static git_experimental_sha256" ./...
+    repo, err := git.InitRepository(path, false)
 
-  The build script (`script/build-libgit2.sh`, run via
-  `EXPERIMENTAL_SHA256=ON ... --static`) probes the installed headers and prints
-  which of the two `make` targets to use. See `docs/sha256-compat-design.md` for
-  the full design, the upstream API divergence, and the SHA256-promotion
-  convergence plan.
+Create a SHA256 repository explicitly:
+
+    repo, err := git.InitRepositoryWithOidType(path, false, git.ObjectIdSHA256)
+
+The type-aware APIs (`HashWithType`, `NewIndexWithOidType`,
+`OpenIndexWithOidType`, `DiffFromBufferWithOidType`, and
+`NewIndexerForOidType`) are available in every build. See
+`docs/sha256-compat-design.md` for implementation details and
+`docs/sha256-breaking-changes.md` for migration guidance.
 
 Parallelism and network operations
 ----------------------------------

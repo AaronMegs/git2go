@@ -19,16 +19,20 @@ const (
 	// available.
 	ObjectIdSHA1 ObjectIdType = 1
 
-	// ObjectIdSHA256 is the SHA256 object id type (32-byte / 64-hex). It is only
-	// usable when git2go is built with the `git_experimental_sha256` build tag
-	// against a libgit2 compiled with `-DEXPERIMENTAL_SHA256=ON`. In the default
-	// build all object ids are ObjectIdSHA1.
+	// ObjectIdSHA256 is the SHA256 object id type (32-byte / 64-hex).
 	ObjectIdSHA256 ObjectIdType = 2
 )
 
-// Cmp compares the raw bytes of the two object ids, returning a value following
-// the bytes.Compare convention (-1, 0 or +1).
+// Cmp compares oid to oid2, ordering first by object id type and then by raw
+// bytes. The return value follows the bytes.Compare convention (-1, 0 or +1)
+// and mirrors libgit2's git_oid_cmp semantics.
 func (oid *Oid) Cmp(oid2 *Oid) int {
+	if oid.Type() < oid2.Type() {
+		return -1
+	}
+	if oid.Type() > oid2.Type() {
+		return 1
+	}
 	return bytes.Compare(oid.Bytes(), oid2.Bytes())
 }
 
@@ -49,8 +53,16 @@ func (oid *Oid) Equal(oid2 *Oid) bool {
 	return oid.Type() == oid2.Type() && bytes.Equal(oid.Bytes(), oid2.Bytes())
 }
 
-// NCmp compares the first n bytes of the two object ids.
+// NCmp compares the first n bytes of the two object ids after ordering by object
+// id type, mirroring libgit2's git_oid_ncmp semantics.
 func (oid *Oid) NCmp(oid2 *Oid, n uint) int {
+	if oid.Type() < oid2.Type() {
+		return -1
+	}
+	if oid.Type() > oid2.Type() {
+		return 1
+	}
+
 	a := oid.Bytes()
 	b := oid2.Bytes()
 	if int(n) > len(a) {

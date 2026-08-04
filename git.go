@@ -206,8 +206,7 @@ func ReInit() {
 	initLibGit2()
 }
 
-// Oid and its associated helpers live in oid.go (build-agnostic) and the
-// build-tag-gated oid_default.go / oid_sha256.go.
+// Oid and its associated helpers live in oid.go and oid_typed.go.
 
 type GitError struct {
 	Message string
