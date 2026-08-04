@@ -2,7 +2,6 @@ package git
 
 import (
 	"io"
-	"reflect"
 	"testing"
 )
 
@@ -66,7 +65,19 @@ func TestTransport(t *testing.T) {
 		{&Oid{}, "HEAD"},
 		{&Oid{}, "refs/heads/master"},
 	}
-	if !reflect.DeepEqual(expectedRemoteHeads, remoteHeads) {
+	// Compare field by field rather than with reflect.DeepEqual: in the
+	// SHA256-capable build an Oid carries a type byte, so a zero-valued Oid{} is
+	// not byte-identical to the all-zeroes SHA1 id libgit2 returns even though the
+	// two are semantically the same id. Oid.Equal handles that.
+	if len(expectedRemoteHeads) != len(remoteHeads) {
 		t.Errorf("mismatched remote heads. expected %v, got %v", expectedRemoteHeads, remoteHeads)
+	} else {
+		for i, expected := range expectedRemoteHeads {
+			actual := remoteHeads[i]
+			if expected.Name != actual.Name || !expected.Id.Equal(actual.Id) {
+				t.Errorf("mismatched remote head %d. expected %v (%s), got %v (%s)",
+					i, expected.Name, expected.Id, actual.Name, actual.Id)
+			}
+		}
 	}
 }

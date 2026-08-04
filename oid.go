@@ -39,8 +39,14 @@ func (oid *Oid) Copy() *Oid {
 }
 
 // Equal reports whether the two object ids are identical.
+//
+// Two ids are equal when they have the same type and the same raw bytes. Note
+// that this is deliberately not a plain struct comparison: in the SHA256-capable
+// build an Oid carries a type byte, and a zero-valued Oid{} (type byte unset) is
+// treated as SHA1 so that it still compares equal to the all-zeroes SHA1 id that
+// libgit2 hands out.
 func (oid *Oid) Equal(oid2 *Oid) bool {
-	return *oid == *oid2
+	return oid.Type() == oid2.Type() && bytes.Equal(oid.Bytes(), oid2.Bytes())
 }
 
 // NCmp compares the first n bytes of the two object ids.

@@ -89,7 +89,14 @@ func (oid *Oid) toC() *C.git_oid {
 }
 
 // Type returns the object id type (ObjectIdSHA1 or ObjectIdSHA256).
+//
+// A zero-valued Oid has no type byte set; it is reported as ObjectIdSHA1, which
+// keeps `Oid{}` comparable with the all-zeroes SHA1 id that libgit2 returns (for
+// example for a not-yet-known remote head).
 func (oid *Oid) Type() ObjectIdType {
+	if oid.kind == 0 {
+		return ObjectIdSHA1
+	}
 	return ObjectIdType(oid.kind)
 }
 
@@ -101,7 +108,7 @@ func rawLenForType(t ObjectIdType) int {
 }
 
 func (oid *Oid) rawLen() int {
-	return rawLenForType(ObjectIdType(oid.kind))
+	return rawLenForType(oid.Type())
 }
 
 // Bytes returns a copy of the raw (binary) bytes of the object id (20 bytes for

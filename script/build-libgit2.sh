@@ -82,6 +82,23 @@ if [ "${EXPERIMENTAL_SHA256}" = "ON" ]; then
 	BUILD_EXPERIMENTAL_SHA256="ON"
 fi
 
+# Force libgit2's own headers to win over any libgit2 headers already installed
+# on the build machine.
+#
+# libgit2's bundled xdiff target declares its include directories with cmake's
+# SYSTEM keyword, so they are passed as `-isystem` rather than `-I`. That puts
+# them in the same search chain as the compiler's builtin system directories
+# (notably /usr/local/include on macOS), so a stale libgit2 installed there can
+# be picked up instead of the in-tree headers. When that happens the xdiff
+# objects are compiled against a *different* `git_allocator` layout than the rest
+# of the library (e.g. libgit2 1.5.x had9 function pointers, current libgit2 has
+# 3), and the first xdiff call dereferences garbage as `gfree` and crashes with
+# SIGBUS inside xdl_prepare_env.
+#
+# Passing the in-tree include directory as a plain `-I` via CMAKE_C_FLAGS makes it
+# take precedence over every `-isystem`/builtin directory for all targets.
+LIBGIT2_INTREE_INCLUDE="-I${VENDORED_PATH}/include"
+
 mkdir -p "${BUILD_PATH}/build" &&
 cd "${BUILD_PATH}/build" &&
 cmake -DTHREADSAFE=ON \
@@ -94,7 +111,7 @@ cmake -DTHREADSAFE=ON \
       -DUSE_NTLMCLIENT=OFF \
       -DUSE_GSSAPI=OFF \
       -DEXPERIMENTAL_SHA256="${BUILD_EXPERIMENTAL_SHA256}" \
-      -DCMAKE_C_FLAGS=-fPIC \
+      -DCMAKE_C_FLAGS="-fPIC ${LIBGIT2_INTREE_INCLUDE}" \
       -DCMAKE_BUILD_TYPE="RelWithDebInfo" \
       -DCMAKE_INSTALL_PREFIX="${BUILD_INSTALL_PREFIX}" \
       -DCMAKE_INSTALL_LIBDIR="lib" \
