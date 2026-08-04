@@ -86,3 +86,23 @@ func (v *Odb) HashWithType(data []byte, otype ObjectType, oidType ObjectIdType) 
 func NewIndexerForOidType(packfilePath string, odb *Odb, oidType ObjectIdType, callback TransferProgressCallback) (*Indexer, error) {
 	return newIndexerWithOidType(packfilePath, odb, C.int(oidType), callback)
 }
+
+// NewIndexWithOidType allocates a new in-memory index holding object ids of the
+// given type. It won't be associated with any file on the filesystem or
+// repository.
+func NewIndexWithOidType(oidType ObjectIdType) (*Index, error) {
+	return newIndexWithOidType(C.int(oidType))
+}
+
+// OpenIndexWithOidType creates a new index at the given path, holding object ids
+// of the given type. If the file does not exist it will be created when Write()
+// is called.
+func OpenIndexWithOidType(path string, oidType ObjectIdType) (*Index, error) {
+	return openIndexWithOidType(path, C.int(oidType))
+}
+
+// DiffFromBufferWithOidType reads the contents of a git patch file that uses the
+// given object id type into a Diff object.
+func DiffFromBufferWithOidType(buffer []byte, repo *Repository, oidType ObjectIdType) (*Diff, error) {
+	return diffFromBufferWithOidType(buffer, repo, C.int(oidType))
+}

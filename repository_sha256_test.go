@@ -153,3 +153,73 @@ func TestSHA256IndexerForOidType(t *testing.T) {
 	checkFatal(t, err)
 	defer idx.Free()
 }
+
+// TestSHA256IndexWithOidType verifies the SHA256-aware index constructors: an
+// in-memory SHA256 index can write a tree into a SHA256 repository, and a
+// standalone (repository-less) open of a real SHA256 index file yields 64-hex
+// entry ids. Both paths go through git_index_options.oid_type, which is silently
+// SHA1 if the option is not plumbed through.
+func TestSHA256IndexWithOidType(t *testing.T) {
+	repo := createTestRepoSHA256(t)
+	defer cleanupTestRepo(t, repo)
+
+	// Populate and persist the repository index so there is a real SHA256
+	// index file on disk to reopen standalone.
+	repoIdx, err := repo.Index()
+	checkFatal(t, err)
+	checkFatal(t, repoIdx.AddByPath("README"))
+	checkFatal(t, repoIdx.Write())
+	indexPath := repoIdx.Path()
+
+	reopened, err := OpenIndexWithOidType(indexPath, ObjectIdSHA256)
+	checkFatal(t, err)
+	defer reopened.Free()
+
+	entry, err := reopened.EntryByPath("README", 0)
+	checkFatal(t, err)
+	if entry.Id.Type() != ObjectIdSHA256 {
+		t.Errorf("standalone index entry type = %d, want SHA256", entry.Id.Type())
+	}
+	if got := len(entry.Id.String()); got != 64 {
+		t.Errorf("standalone index entry id is %d hex chars, want 64", got)
+	}
+
+	// An in-memory SHA256 index must be able to write a tree into the SHA256
+	// repository.
+	mem, err := NewIndexWithOidType(ObjectIdSHA256)
+	checkFatal(t, err)
+	defer mem.Free()
+
+	treeID, err := mem.WriteTreeTo(repo)
+	checkFatal(t, err)
+	if treeID.Type() != ObjectIdSHA256 {
+		t.Errorf("tree id type = %d, want SHA256", treeID.Type())
+	}
+}
+
+// TestSHA256DiffFromBufferWithOidType parses a patch whose index line carries
+// 64-hexids. Parsing it as SHA1 must fail, which proves
+// git_diff_parse_options.oid_type is actually honored.
+func TestSHA256DiffFromBufferWithOidType(t *testing.T) {
+	const patch = "diff --git a/README b/README\n" +
+		"index 0000000000000000000000000000000000000000000000000000000000000000..1111111111111111111111111111111111111111111111111111111111111111 100644\n" +
+		"--- a/README\n" +
+		"+++ b/README\n" +
+		"@@ -1 +1 @@\n" +
+		"-foo\n" +
+		"+bar\n"
+
+	diff, err := DiffFromBufferWithOidType([]byte(patch), nil, ObjectIdSHA256)
+	checkFatal(t, err)
+	defer diff.Free()
+
+	n, err := diff.NumDeltas()
+	checkFatal(t, err)
+	if n != 1 {
+		t.Errorf("NumDeltas() = %d, want 1", n)
+	}
+
+	if _, err := DiffFromBufferWithOidType([]byte(patch), nil, ObjectIdSHA1); err == nil {
+		t.Error("parsing a 64-hex patch as SHA1 unexpectedly succeeded")
+	}
+}

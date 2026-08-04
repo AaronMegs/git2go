@@ -669,41 +669,52 @@ int _go_git_odb_new(git_odb **out)
 #endif
 }
 
-int _go_git_index_new(git_index **out)
+int _go_git_index_new(git_index **out, int oid_type)
 {
 #ifdef GIT_EXPERIMENTAL_SHA256
+	git_index_options opts = GIT_INDEX_OPTIONS_INIT;
+	// GIT_INDEX_OPTIONS_INIT leaves oid_type at 0, which is not a valid
+	// git_oid_t; always fill in a concrete type.
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
 # if defined(GIT2GO_LIBGIT2_OID_EXT_API)
-	return git_index_new_ext(out, NULL);
+	return git_index_new_ext(out, &opts);
 # else
-	return git_index_new(out, NULL);
+	return git_index_new(out, &opts);
 # endif
 #else
+	(void)oid_type;
 	return git_index_new(out);
 #endif
 }
 
-int _go_git_index_open(git_index **out, const char *index_path)
+int _go_git_index_open(git_index **out, const char *index_path, int oid_type)
 {
 #ifdef GIT_EXPERIMENTAL_SHA256
+	git_index_options opts = GIT_INDEX_OPTIONS_INIT;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
 # if defined(GIT2GO_LIBGIT2_OID_EXT_API)
-	return git_index_open_ext(out, index_path, NULL);
+	return git_index_open_ext(out, index_path, &opts);
 # else
-	return git_index_open(out, index_path, NULL);
+	return git_index_open(out, index_path, &opts);
 # endif
 #else
+	(void)oid_type;
 	return git_index_open(out, index_path);
 #endif
 }
 
-int _go_git_diff_from_buffer(git_diff **out, const char *content, size_t content_len)
+int _go_git_diff_from_buffer(git_diff **out, const char *content, size_t content_len, int oid_type)
 {
 #ifdef GIT_EXPERIMENTAL_SHA256
+	git_diff_parse_options opts = GIT_DIFF_PARSE_OPTIONS_INIT;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
 # if defined(GIT2GO_LIBGIT2_OID_EXT_API)
-	return git_diff_from_buffer_ext(out, content, content_len, NULL);
+	return git_diff_from_buffer_ext(out, content, content_len, &opts);
 # else
-	return git_diff_from_buffer(out, content, content_len, NULL);
+	return git_diff_from_buffer(out, content, content_len, &opts);
 # endif
 #else
+	(void)oid_type;
 	return git_diff_from_buffer(out, content, content_len);
 #endif
 }

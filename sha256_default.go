@@ -94,3 +94,31 @@ func NewIndexerForOidType(packfilePath string, odb *Odb, oidType ObjectIdType, c
 	}
 	return newIndexerWithOidType(packfilePath, odb, 0, callback)
 }
+
+// NewIndexWithOidType allocates a new in-memory index holding object ids of the
+// given type. In the default build only ObjectIdSHA1 is supported.
+func NewIndexWithOidType(oidType ObjectIdType) (*Index, error) {
+	if oidType != ObjectIdSHA1 {
+		return nil, errSHA256Unsupported("NewIndexWithOidType")
+	}
+	return newIndexWithOidType(0)
+}
+
+// OpenIndexWithOidType creates a new index at the given path, holding object ids
+// of the given type. In the default build only ObjectIdSHA1 is supported.
+func OpenIndexWithOidType(path string, oidType ObjectIdType) (*Index, error) {
+	if oidType != ObjectIdSHA1 {
+		return nil, errSHA256Unsupported("OpenIndexWithOidType")
+	}
+	return openIndexWithOidType(path, 0)
+}
+
+// DiffFromBufferWithOidType reads the contents of a git patch file that uses the
+// given object id type into a Diff object. In the default build only
+// ObjectIdSHA1 is supported.
+func DiffFromBufferWithOidType(buffer []byte, repo *Repository, oidType ObjectIdType) (*Diff, error) {
+	if oidType != ObjectIdSHA1 {
+		return nil, errSHA256Unsupported("DiffFromBufferWithOidType")
+	}
+	return diffFromBufferWithOidType(buffer, repo, 0)
+}
