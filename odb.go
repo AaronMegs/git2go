@@ -7,6 +7,7 @@ extern int _go_git_odb_backend_one_pack(git_odb_backend **out, const char *index
 extern int _go_git_odb_backend_loose(git_odb_backend **out, const char *objects_dir, int compression_level, int do_fsync, unsigned int dir_mode, unsigned int file_mode, int oid_type);
 extern int _go_git_odb_new(git_odb **out, int oid_type);
 extern int _go_git_odb_hash(git_oid *out, const void *data, size_t len, git_object_t obj_type, int oid_type);
+extern int _go_git_object_id_from_file(git_oid *out, const char *path, git_object_t obj_type, int oid_type);
 extern int _go_git_odb_foreach(git_odb *db, void *payload);
 extern void _go_git_odb_backend_free(git_odb_backend *backend);
 extern int _go_git_odb_write_pack(git_odb_writepack **out, git_odb *db, void *progress_payload);
@@ -20,6 +21,7 @@ import (
 	"os"
 	"reflect"
 	"runtime"
+	"strings"
 	"unsafe"
 )
 
@@ -292,6 +294,37 @@ func (v *Odb) Hash(data []byte, otype ObjectType) (oid *Oid, err error) {
 	// Route through the typed shim using the object database's configured format.
 	ret := C._go_git_odb_hash(oid.toC(), unsafe.Pointer(&data[0]), size, C.git_object_t(otype), v.oidType)
 	runtime.KeepAlive(data)
+	runtime.KeepAlive(v)
+	if ret < 0 {
+		return nil, MakeGitError(ret)
+	}
+	return oid, nil
+}
+
+// HashFile determines the object id of the raw contents of a file using this
+// object database's configured object id type. It does not apply repository
+// filters (for example line-ending conversion).
+func (v *Odb) HashFile(path string, otype ObjectType) (*Oid, error) {
+	return v.hashFileWithOidType(path, otype, ObjectIdType(v.oidType))
+}
+
+func (v *Odb) hashFileWithOidType(path string, otype ObjectType, oidType ObjectIdType) (*Oid, error) {
+	if strings.IndexByte(path, 0) >= 0 {
+		return nil, &GitError{
+			Message: "object file path contains a NUL byte",
+			Class:   ErrorClassInvalid,
+			Code:    ErrorCodeInvalid,
+		}
+	}
+
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	oid := new(Oid)
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	ret := C._go_git_object_id_from_file(oid.toC(), cpath, C.git_object_t(otype), C.int(oidType))
 	runtime.KeepAlive(v)
 	if ret < 0 {
 		return nil, MakeGitError(ret)

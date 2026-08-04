@@ -19,6 +19,7 @@
 | 5 | 增加 SHA256 push/receive-pack 测试 | ✅ 已完成（本地真实 receive-pack；外部网络服务留待第 7 项） |
 | 6 | 审计 deprecated libgit2 API，并验证 `DEPRECATE_HARD=ON` | ✅ 已完成 |
 | 7 | 等待上游正式版本、更新守卫和跨平台正式包验证 | ⏸ 外部阻塞（最新正式版仍为 v1.9.6） |
+| 8 | 绑定 `git_object_id_from_file` 文件路径类型化 hash | ✅ 已完成 |
 
 ---
 
@@ -195,3 +196,34 @@ SHA256 已转为正式/非实验能力；promoted typed oid 目前只存在于 p
 
 当前可发布范围是 `v36.0.0-pre.N`。Windows 正式 CI 和外部 SSH/HTTP SHA256 push 服务端测试
 也归入本阶段；它们需要可复现的正式包/服务环境，不能用当前本地条件完整闭环。
+
+---
+
+## 8. 文件路径类型化 hash — ✅ 已完成
+
+### API
+
+- `(*Odb).HashFile(path, objectType)`：使用 ODB/Repository 自身对象格式（SHA1 或 SHA256）。
+- `(*Odb).HashFileWithType(path, objectType, oidType)`：显式选择 SHA1/SHA256。
+
+C shim 构造 `git_object_id_options` 并调用转正后的 `git_object_id_from_file`，不再依赖已废弃的
+`git_odb_hashfile`。路径在传给 `C.CString` 前拒绝内嵌 NUL，防止截断成另一个文件。
+
+### 语义边界
+
+与上游一致，该 API 哈希文件的 raw content，不应用 `.gitattributes`、CRLF 等 repository filters；
+需要过滤语义时应使用 repository-aware hash API。
+
+### 验证
+
+新增 `TestHashFileWithOidType`，覆盖：
+
+- SHA256 repository ODB 的 `HashFile` 自动返回 64-hex SHA256；
+- 显式 SHA256 file hash 与 buffer `HashWithType` 完全一致；
+- 显式 SHA1 file hash 为 40-hex 且与 SHA1 buffer hash 一致；
+- standalone `NewOdb()` 的 `HashFile` 继续默认 SHA1；
+- SHA1/SHA256 不相等；
+- 含 NUL 路径和不存在文件均返回错误；
+- 文件名包含空格和 apostrophe、文件内容包含 NUL 字节。
+
+定向测试与 bundled-static 全量测试均通过。

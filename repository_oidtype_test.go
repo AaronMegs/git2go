@@ -63,6 +63,61 @@ func TestSHA256StandaloneOdbWithLooseBackend(t *testing.T) {
 	}
 }
 
+func TestHashFileWithOidType(t *testing.T) {
+	data := []byte{'r', 'a', 'w', 0, 'f', 'i', 'l', 'e', '\n'}
+	path := filepath.Join(t.TempDir(), "blob with 'quote'.bin")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := createTestRepoSHA256(t)
+	defer cleanupTestRepo(t, repo)
+	odb, err := repo.Odb()
+	checkFatal(t, err)
+
+	// HashFile follows the repository ODB's SHA256 format.
+	fromFile, err := odb.HashFile(path, ObjectBlob)
+	checkFatal(t, err)
+	if fromFile.Type() != ObjectIdSHA256 || len(fromFile.String()) != 64 {
+		t.Fatalf("HashFile type=%d hexlen=%d, want SHA256/64", fromFile.Type(), len(fromFile.String()))
+	}
+
+	explicit, err := odb.HashFileWithType(path, ObjectBlob, ObjectIdSHA256)
+	checkFatal(t, err)
+	fromBuffer, err := odb.HashWithType(data, ObjectBlob, ObjectIdSHA256)
+	checkFatal(t, err)
+	if !fromFile.Equal(explicit) || !fromFile.Equal(fromBuffer) {
+		t.Fatalf("file hashes disagree: inferred=%s explicit=%s buffer=%s", fromFile, explicit, fromBuffer)
+	}
+
+	sha1File, err := odb.HashFileWithType(path, ObjectBlob, ObjectIdSHA1)
+	checkFatal(t, err)
+	sha1Buffer, err := odb.HashWithType(data, ObjectBlob, ObjectIdSHA1)
+	checkFatal(t, err)
+	if sha1File.Type() != ObjectIdSHA1 || len(sha1File.String()) != 40 || !sha1File.Equal(sha1Buffer) {
+		t.Fatalf("SHA1 file hash=%s type=%d, want matching 40-hex SHA1", sha1File, sha1File.Type())
+	}
+	if sha1File.Equal(fromFile) {
+		t.Fatal("SHA1 and SHA256 file hashes unexpectedly compare equal")
+	}
+
+	standalone, err := NewOdb()
+	checkFatal(t, err)
+	defer standalone.Free()
+	standaloneHash, err := standalone.HashFile(path, ObjectBlob)
+	checkFatal(t, err)
+	if !standaloneHash.Equal(sha1File) {
+		t.Errorf("standalone HashFile=%s, want default SHA1 %s", standaloneHash, sha1File)
+	}
+
+	if _, err := odb.HashFile(filepath.Join(t.TempDir(), "missing"), ObjectBlob); err == nil {
+		t.Error("HashFile accepted a missing path")
+	}
+	if _, err := odb.HashFileWithType(path+"\x00suffix", ObjectBlob, ObjectIdSHA256); err == nil {
+		t.Error("HashFileWithType accepted a path containing NUL")
+	}
+}
+
 func TestSHA256OdbHashFollowsRepository(t *testing.T) {
 	repo := createTestRepoSHA256(t)
 	defer cleanupTestRepo(t, repo)

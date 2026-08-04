@@ -39,8 +39,9 @@ migration guide.
 - `ObjectIdType`, `ObjectIdSHA1`, `ObjectIdSHA256`, `Oid.Type()` and
   `Oid.Bytes()`.
 - `InitRepositoryWithOidType` and `Repository.OidType`.
-- `Odb.HashWithType`, `NewOdbWithOidType`,
-  `NewOdbBackendLooseWithOidType`, and `NewOdbBackendOnePackWithOidType`.
+- `Odb.HashWithType`, `Odb.HashFile`, `Odb.HashFileWithType`,
+  `NewOdbWithOidType`, `NewOdbBackendLooseWithOidType`, and
+  `NewOdbBackendOnePackWithOidType`.
 - `NewIndexWithOidType`, `OpenIndexWithOidType`,
   `DiffFromBufferWithOidType`, and `NewIndexerForOidType`.
 - End-to-end SHA256 coverage for repository creation, ODB read/write/hash,

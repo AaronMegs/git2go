@@ -106,9 +106,11 @@ Create a SHA256 repository explicitly:
 
 The type-aware APIs (`NewOdbWithOidType`,
 `NewOdbBackendLooseWithOidType`, `NewOdbBackendOnePackWithOidType`,
-`HashWithType`, `NewIndexWithOidType`, `OpenIndexWithOidType`,
-`DiffFromBufferWithOidType`, and `NewIndexerForOidType`) are available in every
-build. See
+`HashWithType`, `HashFileWithType`, `NewIndexWithOidType`,
+`OpenIndexWithOidType`, `DiffFromBufferWithOidType`, and
+`NewIndexerForOidType`) are available in every build. `Odb.HashFile` follows the
+ODB/repository object format, while `HashFileWithType` selects SHA1 or SHA256
+explicitly; both hash raw file contents without repository filters. See
 `docs/sha256-compat-design.md` for implementation details and
 `docs/sha256-breaking-changes.md` for migration guidance.
 

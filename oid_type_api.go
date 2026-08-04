@@ -91,6 +91,14 @@ func (v *Odb) HashWithType(data []byte, otype ObjectType, oidType ObjectIdType) 
 	return oid, nil
 }
 
+// HashFileWithType determines the object id of the raw contents of a file using
+// the specified object id type. It does not apply repository filters (for
+// example line-ending conversion); use repository-aware hashing when filters
+// must be applied.
+func (v *Odb) HashFileWithType(path string, otype ObjectType, oidType ObjectIdType) (*Oid, error) {
+	return v.hashFileWithOidType(path, otype, oidType)
+}
+
 // NewIndexerForOidType creates a new indexer instance for a packfile of the
 // given object id type (ObjectIdSHA1 or ObjectIdSHA256).
 func NewIndexerForOidType(packfilePath string, odb *Odb, oidType ObjectIdType, callback TransferProgressCallback) (*Indexer, error) {

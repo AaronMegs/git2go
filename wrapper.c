@@ -579,6 +579,14 @@ int _go_git_odb_hash(git_oid *out, const void *data, size_t len, git_object_t ob
 	return git_object_id_from_buffer(out, data, len, &opts);
 }
 
+int _go_git_object_id_from_file(git_oid *out, const char *path, git_object_t obj_type, int oid_type)
+{
+	git_object_id_options opts = GIT_OBJECT_ID_OPTIONS_INIT;
+	opts.object_type = obj_type;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
+	return git_object_id_from_file(out, path, &opts);
+}
+
 int _go_git_odb_new(git_odb **out, int oid_type)
 {
 	git_odb_options opts = GIT_ODB_OPTIONS_INIT;

@@ -479,8 +479,9 @@ SHA256 在上游"转正"后，`git_oid` 的 ABI 与解析函数 arity 将统一�
 #### 已完整覆盖
 
 - **SHA1 保留且默认**：40-hex/20-byte oid、默认仓库、默认 ODB/index/diff/indexer 均保持 SHA1。
-- **SHA256 本地全生命周期**：仓库 init → ODB hash/write/read → standalone ODB + loose backend →
-  index → tree → commit → lookup → packbuilder → indexer commit（64-hex pack id）→ one-pack backend读取。
+- **SHA256 本地全生命周期**：仓库 init → ODB buffer/file hash → write/read → standalone ODB +
+  loose backend → index → tree → commit → lookup → packbuilder → indexer commit（64-hex pack id）→
+  one-pack backend 读取。
 - **远端路径**：SHA256 clone/fetch、pack 索引与 64-hex ref target 已验证；对象格式协商由
   libgit2 内置 smart transport 的 `git_smart__oid_type` 完成。
 - **表示与比较**：构造、解析、`String`、`Bytes`、`Type`、`Cmp`、`NCmp`（nibble 语义）、
@@ -494,8 +495,8 @@ SHA256 在上游"转正"后，`git_oid` 的 ABI 与解析函数 arity 将统一�
 
 | 边界 | 说明 |
 |---|---|
-| `git_odb_hashfile` / `git_object_id_from_file` 未绑定 | 上游 git2go 原本未绑定，非本次引入；内存 buffer 类型化 hash 已覆盖 |
-| push 未使用真实网络服务端做端到端测试 | clone/fetch/pack 协商已覆盖；push 依赖外部服务端环境 |
+| 文件 hash 不应用 repository filters | `HashFile` / `HashFileWithType` 对应 `git_object_id_from_file`，按上游语义只哈希 raw content；需要 attributes/CRLF filters 时应使用 repository-aware hash API（后续可单独绑定） |
+| push 未使用真实网络服务端做端到端测试 | clone/fetch/pack 协商及 local receive-pack push 已覆盖；外部 SSH/HTTP push 依赖服务端环境 |
 | 正式版本号尚未发布 | 当前以能力宏守卫；正式发布后执行 §4.8 第二步 |
 | `Oid` 不再是 `[20]byte` | 属明确 breaking change；迁移见 `sha256-breaking-changes.md` |
 

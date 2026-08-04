@@ -67,7 +67,7 @@
 - `InitRepositoryWithOidType`
 - `(*Repository).OidType()`
 - `NewOdbWithOidType`, `NewOdbBackendOnePackWithOidType`, `NewOdbBackendLooseWithOidType`
-- `(*Odb).HashWithType()`
+- `(*Odb).HashWithType()`, `(*Odb).HashFile()`, `(*Odb).HashFileWithType()`
 - `NewIndexerForOidType`
 - `NewIndexWithOidType`, `OpenIndexWithOidType`
 - `DiffFromBufferWithOidType`
