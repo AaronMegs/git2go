@@ -1,7 +1,13 @@
 # git2go SHA1 / SHA256 兼容性适配设计文档
 
+> ⚠️ **重大状态变更（复核基线：libgit2 `main` @ `939362a3`，2026-08-03）：SHA256 已在上游转正。**
+> `GIT_EXPERIMENTAL_SHA256` 宏、`EXPERIMENTAL_SHA256` cmake 选项、`include/git2/experimental.h.in`
+> 均已从上游移除；`git_oid` **无条件**为 `{ type; id[32] }`。本文档§1.7 记录该事实与证据，
+> §4.6 的"阶段四合并"**触发条件已满足**，当前双构建模型需要收敛。以下 §1–§4.5 描述的是
+> 转正前（实验态）的设计与实现，仍是理解现状与执行收敛的基础。
+
 > 适用范围：`github.com/libgit2/git2go/v35`
-> **前瞻基线（推荐）**：libgit2 `main` 分支（子模块 pin 在 commit `ddf3b5c85d86a389330b1d1dd90f08f60ae05fe4`），为将来 libgit2 2.x / SHA256 转正预先对齐。
+> **前瞻基线（推荐）**：libgit2 `main` 分支，为将来 libgit2 2.x / SHA256 转正预先对齐。
 > **兼容基线**：libgit2 1.9.x 发布版（overload 形态）通过默认编译路径继续支持，零破坏。
 > 目标：在**不破坏默认（SHA1-only）构建**的前提下，通过 cgo build tag + `wrapper.c` 条件 shim，同时支持 libgit2 `main`（`_ext`/`_from_` 形态，推荐前瞻路径）与 1.9.x（overload 形态）两种实验 SHA256 API，并为 SHA256 转正预留合并路线。
 >
@@ -62,7 +68,11 @@ typedef enum {
 
 > 注：为兼容以 `main` 为基线的 vendored 构建（`main` 上部分 git2go 仍绑定的符号被标记弃用，如 `git_odb_hash`），`script/build-libgit2.sh` 已将 vendored 与 system 构建的 `DEPRECATE_HARD` 统一设为 **OFF**（保留弃用但仍有效的符号可链接）。即便如此，本项目仍已把弃用宏 `GIT_OID_HEXSZ` 迁移到 `GIT_OID_SHA1_HEXSIZE` / `GIT_OID_MAX_HEXSIZE`，以防将来重新开启 HARD 或上游彻底移除。
 
-### 1.6 上游 `main` 分支的最新演进（复核基线：main，SHA256 仍未转正）
+### 1.7 上游 `main` 分支的演进（历史记录：写于SHA256 尚未转正时）
+
+> 本节记录的是 `main` 处于**实验态**时的 API 演进（overload → `_ext`/`_from_`）。
+> 该演进结论仍然成立且是当前 `libgit2_next` 路径的依据；但"SHA256 仍未转正"的前提
+> 已被 §1.8 推翻。
 
 对 libgit2 **最新 `main` 分支**头文件逐一复核（`oid.h`/`odb.h`/`index.h`/`diff.h`/`indexer.h`/`repository.h`/`deprecated.h`/`version.h`），关键结论：
 
@@ -97,11 +107,54 @@ typedef enum {
 
 格式化/比较类（`git_oid_fmt`、`git_oid_nfmt`、`git_oid_pathfmt`、`git_oid_tostr`、`git_oid_cpy`、`git_oid_cmp`、`git_oid_equal`、`git_oid_ncmp`、`git_oid_is_zero`、`git_oid_shorten_*`）签名不变，但语义按 oid 类型自适应长度。
 
-### 1.6 其它新增 oid 类型选项的 API
+### 1.6其它新增 oid 类型选项的 API
 
 - `git_repository_init_options.oid_type`（经 `git_repository_init_ext`），用于创建 SHA256 仓库。
 - `git_odb_options.oid_type` / `git_odb_new(..., opts)`、`git_odb_hash` 系列在实验下需要/接受类型信息。
 - `git_indexer_options.oid_type`（本项目 `wrapper.c:_go_git_indexer_new` 已使用 `git_indexer_options`，仅未设置 `oid_type`）。
+
+---
+
+### 1.8 ⚠️ SHA256 已转正（复核基线：`main` @ `939362a3`，2026-08-03）
+
+这是**推翻前述所有"实验态"前提**的关键状态变更。证据链如下：
+
+| 检查项 | 结果 |
+|---|---|
+| `CMakeLists.txt` 的 `EXPERIMENTAL_SHA256` 选项 | **已移除** |
+| `GIT_EXPERIMENTAL_SHA256` 宏（`src/`、`include/` 全仓）| **零匹配** |
+| `include/git2/experimental.h.in` | **已删除**（`src/libgit2/experimental.h.in` 仅剩空 include guard）|
+| `git_oid` 结构 | **无条件** `{ unsigned char type; unsigned char id[GIT_OID_MAX_SIZE]; }` |
+| `GIT_OID_SHA256= 2`、`GIT_OID_MAX_SIZE = 32`、`GIT_OID_SHA256_*` 宏 | **无门控** |
+| 常规构建产物 | `libgit2.a` + `include/git2/`（**无 `-experimental` 后缀**），SHA256 默认可用 |
+
+上游 `cmake/ExperimentalFeatures.cmake` 的注释直接确认：
+
+> "there are currently no experimental options — **SHA256 was first implemented as an experimental option**."
+
+#### 转正后的 API 形态（实测）
+
+- **带类型的主API**：`git_oid_from_string` / `git_oid_from_prefix` / `git_oid_from_raw`、
+  `git_odb_new_ext` / `git_odb_open_ext`、`git_index_new_ext` / `git_index_open_ext`、
+  `git_diff_from_buffer_ext`、`git_object_id_from_buffer`、`git_repository_oid_type`
+  （**全部无门控**）。
+- **保留的SHA1-only 便利函数**：`git_oid_fromstr` / `fromstrp` / `fromstrn` / `fromraw`
+  仍在 `oid.h` 且**未标 deprecated**；`GIT_OID_DEFAULT` 仍为 `GIT_OID_SHA1`（向后兼容）。
+- **legacy 无 options 签名已被移除**（唯一签名化）：`git_indexer_new`(3参)、
+  `git_odb_backend_one_pack`(3参)、`git_odb_backend_loose`(3参)。
+- `git_odb_hash` 已移入 `deprecated.h`。
+
+#### 对本项目的即时影响（实测三种组合）
+
+| 组合 | 结果 | 根因 |
+|---|---|---|
+| 默认（无 tag） | ❌ 编译失败 | `wrapper.c` 非实验分支调用的3 个 legacy 无 options 签名已被上游移除 |
+| `git_experimental_sha256` | ❌ pkg-config 失败 | `Build_bundled_static_sha256.go` 指向 `libgit2-experimental.pc` / `-lgit2-experimental`，转正后不存在 |
+| `+ libgit2_next` | ❌ 同上（构建接线）；**但代码路径正确** | 绕过 pc 名后（`system_libgit2` tag + `PKG_CONFIG_PATH` 指向常规产物）**编译通过且全量测试全绿** |
+
+**结论**：为 `main` 编写的 `_ext`/`_from_` 适配（`libgit2_next`）就是转正后的正确代码路径，
+唯一障碍是构建接线仍假设 `-experimental` 布局。§4.6 的阶段四收敛条件已满足，
+收敛方案见 §4.8。
 
 ---
 
@@ -448,6 +501,33 @@ SHA256 在上游"转正"后，`git_oid` 的 ABI 与解析函数 arity 将统一�
 - **对 SHA1 完全兼容**：默认构建的 `Oid` 表示、公共 API 与行为均与适配前逐字节一致；系统库 / vendored-static / `main` 子模块三种链接方式均实测通过。
 - **对 SHA256 在"本地仓库全生命周期"上完整兼容**：init → odb 读写 → index → tree → commit → lookup → packfile 索引 → 仓库类型查询，均在真实实验 libgit2（`main` 与 1.9.x 两种 API 形态）上端到端验证通过。
 - **尚未完整覆盖的是"SHA256 远端交互"**（transport 协商），以及若干"默认类型语义"的便利性问题——均已在 §4.7.2 明示，不构成 SHA1 侧的破坏。
+
+---
+
+### 4.8 转正后的收敛方案（阶段四，触发条件已满足）
+
+§1.8 确认 SHA256 已转正，§4.6 的触发条件 1 与 3 同时满足。基于实测（`libgit2_next` 路径对
+转正版 main 编译通过且全量测试全绿），收敛方案如下。
+
+**核心决策**：以 `oid_sha256.go` 的表示为**唯一**表示。上游 `git_oid` 已无条件带type 字节，
+`Oid [20]byte` 不再对应任何真实 ABI，必须废弃。
+
+| 收敛动作 |涉及文件 | 说明 |
+|---|---|---|
+| `Oid` 合并为带 type 的 32 字节结构 | 删`oid_default.go`，`oid_sha256.go` 去 tag 并入 `oid.go` | **破坏性变更**：`Oid` 不再是 `[20]byte`，不可 `oid[:]`/索引 |
+| `wrapper.c` 折叠为单一形态 | `wrapper.c` | 删除全部 `#ifdef GIT_EXPERIMENTAL_SHA256` 与 `GIT2GO_LIBGIT2_OID_EXT_API` 嵌套，仅保留 `_ext`/`_from_` 调用；`git_odb_hash` 统一走 `git_object_id_from_buffer` |
+| 删除 tag 注入与降级实现 | 删 `sha256_experimental.go`、`libgit2_next.go`、`sha256_default.go` | 宏已不存在，双向 ABI 守卫与默认构建的 SHA256 降级实现同时失去意义 |
+| 构建入口收敛 | 删 `Build_bundled_static_sha256.go`；`Build_bundled_static.go` 去掉 `!git_experimental_sha256` 约束 | 转正后产物即常规 `libgit2.a` / `libgit2.pc` |
+| 构建脚本清理 | `script/build-libgit2.sh` | 移除 `EXPERIMENTAL_SHA256` 开关、`-experimental`兼容软链、API 形态探测提示；**保留** `-I` 优先修复（见进度文档 N1）|
+| SHA256 API 转为常规 API | `sha256_api.go` → 并入 `repository.go`/`odb.go`/`index.go`/`diff.go`/`indexer.go` | `Repository.OidType`、`Odb.HashWithType`、`NewIndexWithOidType`、`OpenIndexWithOidType`、`DiffFromBufferWithOidType`、`NewIndexerForOidType`、`InitRepositoryWithOidType`、`NewOidFromBytesWithType` 去门控 |
+| 测试去门控 | `repository_sha256_test.go`、`oid_sha256_test.go`、`repository_oidtype_next_test.go`、`oid_test.go` | 合并为常规测试；`oid_default` 专属断言删除 |
+| CI 收敛 | `.github/workflows/ci.yml` | 三个 SHA256 相关 job 合为一；`check-oid-abi-guard` 删除（宏已不存在，守卫无法触发）|
+| 版本守卫 | `Build_bundled_static.go`、`Build_system_*.go` | 当前限制 `LIBGIT2_VER_MINOR == 9`；main 仍报 1.9.0，转正版正式发布时（可能为 **2.0**）需同步放宽 |
+| 模块主版本 | `go.mod`、README 映射表 | `Oid` 类型变更属破坏性 API 变更，需评估 `v35→ v36` |
+
+**执行前置**：上游尚未发布转正版本（`main` 的 `version.h` 仍为 1.9.0）。建议在上游打出正式
+版本号后再落地收敛，以便同时确定版本守卫与模块主版本；在此之前 `libgit2_next` 路径已可用于
+对接 main。
 
 ---
 

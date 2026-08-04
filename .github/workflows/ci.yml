@@ -134,20 +134,13 @@ jobs:
       # number (main still reports 1.9.0), so pick the matching make target by
       # probing the installed headers — this keeps CI correct regardless of
       # which baseline the submodule is pinned to.
-      #
-      # NOTE: the suite is currently restricted to the oid/SHA256 tests. Running
-      # the full suite under the experimental build trips a pre-existing crash in
-      # TestApplyDiffAddfile (SIGBUS inside git_apply) that is unrelated to the
-      # SHA256 bindings — it reproduces on the committed tree with no SHA256
-      # changes applied. Drop the -test.run filter once that is resolved; see
-      # docs/sha256-todo-progress.md.
       run: |
         if grep -q git_oid_from_string static-build/install/include/git2/oid.h; then
           echo "libgit2 exposes the 'main' experimental oid API"
-          make TEST_ARGS="-test.v -test.run 'SHA256|Oid'" test-static-sha256-next
+          make TEST_ARGS=-test.v test-static-sha256-next
         else
           echo "libgit2 exposes the 1.9.x experimental oid API"
-          make TEST_ARGS="-test.v -test.run 'SHA256|Oid'" test-static-sha256
+          make TEST_ARGS=-test.v test-static-sha256
         fi
 
   check-oid-abi-guard:

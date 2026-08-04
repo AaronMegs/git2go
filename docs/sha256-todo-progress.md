@@ -20,9 +20,10 @@
 | 4 | SHA256 远端协商（transport `oid_type`） | ✅ 已完成（结论：无需适配，原判断有误已更正） |
 | 5 | SHA256 远端端到端用例（clone） | ✅ 已完成 |
 | 6 | `Odb` 类型感知（`Hash` 自动跟随仓库类型） | ✅ 已完成 |
-| 7 | 上游转正后合并双实现 | ⏸ 触发式，条件未满足 |
-| **N1** | **`TestApplyDiffAddfile` 在实验构建下 SIGBUS（新发现，预存缺陷）** | ⬜ 未开始（阻塞 CI 全量） |
-| **N2** | **3 个 `TestRebase*` 在默认构建下失败（新发现，预存缺陷）** | ⬜ 未开始 |
+| 7 | 上游转正后合并双实现 | 🔴 **触发条件已满足**（SHA256 已转正，见设计文档 §1.8/§4.8）|
+| **N1** | `TestApplyDiffAddfile` 在自建 libgit2 上 SIGBUS | ✅ 已修复（根因：本机头污染 + xdiff 用 `-isystem`）|
+| **N2** | 3 个 `TestRebase*` 失败 | ✅ 已修复（测试硬编码 `master` + 取分支名时机错误）|
+| **N3** | `TestTransport`：`Oid{}` 零值与库返回的 SHA1 zero id 不相等 | ✅ 已修复（真实 SHA256 缺陷）|
 
 ---
 
@@ -75,70 +76,10 @@
 `make TEST_ARGS="-test.v -test.run 'SHA256|Oid'" test-static-sha256-next` → 17 个用例全 PASS；
 探测逻辑在当前 main 基线上正确输出 "main API shape"；两个 make 目标 `-n` 展开正确。
 
-**遗留**：该 job 目前**限定测试范围**为 `SHA256|Oid`，原因见待办 **N1**（全量套件在实验构建下
-存在预存崩溃，会导致 CI 误红）。N1 修复后应移除 `-test.run` 过滤。
+**遗留**：无。N1 修复后该 job 已放开为**全量**套件（此前因 N1 崩溃临时用 `-test.run` 限定范围）。
 
 ---
 
-## N1. `TestApplyDiffAddfile` 在实验构建下 SIGBUS — ⬜ 未开始（本轮新发现）
-
-**发现过程**：为验证第 2 项的 CI job，首次在实验构建下运行**全量**测试套件
-（此前只跑过 `-run 'SHA256|Oid'`），立刻崩溃。
-
-**现象**：
-
-```
---- TestApplyDiffAddfile/check_does_not_apply_to_current_tree_because_file_exists
-SIGBUS: bus error
-PC=0x12 m=0 sigcode=1 addr=0x12
-signal arrived during cgo execution
-_Cfunc_git_apply(0x105cfeb70, 0x105d02500, 0x2, 0x0)   <- diff.go:1041
-```
-
-`PC=0x12` 表示调用了被垃圾数据覆盖的函数指针，是典型的结构体布局/ABI 错配征兆。第4 参数为
-`NULL`（git2go 在 `opts == nil` 时传 NULL），而 libgit2 的 `git_apply` 明确支持 NULL
-（`if (given_opts) memcpy(...)`），故不是空指针误用。
-
-**归属判定（已确认）**：`git stash` 掉本轮全部改动、在**已提交**状态下复现同一崩溃 →
-**属预存缺陷，与第 1 项的 index/diff 改动无关**。
-
-**尚未完成的区分**：需要在 **main 的非实验库**上跑同一用例，以区分两种可能：
-
-- (a) libgit2 `main` 自身相对 1.9.x 的回归/ git2go 与 main 的不兼容（与 SHA256 无关）；
-- (b) 仅在 `EXPERIMENTAL_SHA256=ON` 下出现（与 SHA256 的 `git_oid` 布局变化有关）。
-
-**判定结果（已在第 3 项复验时顺带取得）：结论为 (b)。**
-
-| 组合 | `TestApplyDiffAddfile` |
-|---|---|
-| 默认 SHA1（系统 libgit2 1.9.4，无 tag） | ✅通过 |
-| 实验 SHA256 + libgit2 **1.9.4**（overload） | ❌ SIGBUS |
-| 实验 SHA256 + libgit2 **main**（`libgit2_next`） | ❌ SIGBUS |
-
-即：**与 libgit2 基线（1.9.4 / main）无关，只在 `EXPERIMENTAL_SHA256=ON` 构建下发生；
-SHA1 默认路径完全不受影响。**
-
-**已排除的原因**：
-
-- 非空指针误用：`git_apply` 明确支持 `opts == NULL`（`if (given_opts) memcpy(...)`）。
-- 非上游 apply 的类型假设：`apply.c` 已正确使用 `git_index__new(&postimage, repo->oid_type)`，
-  未硬编码 SHA1。
-- 非本轮改动：已提交状态下同样复现（`git stash` 验证）。
-
-**下一步排查建议**（需 C 层手段，已超出纯 Go 层定位能力）：
-
-1. 以 `-DCMAKE_BUILD_TYPE=Debug` + `-DEXPERIMENTAL_SHA256=ON` 重建 libgit2，用 lldb 取 C侧
-   完整调用栈，确认被调用的野函数指针属于哪个结构体字段（`PC=0x12` 提示某字段被误当作
-   函数指针）。
-2. 用最小 C 程序复现（init仓库 → diff_tree_to_tree → git_apply），以判定是上游 libgit2 在
-   实验构建下的 bug，还是 git2go 侧某处结构体使用不当；若为上游则向 libgit2 上报。
-3. 重点怀疑对象：`git_diff`/`git_diff_delta`/`git_diff_file`（内嵌 `git_oid`，实验宏下尺寸变化）
-   在 apply 路径中的 reader/index 交互。
-
-**影响**：阻塞 CI 在实验构建下跑全量套件（当前已用 `-test.run 'SHA256\|Oid'` 规避）。
-SHA256 的本地仓库全生命周期用例不受影响（全部通过）。
-
----
 
 ## 3. 1.9.x overload 路径复验 — ✅ 已完成
 
@@ -247,7 +188,104 @@ main + next 路径 19 个用例全PASS；默认构建
 
 ---
 
-## N2. 3 个 `TestRebase*` 在默认构建下失败 — ⬜ 未开始（本轮新发现）
+## N1. `TestApplyDiffAddfile` SIGBUS — ✅ 已修复
+
+**现象**：任何**自建** libgit2（1.9.4 实验 / 旧 main 实验 / 转正 main，均如此）下
+`git_apply` 崩溃；链接 Homebrew 预编译 libgit2 的默认构建正常。
+
+```
+SIGBUS: bus error   PC=0x12   addr=0x12
+_Cfunc_git_apply(0x105cfeb70, 0x105d02500, 0x2, 0x0)   <- diff.go:1041
+```
+
+**定位过程（lldb）**：
+
+1. `register read lr` → 调用者是 `xdl_prepare_env + 1380`（libgit2 内嵌 xdiff）。
+2. 反汇编该处：`ldr x8, [x27, #0x40]` + `blr x8` —— 调用某结构体偏移 `0x40` 的函数指针。
+3. `register read x27` → **`x27 == git__allocator`**；`memory read` 显示只有前 3 项是有效函数
+   指针，`+0x40` 处是整数 `0x12`（已越界到相邻全局数据）。
+4. 对比核心库：`disassemble -n git_str_dispose` → `git__allocator` **`+0x10`**（3 字段布局的
+   `gfree`）。**同一个 `libgit2.a` 内部对 `git_allocator` 布局认知不一致。**
+5. 查include 列表：核心库用 **`-I`**（优先级高于编译器内建路径）→ 命中源码树 `alloc.h`（3 字段）；
+   `deps/xdiff` 因上游 CMakeLists 写了 `SYSTEM` 关键字而用 **`-isystem`** → 与编译器内建系统路径
+   竞争。
+6. 本机 **`/usr/local/include/git2` 是 libgit2 1.5.2 残留**，其 `git_allocator` 有 **9 个**函数
+   指针（`gmalloc, gcalloc, gstrdup, gstrndup, gsubstrdup, grealloc, greallocarray, gmallocarray, gfree`），
+   `gfree` 正好在 **8×8 = 0x40** —— 与汇编完全吻合。
+
+**根因**：**本机环境污染 + 上游 xdiff 用 `-isystem` 的脆弱设计**。xdiff 编译时 include 到了
+libgit2 1.5.2 的 `git2/sys/alloc.h`，于是它按 9 字段布局取 `gfree`，而实际 `git__allocator`
+只有 24 字节 → 把相邻全局数据当函数指针调用。
+
+**与 SHA256 无关**。此前误判为"实验构建专属"，是因为默认构建总链接 Homebrew 库、实验构建总链接
+自建库，两个变量被混淆了。
+
+**修复**（`script/build-libgit2.sh`）：把源码树 include 目录以**普通 `-I`** 形式经
+`CMAKE_C_FLAGS` 传入，使其对**所有** target 优先于任何 `-isystem`/内建路径：
+
+```sh
+LIBGIT2_INTREE_INCLUDE="-I${VENDORED_PATH}/include"
+cmake ... -DCMAKE_C_FLAGS="-fPIC ${LIBGIT2_INTREE_INCLUDE}" ...
+```
+
+不改动系统目录、不依赖本机环境清理，可复现。
+
+**验证**：重建后 `TestApplyDiffAddfile` PASS；实验构建全量套件从"崩溃中断"变为通过。
+
+---
+
+## N2. 3 个 `TestRebase*` 失败 — ✅ 已修复
+
+**两层原因**：
+
+1. 测试硬编码分支名 `"master"`，而本机 `init.defaultBranch` 不是 `master`
+   → `cannot locate local branch 'master'`。
+2. 改用 `defaultBranchName(t, repo)` 后仍失败（`expected 5, got 4`）——因为该 helper 返回
+   **当前 HEAD 的分支名**，而调用点在 `setupRepoForRebase` **之后**，此时 HEAD 已切到
+   feature 分支 `emile`，导致 rebase 到自身、历史少一条。
+
+**修复**：在 `setupRepoForRebase` **之前**（HEAD 仍在初始分支时）捕获 `baseBranch :=
+defaultBranchName(t, repo)`，3 个测试统一使用它。顺带 `gofmt -w rebase_test.go`
+（该文件有预存的空格缩进块）。
+
+**与 SHA256 无关**，属测试对本机 git 配置的隐含依赖。
+
+---
+
+## N3. `Oid{}` 零值与库返回的 SHA1 zero id 不相等 — ✅ 已修复（真实 SHA256 缺陷）
+
+**发现**：N1 修复后套件得以跑到 `TestTransport`，报错的 `expected` 与 `got` 打印**完全相同**
+却判为不等。
+
+**根因**：实验/转正构建下 `Oid` 带 type 字节。测试用 `&Oid{}` 构造零值（`kind = 0`），而
+libgit2 返回的 all-zeroes id 是 `kind = GIT_OID_SHA1 = 1`。两者 `String()` 相同但结构体不等。
+更深层的问题是**同一类型上两个比较 API 语义不一致**：
+
+- `Cmp` 用 `bytes.Compare(oid.Bytes(), oid2.Bytes())` —— 忽略 type ✓
+- `Equal` 用 `*oid == *oid2` —— 含 type ✗
+
+**修复**：
+
+| 文件 | 改动 |
+|---|---|
+| `oid_sha256.go` | `Type()` 把 `kind == 0` 归一化为 `ObjectIdSHA1`（零值 Oid 视为 SHA1）；`rawLen()` 改用 `Type()` |
+| `oid.go` | `Equal` 改为 `Type()` 相同且 `Bytes()` 相等，与 `Cmp` 语义对齐 |
+| `transport_test.go` | 逐字段比较（`Name` + `Id.Equal`）替代 `reflect.DeepEqual`，两种构建下均正确；移除不再使用的 `reflect` 导入 |
+
+**验证**：两条路径全量套件均通过。
+
+---
+
+## 里程碑：全量套件首次双双全绿
+
+| 路径 | 库 | 结果 |
+|---|---|---|
+| 默认（SHA1） | Homebrew libgit2 | `go test ./...` **全绿** |
+| 转正 SHA256 | 自建 `main @ 939362a3` | `-tags "static system_libgit2 git_experimental_sha256 libgit2_next"` **全绿** |
+
+> 转正版基线下的构建接线说明见设计文档 §1.8：常规 tag 组合尚需§4.8 的收敛改造，
+> 目前经`system_libgit2` + `PKG_CONFIG_PATH` 对接。
+
 
 **发现过程**：为验证第 6 项，首次运行**默认构建的全量**套件（此前只跑过 `-run` 过滤的子集）。
 
