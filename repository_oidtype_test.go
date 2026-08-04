@@ -2,7 +2,11 @@ package git
 
 // Verifies Repository.OidType() against libgit2's git_repository_oid_type.
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestSHA256RepositoryOidType(t *testing.T) {
 	repo := createTestRepoSHA256(t)
@@ -24,6 +28,41 @@ func TestSHA256RepositoryOidType(t *testing.T) {
 // repository hashes with that repository's object format, i.e. Odb.Hash on a
 // SHA256 repository yields a SHA256 id matching what Write() stores, while a
 // standalone Odb keeps hashing as SHA1.
+func TestSHA256StandaloneOdbWithLooseBackend(t *testing.T) {
+	objectsDir := filepath.Join(t.TempDir(), "objects")
+	if err := os.MkdirAll(objectsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	odb, err := NewOdbWithOidType(ObjectIdSHA256)
+	checkFatal(t, err)
+	defer odb.Free()
+
+	backend, err := NewOdbBackendLooseWithOidType(objectsDir, -1, false, 0, 0, ObjectIdSHA256)
+	checkFatal(t, err)
+	checkFatal(t, odb.AddBackend(backend, 1))
+
+	data := []byte("standalone sha256 odb\n")
+	written, err := odb.Write(data, ObjectBlob)
+	checkFatal(t, err)
+	if written.Type() != ObjectIdSHA256 || len(written.String()) != 64 {
+		t.Fatalf("standalone ODB Write produced type=%d hexlen=%d, want SHA256/64", written.Type(), len(written.String()))
+	}
+
+	hashed, err := odb.Hash(data, ObjectBlob)
+	checkFatal(t, err)
+	if !hashed.Equal(written) {
+		t.Errorf("standalone ODB Hash = %s, Write = %s", hashed, written)
+	}
+
+	obj, err := odb.Read(written)
+	checkFatal(t, err)
+	defer obj.Free()
+	if got := obj.Data(); string(got) != string(data) {
+		t.Errorf("standalone ODB Read = %q, want %q", got, data)
+	}
+}
+
 func TestSHA256OdbHashFollowsRepository(t *testing.T) {
 	repo := createTestRepoSHA256(t)
 	defer cleanupTestRepo(t, repo)

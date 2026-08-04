@@ -53,25 +53,32 @@ func (oid *Oid) Equal(oid2 *Oid) bool {
 	return oid.Type() == oid2.Type() && bytes.Equal(oid.Bytes(), oid2.Bytes())
 }
 
-// NCmp compares the first n bytes of the two object ids after ordering by object
-// id type, mirroring libgit2's git_oid_ncmp semantics.
+// NCmp compares the first n hexadecimal characters (nibbles) of the two object
+// ids, mirroring libgit2's git_oid_ncmp semantics. It returns 0 for a match and a
+// non-zero value otherwise.
 func (oid *Oid) NCmp(oid2 *Oid, n uint) int {
-	if oid.Type() < oid2.Type() {
-		return -1
-	}
-	if oid.Type() > oid2.Type() {
-		return 1
+	if oid.Type() != oid2.Type() {
+		return int(oid.Type()) - int(oid2.Type())
 	}
 
 	a := oid.Bytes()
 	b := oid2.Bytes()
-	if int(n) > len(a) {
-		n = uint(len(a))
+	maxHex := len(a) * 2
+	if len(b)*2 < maxHex {
+		maxHex = len(b) * 2
 	}
-	if int(n) > len(b) {
-		n = uint(len(b))
+	if int(n) > maxHex {
+		n = uint(maxHex)
 	}
-	return bytes.Compare(a[:n], b[:n])
+
+	wholeBytes := int(n / 2)
+	if !bytes.Equal(a[:wholeBytes], b[:wholeBytes]) {
+		return 1
+	}
+	if n%2 != 0 && ((a[wholeBytes]^b[wholeBytes])&0xf0) != 0 {
+		return 1
+	}
+	return 0
 }
 
 // ShortenOids returns the minimum length of the given object ids' hex

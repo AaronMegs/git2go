@@ -1,19 +1,17 @@
 package git
 
 import (
-	"os"
+	"path/filepath"
 	"testing"
 )
 
-var tempConfig = "./temp.gitconfig"
-
-func setupConfig() (*Config, error) {
+func setupConfig(path string) (*Config, error) {
 	var (
 		c   *Config
 		err error
 	)
 
-	c, err = OpenOndisk(tempConfig)
+	c, err = OpenOndisk(path)
 	if err != nil {
 		return nil, err
 	}
@@ -36,10 +34,6 @@ func setupConfig() (*Config, error) {
 	}
 
 	return c, err
-}
-
-func cleanupConfig() {
-	os.Remove(tempConfig)
 }
 
 type TestRunner func(*Config, *testing.T)
@@ -94,8 +88,7 @@ func TestConfigLookups(t *testing.T) {
 		c   *Config
 	)
 
-	c, err = setupConfig()
-	defer cleanupConfig()
+	c, err = setupConfig(filepath.Join(t.TempDir(), "config"))
 
 	if err != nil {
 		t.Errorf("Setup error: '%v'. Expected none\n", err)
@@ -121,8 +114,7 @@ func TestOpenDefault(t *testing.T) {
 func TestConfigEntryBackendType(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := setupConfig()
-	defer cleanupConfig()
+	cfg, err := setupConfig(filepath.Join(t.TempDir(), "config"))
 	checkFatal(t, err)
 	defer cfg.Free()
 

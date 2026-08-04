@@ -12,8 +12,8 @@ package git
 # error "Invalid libgit2 version; this git2go currently targets the promoted-SHA256 libgit2 main baseline (version headers still report 1.9.x)"
 #endif
 
-#ifndef GIT_OID_SHA256_SIZE
-# error "This git2go requires a libgit2 with promoted SHA256 support (git_oid is typed); use the vendored main baseline or a compatible release"
+#if !defined(GIT_OID_SHA256_SIZE) || !defined(GIT_OBJECT_ID_OPTIONS_VERSION) || !defined(GIT_INDEX_OPTIONS_VERSION) || !defined(GIT_DIFF_PARSE_OPTIONS_VERSION)
+# error "This git2go requires libgit2's promoted typed object-id API (SHA256 plus object-id/index/diff options); use the pinned vendored baseline or a compatible release"
 #endif
 */
 import "C"

@@ -26,8 +26,9 @@
 - `Oid.Equal` 现在按“规范化类型 + 有效原始字节”比较，而不是对 Go 存储结构做直接 `==`。
   零值 `Oid{}` 被规范化为 all-zero SHA1 oid；这使它与 libgit2 返回的 SHA1 zero oid
   语义一致，但可能改变依赖旧结构体位模式比较的代码。
-- `Oid.Cmp` / `Oid.NCmp` 现在与 libgit2 一致：先按 oid 类型排序，再比较有效原始字节。
-  SHA1 与 SHA256 即使原始前缀相同也不会比较为相等。依赖旧的“仅字节比较”行为需调整。
+- `Oid.Cmp` 现在与 libgit2 一致：先按 oid 类型排序，再比较有效原始字节。
+  `Oid.NCmp` 的 `n` 现在正确解释为**十六进制字符数（nibble 数）**而不是字节数，并与
+  `git_oid_ncmp` 一样只保证 0 表示匹配、非 0 表示不匹配。依赖旧的字节计数或排序值需调整。
 - `Oid` 的 Go 零值现在语义化为 all-zero SHA1 id；因此 `Type()` 返回 `ObjectIdSHA1`、
   `Bytes()` 返回 20 个零字节、`String()` 返回 40 个零。依赖“未初始化类型值为 0”的代码会变化。
 - `fmt` / JSON / gob / `reflect.DeepEqual` 若直接观察 `Oid` 底层表示，输出或比较结果可能变化；
@@ -59,6 +60,7 @@
 - `NewOidFromBytesWithType`
 - `InitRepositoryWithOidType`
 - `(*Repository).OidType()`
+- `NewOdbWithOidType`, `NewOdbBackendOnePackWithOidType`, `NewOdbBackendLooseWithOidType`
 - `(*Odb).HashWithType()`
 - `NewIndexerForOidType`
 - `NewIndexWithOidType`, `OpenIndexWithOidType`

@@ -1,12 +1,14 @@
 # SHA256 适配 · 待办执行进度
 
-本文件记录 SHA256 兼容性适配的剩余待办项及其逐项执行情况。设计与结论见
-`sha256-compat-design.md`（尤其 §3.7 ABI 守卫与 API 对称、§4.7 兼容性完整度自查）。
+本文件记录 SHA256 兼容性适配的逐项执行历史。设计与当前结论见
+`sha256-compat-design.md` §1.8 / §4.8；发版迁移见 `sha256-breaking-changes.md`。
 
-约定：
-- **基线**：libgit2 `main`（子模块 pin，前瞻推荐），编译默认兼容 1.9.x。
-- **三条验证路径**：默认 SHA1（系统库/ static）、实验 SHA256 + `libgit2_next`（main）、
-  实验 SHA256（1.9.x overload）。
+当前约定：
+- **基线**：libgit2 promoted-SHA256 `main @ 939362a3`；旧 20 字节 `git_oid` ABI 的 1.9.x
+  发布包不再兼容。
+- **单一常规构建**：同一构建同时支持 SHA1 与 SHA256，SHA1 仍为默认；不再使用任何实验
+  CMake 选项或 Go build tag。
+- 下方第 1–6 项保留的是转正前双轨阶段的**历史执行记录**，其中的实验命令不可用于当前代码。
 
 ---
 
@@ -20,7 +22,8 @@
 | 4 | SHA256 远端协商（transport `oid_type`） | ✅ 已完成（结论：无需适配，原判断有误已更正） |
 | 5 | SHA256 远端端到端用例（clone） | ✅ 已完成 |
 | 6 | `Odb` 类型感知（`Hash` 自动跟随仓库类型） | ✅ 已完成 |
-| 7 | 上游转正后合并双实现 | 🟡 **第一步已完成；第二步等待上游正式版本号**（见设计文档 §4.8）|
+| 7 | 上游转正后合并双实现 | 🟡 **第一步已完成并经完整性复审；第二步等待上游正式版本号**（见设计文档 §4.8）|
+| 8 | 第一阶段完整性复审补漏 | ✅ 已完成（CI、standalone ODB/backend、NCmp、能力守卫、真实 indexer commit、文档）|
 | **N1** | `TestApplyDiffAddfile` 在自建 libgit2 上 SIGBUS | ✅ 已修复（根因：本机头污染 + xdiff 用 `-isystem`）|
 | **N2** | 3 个 `TestRebase*` 失败 | ✅ 已修复（测试硬编码 `master` + 取分支名时机错误）|
 | **N3** | `TestTransport`：`Oid{}` 零值与库返回的 SHA1 zero id 不相等 | ✅ 已修复（真实 SHA256 缺陷）|
@@ -276,27 +279,38 @@ libgit2 返回的 all-zeroes id 是 `kind = GIT_OID_SHA1 = 1`。两者 `String()
 
 ---
 
-## 里程碑：全量套件首次双双全绿
+## 8. 第一阶段完整性复审补漏 — ✅ 已完成
+
+对 `4c84cd4` 做全仓只读复审后发现并关闭以下遗漏：
+
+1. **CI system-dynamic 仍固定 v1.5.0**：改为构建并系统安装 pinned promoted main；旧版会被
+   typed ABI 能力守卫必然拒绝。
+2. **standalone SHA256 ODB/backend 未接线**：新增 `NewOdbWithOidType`、
+   `NewOdbBackendLooseWithOidType`、`NewOdbBackendOnePackWithOidType`，并把 oid type 传入
+   `git_odb_options` / backend options。端到端验证 loose 写读、packbuilder → indexer commit →
+   one-pack backend 读回。
+3. **`Oid.NCmp` 把 n 当字节数**：修为 libgit2 定义的 hex 字符（nibble）语义，增加奇数
+   nibble 区分测试。
+4. **能力守卫过弱**：从只检查 `GIT_OID_SHA256_SIZE` 扩展为同时检查
+   `GIT_OBJECT_ID_OPTIONS_VERSION`、`GIT_INDEX_OPTIONS_VERSION`、
+   `GIT_DIFF_PARSE_OPTIONS_VERSION`，明确拒绝旧 experimental overload 头。
+5. **Indexer 测试未实际索引**：现构造真实 pack、调用 `Write`/`Commit`、断言64-hex SHA256
+   pack id 与 `.idx` 文件，并通过 one-pack backend 读取原对象。
+6. **文档仍混用历史双轨与当前状态**：当前结论、历史章节、迁移指南与进度里程碑已明确分层。
+
+验证过程中还修复了两个并行 config 测试共用并删除 `./temp.gitconfig` 的隔离问题，改为各自
+使用 `t.TempDir()`；修复后 bundled-static 全量连续运行 3 次均通过，system-static 与 dynamic
+全量也均通过。
+
+---
+
+## 里程碑：转正后的常规构建全量通过
 
 | 路径 | 库 | 结果 |
 |---|---|---|
-| 默认（SHA1） | Homebrew libgit2 | `go test ./...` **全绿** |
-| 转正 SHA256 | 自建 `main @ 939362a3` | `-tags "static system_libgit2 git_experimental_sha256 libgit2_next"` **全绿** |
+| bundled static（SHA1+SHA256） | pinned `main @ 939362a3` | `go test -tags static ./...` **全绿** |
+| system static（SHA1+SHA256） | 同一 promoted main 安装 | 全量 **全绿** |
+| dynamic（SHA1+SHA256） | 同一 promoted main 安装 | 全量 **全绿** |
 
-> 转正版基线下的构建接线说明见设计文档 §1.8：常规 tag 组合尚需§4.8 的收敛改造，
-> 目前经`system_libgit2` + `PKG_CONFIG_PATH` 对接。
-
-
-**发现过程**：为验证第 6 项，首次运行**默认构建的全量**套件（此前只跑过 `-run` 过滤的子集）。
-
-**现象**：`TestRebaseAbort`、`TestRebaseNoConflicts`、`TestRebaseGpgSigned` 失败
-（输出含 `Co-authored-by:` / `Signed-off-by:` 片段，疑与 commit message trailer / 签名有关）。
-
-**归属判定（已确认）**：`git stash` 掉本轮改动、在已提交状态（`b4944da`）下同样失败 →
-**预存缺陷，与 SHA256 适配无关**。
-
-**旁证**：`gofmt -l` 显示 `rebase.go`、`rebase_test.go` 本身未格式化（同样是预存状态），
-暗示这部分代码存在遗留问题。
-
-**下一步**：单独排查 rebase 绑定与当前 libgit2 基线（`main` / 系统 1.9.4）的行为差异；
-本项与 SHA1/SHA256 兼容性无关，建议独立于 SHA256 工作线处理。
+阶段四第一步已完成：不再存在实验 build tag 或 `libgit2-experimental` 路径。第二步等待上游
+正式版本号，用于确定版本守卫、git2go 模块主版本和正式发布包的跨平台验证。

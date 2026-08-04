@@ -33,9 +33,8 @@ func NewIndexer(packfilePath string, odb *Odb, callback TransferProgressCallback
 	return newIndexerWithOidType(packfilePath, odb, 0, callback)
 }
 
-// newIndexerWithOidType is the shared implementation behind NewIndexer and the
-// experimental NewIndexerForOidType. oidType follows git_oid_t (0 = libgit2
-// default / SHA1); it is ignored by the underlying shim in the default build.
+// newIndexerWithOidType is the shared implementation behind NewIndexer and
+// NewIndexerForOidType. oidType follows git_oid_t (0 = libgit2 default / SHA1).
 func newIndexerWithOidType(packfilePath string, odb *Odb, oidType C.int, callback TransferProgressCallback) (indexer *Indexer, err error) {
 	var odbPtr *C.git_odb = nil
 	if odb != nil {

@@ -101,9 +101,11 @@ Create a SHA256 repository explicitly:
 
     repo, err := git.InitRepositoryWithOidType(path, false, git.ObjectIdSHA256)
 
-The type-aware APIs (`HashWithType`, `NewIndexWithOidType`,
-`OpenIndexWithOidType`, `DiffFromBufferWithOidType`, and
-`NewIndexerForOidType`) are available in every build. See
+The type-aware APIs (`NewOdbWithOidType`,
+`NewOdbBackendLooseWithOidType`, `NewOdbBackendOnePackWithOidType`,
+`HashWithType`, `NewIndexWithOidType`, `OpenIndexWithOidType`,
+`DiffFromBufferWithOidType`, and `NewIndexerForOidType`) are available in every
+build. See
 `docs/sha256-compat-design.md` for implementation details and
 `docs/sha256-breaking-changes.md` for migration guidance.
 

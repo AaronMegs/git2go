@@ -579,9 +579,11 @@ int _go_git_odb_hash(git_oid *out, const void *data, size_t len, git_object_t ob
 	return git_object_id_from_buffer(out, data, len, &opts);
 }
 
-int _go_git_odb_new(git_odb **out)
+int _go_git_odb_new(git_odb **out, int oid_type)
 {
-	return git_odb_new_ext(out, NULL);
+	git_odb_options opts = GIT_ODB_OPTIONS_INIT;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
+	return git_odb_new_ext(out, &opts);
 }
 
 int _go_git_index_new(git_index **out, int oid_type)
@@ -605,9 +607,11 @@ int _go_git_diff_from_buffer(git_diff **out, const char *content, size_t content
 	return git_diff_from_buffer_ext(out, content, content_len, &opts);
 }
 
-int _go_git_odb_backend_one_pack(git_odb_backend **out, const char *index_file)
+int _go_git_odb_backend_one_pack(git_odb_backend **out, const char *index_file, int oid_type)
 {
-	return git_odb_backend_one_pack(out, index_file, NULL);
+	git_odb_backend_pack_options opts = GIT_ODB_BACKEND_PACK_OPTIONS_INIT;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
+	return git_odb_backend_one_pack(out, index_file, &opts);
 }
 
 int _go_git_odb_backend_loose(
@@ -616,7 +620,8 @@ int _go_git_odb_backend_loose(
 		int compression_level,
 		int do_fsync,
 		unsigned int dir_mode,
-		unsigned int file_mode)
+		unsigned int file_mode,
+		int oid_type)
 {
 	git_odb_backend_loose_options opts = GIT_ODB_BACKEND_LOOSE_OPTIONS_INIT;
 	opts.compression_level = compression_level;
@@ -624,6 +629,7 @@ int _go_git_odb_backend_loose(
 		opts.flags |= GIT_ODB_BACKEND_LOOSE_FSYNC;
 	opts.dir_mode = dir_mode;
 	opts.file_mode = file_mode;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
 	return git_odb_backend_loose(out, objects_dir, &opts);
 }
 

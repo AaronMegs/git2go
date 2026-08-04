@@ -3,9 +3,9 @@ package git
 /*
 #include <git2.h>
 
-extern int _go_git_odb_backend_one_pack(git_odb_backend **out, const char *index_file);
-extern int _go_git_odb_backend_loose(git_odb_backend **out, const char *objects_dir, int compression_level, int do_fsync, unsigned int dir_mode, unsigned int file_mode);
-extern int _go_git_odb_new(git_odb **out);
+extern int _go_git_odb_backend_one_pack(git_odb_backend **out, const char *index_file, int oid_type);
+extern int _go_git_odb_backend_loose(git_odb_backend **out, const char *objects_dir, int compression_level, int do_fsync, unsigned int dir_mode, unsigned int file_mode, int oid_type);
+extern int _go_git_odb_new(git_odb **out, int oid_type);
 extern int _go_git_odb_hash(git_oid *out, const void *data, size_t len, git_object_t obj_type, int oid_type);
 extern int _go_git_odb_foreach(git_odb *db, void *payload);
 extern void _go_git_odb_backend_free(git_odb_backend *backend);
@@ -27,11 +27,9 @@ type Odb struct {
 	doNotCompare
 	ptr *C.git_odb
 
-	// oidType is the object id type this database stores, following git_oid_t
-	// (0 means "unknown / use the libgit2 default"). It is filled in by
-	// Repository.Odb() so that Hash() can follow the repository's object format
-	// instead of always hashing as SHA1. A standalone Odb (NewOdb) leaves it at
-	// 0.
+	// oidType is the object id type this database stores, following git_oid_t.
+	// Repository.Odb() inherits it from the repository; standalone constructors
+	// set it explicitly (NewOdb defaults to SHA1).
 	oidType C.int
 }
 
@@ -40,13 +38,18 @@ type OdbBackend struct {
 	ptr *C.git_odb_backend
 }
 
-func NewOdb() (odb *Odb, err error) {
-	odb = new(Odb)
+// NewOdb creates a standalone SHA1 object database with no backends.
+func NewOdb() (*Odb, error) {
+	return newOdbWithOidType(ObjectIdSHA1)
+}
+
+func newOdbWithOidType(oidType ObjectIdType) (odb *Odb, err error) {
+	odb = &Odb{oidType: C.int(oidType)}
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C._go_git_odb_new(&odb.ptr)
+	ret := C._go_git_odb_new(&odb.ptr, C.int(oidType))
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
@@ -86,27 +89,36 @@ func (v *Odb) AddBackend(backend *OdbBackend, priority int) (err error) {
 	return nil
 }
 
-func NewOdbBackendOnePack(packfileIndexPath string) (backend *OdbBackend, err error) {
+// NewOdbBackendOnePack creates a SHA1 backend for a single packfile.
+func NewOdbBackendOnePack(packfileIndexPath string) (*OdbBackend, error) {
+	return newOdbBackendOnePackWithOidType(packfileIndexPath, ObjectIdSHA1)
+}
+
+func newOdbBackendOnePackWithOidType(packfileIndexPath string, oidType ObjectIdType) (backend *OdbBackend, err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	cstr := C.CString(packfileIndexPath)
 	defer C.free(unsafe.Pointer(cstr))
 
-	var odbOnePack *C.git_odb_backend = nil
-	ret := C._go_git_odb_backend_one_pack(&odbOnePack, cstr)
+	var odbOnePack *C.git_odb_backend
+	ret := C._go_git_odb_backend_one_pack(&odbOnePack, cstr, C.int(oidType))
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
 	return NewOdbBackendFromC(unsafe.Pointer(odbOnePack)), nil
 }
 
-// NewOdbBackendLoose creates a backend for loose objects.
-func NewOdbBackendLoose(objectsDir string, compressionLevel int, doFsync bool, dirMode os.FileMode, fileMode os.FileMode) (backend *OdbBackend, err error) {
+// NewOdbBackendLoose creates a SHA1 backend for loose objects.
+func NewOdbBackendLoose(objectsDir string, compressionLevel int, doFsync bool, dirMode os.FileMode, fileMode os.FileMode) (*OdbBackend, error) {
+	return newOdbBackendLooseWithOidType(objectsDir, compressionLevel, doFsync, dirMode, fileMode, ObjectIdSHA1)
+}
+
+func newOdbBackendLooseWithOidType(objectsDir string, compressionLevel int, doFsync bool, dirMode os.FileMode, fileMode os.FileMode, oidType ObjectIdType) (backend *OdbBackend, err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	var odbLoose *C.git_odb_backend = nil
+	var odbLoose *C.git_odb_backend
 	var doFsyncInt C.int
 	if doFsync {
 		doFsyncInt = C.int(1)
@@ -115,7 +127,7 @@ func NewOdbBackendLoose(objectsDir string, compressionLevel int, doFsync bool, d
 	cstr := C.CString(objectsDir)
 	defer C.free(unsafe.Pointer(cstr))
 
-	ret := C._go_git_odb_backend_loose(&odbLoose, cstr, C.int(compressionLevel), doFsyncInt, C.uint(dirMode), C.uint(fileMode))
+	ret := C._go_git_odb_backend_loose(&odbLoose, cstr, C.int(compressionLevel), doFsyncInt, C.uint(dirMode), C.uint(fileMode), C.int(oidType))
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
@@ -277,9 +289,7 @@ func (v *Odb) Hash(data []byte, otype ObjectType) (oid *Oid, err error) {
 		size = C.size_t(0)
 	}
 
-	// Route through the stable-signature shim so this compiles against both the
-	// default and the experimental (SHA256-capable) libgit2 ABI. v.oidType is 0
-	// for a standalone Odb, which keeps the libgit2 default (SHA1).
+	// Route through the typed shim using the object database's configured format.
 	ret := C._go_git_odb_hash(oid.toC(), unsafe.Pointer(&data[0]), size, C.git_object_t(otype), v.oidType)
 	runtime.KeepAlive(data)
 	runtime.KeepAlive(v)

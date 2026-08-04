@@ -60,6 +60,22 @@ func TestNewOidTypeInferenceFromLength(t *testing.T) {
 	if got := sha1.NCmp(sha256, 1); got >= 0 {
 		t.Errorf("SHA1.NCmp(SHA256, 1) = %d, want < 0", got)
 	}
+
+	// NCmp's length is measured in hex characters (nibbles), not bytes.
+	nibbleA, err := NewOid("1200000000000000000000000000000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nibbleB, err := NewOid("1f00000000000000000000000000000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := nibbleA.NCmp(nibbleB, 1); got != 0 {
+		t.Errorf("NCmp(..., 1) = %d, want 0 for matching high nibble", got)
+	}
+	if got := nibbleA.NCmp(nibbleB, 2); got == 0 {
+		t.Error("NCmp(..., 2) = 0, want mismatch for different low nibble")
+	}
 }
 
 func TestNewOidFromBytesWithTypeRoundTrip(t *testing.T) {

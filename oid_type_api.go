@@ -9,6 +9,7 @@ extern int _go_git_repository_oid_type(git_repository *repo);
 */
 import "C"
 import (
+	"os"
 	"runtime"
 	"unsafe"
 )
@@ -45,6 +46,24 @@ func InitRepositoryWithOidType(path string, isBare bool, oidType ObjectIdType) (
 	}
 
 	return newRepositoryFromC(ptr), nil
+}
+
+// NewOdbWithOidType creates a standalone object database with no backends using
+// the specified object id type.
+func NewOdbWithOidType(oidType ObjectIdType) (*Odb, error) {
+	return newOdbWithOidType(oidType)
+}
+
+// NewOdbBackendOnePackWithOidType creates a backend for one packfile using the
+// specified object id type.
+func NewOdbBackendOnePackWithOidType(packfileIndexPath string, oidType ObjectIdType) (*OdbBackend, error) {
+	return newOdbBackendOnePackWithOidType(packfileIndexPath, oidType)
+}
+
+// NewOdbBackendLooseWithOidType creates a loose-object backend using the
+// specified object id type.
+func NewOdbBackendLooseWithOidType(objectsDir string, compressionLevel int, doFsync bool, dirMode os.FileMode, fileMode os.FileMode, oidType ObjectIdType) (*OdbBackend, error) {
+	return newOdbBackendLooseWithOidType(objectsDir, compressionLevel, doFsync, dirMode, fileMode, oidType)
 }
 
 // HashWithType determines the object id of a data buffer using the given object

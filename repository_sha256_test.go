@@ -10,8 +10,10 @@ package git
 //   go test -tags static -run SHA256 -v .
 
 import (
+	"bytes"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -134,11 +136,20 @@ func TestSHA256IndexerForOidType(t *testing.T) {
 	repo := createTestRepoSHA256(t)
 	defer cleanupTestRepo(t, repo)
 
-	// Seed one object so there is something to pack.
+	// Seed one object and build a real pack containing it.
 	odb, err := repo.Odb()
 	checkFatal(t, err)
-	_, err = odb.Write([]byte("packme\n"), ObjectBlob)
+	data := []byte("packme\n")
+	blobID, err := odb.Write(data, ObjectBlob)
 	checkFatal(t, err)
+
+	pb, err := repo.NewPackbuilder()
+	checkFatal(t, err)
+	defer pb.Free()
+	checkFatal(t, pb.Insert(blobID, "packme"))
+
+	var pack bytes.Buffer
+	checkFatal(t, pb.Write(&pack))
 
 	tmp, err := ioutil.TempDir("", "git2go-sha256-pack")
 	checkFatal(t, err)
@@ -147,6 +158,38 @@ func TestSHA256IndexerForOidType(t *testing.T) {
 	idx, err := NewIndexerForOidType(tmp, odb, ObjectIdSHA256, nil)
 	checkFatal(t, err)
 	defer idx.Free()
+	if n, err := idx.Write(pack.Bytes()); err != nil {
+		t.Fatal(err)
+	} else if n != pack.Len() {
+		t.Fatalf("Indexer.Write wrote %d bytes, want %d", n, pack.Len())
+	}
+
+	packID, err := idx.Commit()
+	checkFatal(t, err)
+	if packID.Type() != ObjectIdSHA256 || len(packID.String()) != 64 {
+		t.Fatalf("pack id type=%d hexlen=%d, want SHA256/64", packID.Type(), len(packID.String()))
+	}
+
+	indexPath := filepath.Join(tmp, "pack-"+packID.String()+".idx")
+	if _, err := os.Stat(indexPath); err != nil {
+		t.Fatalf("indexer did not create %s: %v", indexPath, err)
+	}
+
+	// Open the generated pack through a standalone SHA256 one-pack backend and
+	// read the original object, covering the backend's oid_type option too.
+	packedOdb, err := NewOdbWithOidType(ObjectIdSHA256)
+	checkFatal(t, err)
+	defer packedOdb.Free()
+	backend, err := NewOdbBackendOnePackWithOidType(indexPath, ObjectIdSHA256)
+	checkFatal(t, err)
+	checkFatal(t, packedOdb.AddBackend(backend, 1))
+
+	obj, err := packedOdb.Read(blobID)
+	checkFatal(t, err)
+	defer obj.Free()
+	if got := obj.Data(); !bytes.Equal(got, data) {
+		t.Errorf("packed object = %q, want %q", got, data)
+	}
 }
 
 // seedTestRepoSHA256 stages README and creates one commit on HEAD, returning the

@@ -1,23 +1,24 @@
 # git2go SHA1 / SHA256 兼容性适配设计文档
 
-> ⚠️ **重大状态变更（复核基线：libgit2 `main` @ `939362a3`，2026-08-03）：SHA256 已在上游转正。**
-> `GIT_EXPERIMENTAL_SHA256` 宏、`EXPERIMENTAL_SHA256` cmake 选项、`include/git2/experimental.h.in`
-> 均已从上游移除；`git_oid` **无条件**为 `{ type; id[32] }`。本文档§1.7 记录该事实与证据，
-> §4.6 的"阶段四合并"**触发条件已满足**，当前双构建模型需要收敛。以下 §1–§4.5 描述的是
-> 转正前（实验态）的设计与实现，仍是理解现状与执行收敛的基础。
-
-> 适用范围：`github.com/libgit2/git2go/v35`
-> **前瞻基线（推荐）**：libgit2 `main` 分支，为将来 libgit2 2.x / SHA256 转正预先对齐。
-> **兼容基线**：libgit2 1.9.x 发布版（overload 形态）通过默认编译路径继续支持，零破坏。
-> 目标：在**不破坏默认（SHA1-only）构建**的前提下，通过 cgo build tag + `wrapper.c` 条件 shim，同时支持 libgit2 `main`（`_ext`/`_from_` 形态，推荐前瞻路径）与 1.9.x（overload 形态）两种实验 SHA256 API，并为 SHA256 转正预留合并路线。
+> **当前状态（基线：libgit2 `main` @ `939362a3`）：SHA256 已在上游转正，第一步代码/构建收敛已完成。**
+> `GIT_EXPERIMENTAL_SHA256` 宏、`EXPERIMENTAL_SHA256` cmake 选项与实验安装布局均已移除；
+> `git_oid` 无条件为 typed 结构，同一构建同时支持 SHA1 与 SHA256，且 SHA1 仍为默认。
 >
-> 双轨说明：编译默认仍兼容 1.9.x 发布版（便于当前可用）；面向 main/2.x 的前瞻路径通过 `libgit2_next` 构建标签启用（见 §3.6）。子模块基线已指向 main 以对齐未来演进。
+> 适用范围：本分支 `github.com/libgit2/git2go/v35`；由于 `Oid` 公开类型与 libgit2 ABI 已发生
+> 破坏性变化，正式发布时建议提升 git2go 模块主版本。旧 20 字节 `git_oid` ABI 的 libgit2
+> 1.9.x 发布包不再兼容。
+>
+> 本文 §1.1–§1.7、§2–§4.5 保留的是转正前双轨方案的**历史设计记录**，不可再作为当前构建
+> 指南。当前实现与两步发版策略分别见 §1.8、§4.8；迁移指南见 §5 和
+> `sha256-breaking-changes.md`。
 
 ---
 
 ## 1. 上游 SHA256 API 评估（需求 1）
 
-### 1.1 总体结论
+> §1.1–§1.7 为转正前历史评估；当前结论从 §1.8 开始。
+
+### 1.1 总体结论（历史）
 
 截至 pin 的 commit，libgit2 中 SHA256 **仍是实验特性**，由编译期宏 `GIT_EXPERIMENTAL_SHA256` 门控：
 
@@ -472,35 +473,35 @@ SHA256 在上游"转正"后，`git_oid` 的 ABI 与解析函数 arity 将统一�
 
 **定位辅助：** 所有需在阶段四处理的点均以 `// TODO(sha256-merge):` 注释标注，转正时可一键 `grep` 定位。建议在版本守卫处加一条提示：当检测到 libgit2 版本 ≥ 转正版本时，于编译期输出"实验路径可合并"的告警。
 
-### 4.7 兼容性完整度自查（截至当前）
+### 4.7 兼容性完整度自查（转正收敛后）
 
-#### 4.7.1 已完整覆盖
+#### 已完整覆盖
 
-- **表示层**：`Oid` 的构造/解析/格式化/比较（`NewOid`、`NewOidFromBytes(WithType)`、`String`、`Bytes`、`Cmp`/`NCmp`/`Equal`/`IsZero`、`ShortenOids`）全部按类型自适应，无写死的 20/40/41。
-- **收口点**：`newOidFromC`/`toC` 是唯一的 C↔Go oid 转换点，全仓所有回调（tree/tag/note/rebase/stash/diff/merge…）经它自适应；`[]C.git_oid` 数组（`merge.go`）由 cgo 按真实结构体尺寸定步长；`CreateCommitFromIds` 用指针尺寸步长——三类均无需按类型改写。
-- **类型敏感 C 入口**：所有在实验宏下改变 arity/命名的函数（oid 解析、`git_odb_new/hash`、`git_odb_backend_one_pack/loose`、`git_index_new/open`、`git_diff_from_buffer`、`git_indexer_new`、`git_repository_init_ext`）**无一直接调用**，全部经 `wrapper.c` 稳定签名 shim，并在其中按 1.9.x / `main` 两种形态分叉。
-- **能力入口**：SHA256 仓库创建、类型化哈希、SHA256 packfile 索引、仓库类型查询均已暴露且经端到端验证。
-- **错配防护**：双向编译期 ABI 守卫（§3.7.1）。
-- **API 对称**：SHA256-aware API 在两种构建下同名同签名（§3.7.2）。
-- **sys 头入口**：mempack / refdb / transport 三类均已核对无破坏性变化（§4.3）。
+- **SHA1 保留且默认**：40-hex/20-byte oid、默认仓库、默认 ODB/index/diff/indexer 均保持 SHA1。
+- **SHA256 本地全生命周期**：仓库 init → ODB hash/write/read → standalone ODB + loose backend →
+  index → tree → commit → lookup → packbuilder → indexer commit（64-hex pack id）→ one-pack backend读取。
+- **远端路径**：SHA256 clone/fetch、pack 索引与 64-hex ref target 已验证；对象格式协商由
+  libgit2 内置 smart transport 的 `git_smart__oid_type` 完成。
+- **表示与比较**：构造、解析、`String`、`Bytes`、`Type`、`Cmp`、`NCmp`（nibble 语义）、
+  `Equal`、`IsZero`、`ShortenOids` 均按类型处理。
+- **C 入口**：oid 解析、ODB/backend、index、diff、indexer、repository init 全部统一走 promoted
+  typed/options/`_ext` API，无旧 overload 分支。
+- **构建守卫**：除 SHA256 尺寸宏外，同时检查 object-id/index/diff options 版本宏，避免旧
+  experimental 1.9.x 头文件仅因含 SHA256 宏而误通过。
 
-#### 4.7.2 已知限制（**不影响** SHA1 兼容性，属 SHA256 能力边界）
+#### 已知边界
 
-| 限制 | 说明 | 影响面 |
-|---|---|---|
-| ~~SHA256 远端协商未实现~~ | **已更正**：该能力由 libgit2 内置 smart transport 提供（`git_smart__oid_type` 读取远端 `object-format` capability），git2go 只提供 subtransport（字节流），无需实现 | 无缺口 |
-| `Odb.Hash` 语义为 libgit2 默认类型（SHA1） | 保持既有 API 行为不变；SHA256 需显式用 `Odb.HashWithType` | 无回退，但在 SHA256 仓库上误用会得到 SHA1 值（文档已注明） |
-| `NewIndexer` 同上 | 默认 SHA1；SHA256 用 `NewIndexerForOidType` | 同上 |
-| **`TestApplyDiffAddfile` 在实验构建下 SIGBUS** | 任何 `EXPERIMENTAL_SHA256=ON` 构建（1.9.4 与 main 均如此）下 `git_apply` 崩溃；默认 SHA1 构建正常。非本适配引入（已提交状态可复现），排查记录见 `sha256-todo-progress.md` N1 | **仅实验构建**；阻塞实验构建的全量测试套件 |
-| 实验构建下 `Oid` 不再是 `[20]byte` | 实验构建中 `Oid` 是结构体，无法 `oid[:]`/`oid[0]` 索引；须用 `Bytes()`/`String()`/`Type()` | **仅实验 tag 下**；默认构建的 `Oid [20]byte` 与历史完全一致，零破坏 |
-| `git_odb_hashfile` 未绑定 | 上游 git2go 原本也未绑定，非本次引入 | 无 |
-| 1.9.x overload 路径的最新回归 | 本轮纯 Go 层改动（`oid_sha256.go`、`sha256_default.go`）已在 `main`+`libgit2_next` 与默认构建上验证；overload 路径共用同一 Go 代码且 C 侧未变，如需完整复验：切子模块至 1.9.x → `make test-static-sha256` | 低风险 |
+| 边界 | 说明 |
+|---|---|
+| `git_odb_hashfile` / `git_object_id_from_file` 未绑定 | 上游 git2go 原本未绑定，非本次引入；内存 buffer 类型化 hash 已覆盖 |
+| push 未使用真实网络服务端做端到端测试 | clone/fetch/pack 协商已覆盖；push 依赖外部服务端环境 |
+| 正式版本号尚未发布 | 当前以能力宏守卫；正式发布后执行 §4.8 第二步 |
+| `Oid` 不再是 `[20]byte` | 属明确 breaking change；迁移见 `sha256-breaking-changes.md` |
 
-#### 4.7.3 结论
+#### 结论
 
-- **对 SHA1 完全兼容**：默认构建的 `Oid` 表示、公共 API 与行为均与适配前逐字节一致；系统库 / vendored-static / `main` 子模块三种链接方式均实测通过。
-- **对 SHA256 在"本地仓库全生命周期"上完整兼容**：init → odb 读写 → index → tree → commit → lookup → packfile 索引 → 仓库类型查询，均在真实实验 libgit2（`main` 与 1.9.x 两种 API 形态）上端到端验证通过。
-- **尚未完整覆盖的是"SHA256 远端交互"**（transport 协商），以及若干"默认类型语义"的便利性问题——均已在 §4.7.2 明示，不构成 SHA1 侧的破坏。
+SHA1 与 SHA256 在同一构建中共存，SHA1 仍为默认；SHA256 的本地仓库、standalone ODB、
+loose/pack backend、index/diff/indexer 与 clone/fetch 主链路均有真实端到端用例。
 
 ---
 
@@ -536,8 +537,16 @@ SHA256 在上游"转正"后，`git_oid` 的 ABI 与解析函数 arity 将统一�
 
 ## 5. 迁移指南（面向使用者）
 
-- 默认（SHA1-only）用户：**无需任何改动**。
-- 启用 SHA256（`git_experimental_sha256` tag）用户：
-  - 不要再假设 `Oid` 是 `[20]byte`；用 `oid.Bytes()` 取原始字节、`oid.String()` 取 hex、`oid.Type()` 取类型。
-  - 创建 SHA256 仓库使用带 `oid_type` 的 init API；`NewOid` 可直接解析 64 位 hex。
-  - 同一仓库内 oid 类型一致；跨类型比较无意义。
+本轮为**破坏性 API 变更**，包括只使用 SHA1 的调用方：`Oid` 已从 `[20]byte` 改为 typed
+结构体，因此数组索引、切片、固定长度转换、反射/unsafe 内存布局依赖都必须迁移。
+
+- SHA1 没有被移除且仍为默认：`InitRepository`、`NewOidFromBytes`、`NewOdb`、`NewIndex`、
+  `NewIndexer` 等默认 API 继续使用 SHA1。
+- 使用 `oid.Bytes()` 取有效原始字节（SHA1=20、SHA256=32），`oid.String()` 取 hex
+  （SHA1=40、SHA256=64），`oid.Type()` 取类型。
+- 创建 SHA256 仓库使用 `InitRepositoryWithOidType(..., ObjectIdSHA256)`；standalone ODB、
+  loose/one-pack backend、index、diff、indexer 均提供对应 `WithOidType` API。
+- 构建不再使用 `EXPERIMENTAL_SHA256`、`git_experimental_sha256` 或 `libgit2_next`；常规
+  `libgit2` 构建同时提供 SHA1 与 SHA256。
+
+完整 breaking changes、Changelog 摘要与迁移示例见 `sha256-breaking-changes.md`。

@@ -58,12 +58,7 @@ jobs:
       run: make TEST_ARGS=-test.v test-dynamic
 
   build-system-dynamic:
-    strategy:
-      fail-fast: false
-      matrix:
-        libgit2:
-          - 'v1.5.0'
-    name: Go (system-wide, dynamic)
+    name: Go (system-wide, dynamic, promoted SHA256 baseline)
 
     runs-on: ubuntu-20.04
 
@@ -75,11 +70,11 @@ jobs:
       id: go
     - name: Check out code into the Go module directory
       uses: actions/checkout@v1
-    - name: Build libgit2 ${{ matrix.libgit2 }}
+    - name: Build pinned libgit2 baseline system-wide
       run: |
         git submodule update --init
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
-        sudo env BUILD_LIBGIT_REF=${{ matrix.libgit2 }} ./script/build-libgit2.sh --dynamic --system
+        sudo ./script/build-libgit2.sh --dynamic --system
     - name: Test
       run: make TEST_ARGS=-test.v test
 
