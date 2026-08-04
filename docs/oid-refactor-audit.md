@@ -209,6 +209,6 @@ type Oid [32]byte
 5. **绑定新式 oid API**：`git_oid_from_string` / `git_oid_from_prefix` / `git_oid_from_raw`（带 type 参数），替换 `NewOid` / `NewOidFromBytes` 的实现。
 6. **`RepositoryInitOptions.OidType`** 接入（此时才安全）。
 7. **全量回归**，并新增 SHA1/SHA256 × files/reftable 四组合测试（原报告 §3.4 阶段 3）。
-8. **升级 vendor** 到含 SHA256 转正的 main（必须在第 3 步守卫更新后）。
+8. ✅ **vendor 已提前升级**到含 SHA256 转正的 main `939362a3c`（commit `8b4a398`）。因此在第 2–7 步完成前，ABI 守卫会按预期阻止构建；完成重构后直接在该 vendor 上恢复编译与回归。
 
 > 步骤 2–5 应在**同一个 PR** 内完成 —— 中间状态无法编译通过。

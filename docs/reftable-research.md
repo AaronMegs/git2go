@@ -7,8 +7,9 @@
 本项目模块：`cnb.cool/cnb/git2go/v35`
 
 > **两轮适配概述**
+>
 > - **第一轮（06-30）**：vendor 升到 `32b564e63`（含 PR #7117），绑定 `git_repository_init_ext` + `RepositoryInitOptions`（含 `refdb_type`）+ `git_refdb_t` 枚举，产出本报告初版与 3 个 init 冒烟测试。
-> - **第二轮（07-29）**：vendor 升到最新 main `ddf3b5c85`（含 reftable 更新 PR #7327），补齐**全部** refdb/reftable 公开 API 绑定（后端构造函数、compaction、refdb 获取/打开、运行时探测、后端格式识别），新增 11 个覆盖 files/reftable 双后端的测试。
+> - **第二轮（07-29）**：vendor 升到当时的 main `ddf3b5c85`（含 reftable 更新 PR #7327），补齐 refdb/reftable **直接公开函数**绑定（后端构造函数、compaction、refdb 获取/打开、运行时探测、后端格式识别），新增 11 个覆盖 files/reftable 双后端的测试。后续完整性审计发现自定义 backend callback 仍缺 4 项，见 [reftable-main-compat-audit.md](./reftable-main-compat-audit.md)。
 
 ---
 
@@ -36,7 +37,8 @@
 | `v1.9.3`（本项目原 vendor 锁定） | 否 |
 | `v1.9.4`（最新发布） | **否** |
 | `main` `32b564e63`（第一轮 vendor） | 是（PR #7117） |
-| `main` `ddf3b5c85`（**当前 vendor**） | 是（PR #7117 + #7327 修复） |
+| `main` `ddf3b5c85`（第二轮 vendor） | 是（PR #7117 + #7327 修复） |
+| `main` `939362a3c`（**当前 vendor**） | 是（含 SHA256 转正；当前被 `Oid` ABI 守卫阻止构建，待 v36 重构） |
 
 > **重要**：reftable 目前仅存在于未发布的 main 分支，所有 1.9.x 发布版均不含。任何依赖 reftable 的工程都必须自行构建 main，并接受其 API 与 ABI 的不稳定性。
 
@@ -197,7 +199,7 @@ const (
 
 ### 3.5 第二轮（07-29）：完整 refdb/reftable API 绑定
 
-vendor 进一步升级到最新 main `ddf3b5c85`（含 reftable 修复 PR #7327）。补齐了此前遗漏的**全部** refdb/reftable 公开 API，使 git2go 对 reftable 的支持从"仅能 init"提升到"完整生命周期可控"。
+vendor 进一步升级到当时的 main `ddf3b5c85`（含 reftable 修复 PR #7327）。补齐了此前遗漏的 refdb/reftable **直接公开函数**，使 git2go 对 reftable 的支持从“仅能 init”提升到“核心生命周期可控”。2026-08-04 完整性复审发现自定义 `git_refdb_backend` callback 桥接尚非完整，详见 [reftable-main-compat-audit.md §4](./reftable-main-compat-audit.md)。
 
 #### 新增绑定（均在 `refdb.go`）
 
@@ -238,7 +240,7 @@ vendor 进一步升级到最新 main `ddf3b5c85`（含 reftable 修复 PR #7327�
 
 现象：任何经 xdiff 的操作在本机 SIGBUS，共影响 10 个测试用例（完整清单见 §3.7），涉及 `git_apply` / `git_blame_file` / `git_diff_*` / `git_patch_from_diff` / `git_merge_file` / `git_rebase_next`。经**多轮真实构建对照**，最终定性为本地 libgit2 构建/工具链问题，**与 git2go 代码、cgo、reftable、libgit2 版本均无关**。
 
-**调研过程与证据（按时间顺序，含一次自我订正）**
+#### 调研过程与证据（按时间顺序，含一次自我订正）
 
 1. **隔离复现**：单独跑 `TestApplyDiffAddfile` 仍崩 → 排除并发竞争。
 2. **范围界定**：纯 diff（`TestDiffTreeToTree` / `TestDiffBlobs`，不经 apply）同样崩 → 不是 `git_apply` 特有，是整个 xdiff 机制全崩。
@@ -251,11 +253,11 @@ vendor 进一步升级到最新 main `ddf3b5c85`（含 reftable 修复 PR #7327�
 9. **排除 cmake 定制参数**：用接近默认的参数（不加 `USE_*=OFF` 等）构建 v1.9.4，diff **仍崩**。
 10. **决定性纯 C 复现**：写一个链接 `libgit2.a`、完全不含 Go/cgo 的 C 程序调用 `git_diff_buffers` → **SIGBUS（exit 138 = 128+10）**。
 
-**定性结论**
+#### 定性结论
 
 纯 C 都崩，且跨 libgit2 版本、跨 regex 后端、跨优化级别一致复现 → 这是 **libgit2 的 xdiff 在本机环境（macOS arm64 + 当前 clang 工具链）经 CMake 构建后的运行时 bug**，属 libgit2 / 工具链层面，**与 git2go 绑定代码完全无关，也不影响 reftable 功能**（reftable 全部测试通过；reftable 不经 xdiff）。
 
-**影响与后续**
+#### 影响与后续
 
 - 影响面：仅 diff/patch/blame 等走 xdiff 的路径；reftable、引用、提交、config 等均不受影响。
 - 后续（libgit2/环境侧，非 git2go）：在其它工具链/平台（如 CI 的 Linux）复核是否复现；若可复现则向上游 libgit2 报 issue（附纯 C 复现与本节回溯）；本机可尝试更换 clang 版本 / 关闭特定优化再排查。
@@ -265,7 +267,7 @@ vendor 进一步升级到最新 main `ddf3b5c85`（含 reftable 修复 PR #7327�
 
 在 vendor = main `ddf3b5c85`、`-tags "static libgit2_reftable"` 下做了一次完整全量回归。由于 xdiff 崩溃会终止整个 test binary，采用「逐轮排除崩溃点」的方式定位全部受影响用例，最终得到干净基线。
 
-**基线结果**
+#### 基线结果
 
 ```sh
 go test -tags "static libgit2_reftable" -count=1 -p 1 \
@@ -275,16 +277,16 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 
 **135 个用例全绿**，涵盖本次新增的全部绑定（reftable、refdb、自定义 refdb backend 桥接、reflog、版本 API）以及既有功能（引用、分支、提交、tag、remote、note、config、tree、index 等）。
 
-**被排除用例的分类（均为 pre-existing，与本次工作无关）**
+#### 被排除用例的分类（均为 pre-existing，与本次工作无关）
 
 | 类别 | 用例 | 原因 |
 | --- | --- | --- |
 | xdiff SIGBUS（10 个） | `TestApplyDiffAddfile`、`TestApplyToTree`、`TestRebaseInMemoryWithConflict`、`TestBlame`、`TestDiffBlobs`、`TestPatch`、`TestDiffTreeToTree`、`TestFindSimilar`、`TestMergeSameFile`、`TestMergeTreesWithoutAncestor` | §3.6 的本地 libgit2/工具链 bug。全部崩在 xdiff 相关 C 调用（`git_apply` / `git_blame_file` / `git_diff_*` / `git_patch_from_diff` / `git_merge_file` / `git_rebase_next`），纯 C 亦可复现 |
 | 环境差异（3 个） | `TestRebaseAbort`、`TestRebaseNoConflicts`、`TestRebaseGpgSigned` | 报错 `cannot locate local branch 'master'`。本机 `git config --global init.defaultBranch = main`，新建仓库实际为 `refs/heads/main`，而 `rebase_test.go` 硬编码查找 `master` |
 
-**另需注意（历史问题）**
+#### 另需注意（历史问题）
 
-- `TestConfigLookups` 与 `TestConfigEntryBackendType` 均调用 `t.Parallel()` 且共享同一路径 `./temp.gitconfig`，并行写会产生 `temp.gitconfig.lock` 冲突。用 `-p 1` 串行即可规避；此外若此前有测试进程崩溃（如上述 xdiff SIGBUS），会遗留 `temp.gitconfig.lock` 导致后续跑测试误报失败，需先 `rm -f temp.gitconfig.lock`。
+- `TestConfigLookups` 与 `TestConfigEntryBackendType` 均调用 `t.Parallel()` 且共享同一路径 `./temp.gitconfig`，并行写会产生 `temp.gitconfig.lock` 冲突。`-p 1` 只限制 package 并行，不能禁止同一 package 内的 `t.Parallel()`，因此并非可靠规避方式；正确修复是让两个测试分别使用 `t.TempDir()` 下的独立路径。此外若此前有测试进程崩溃（如上述 xdiff SIGBUS），会遗留 `temp.gitconfig.lock` 导致后续跑测试误报失败，需先清理残留 lock。
 
 ---
 
@@ -317,7 +319,7 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 | `git_reference__is_per_worktree_ref` | 内部函数 | 不绑定 | 非公开 API |
 | `refdb_reftable.c` 后端 | 内部实现 | 不直接绑定 | 调用方对其透明 |
 
-**结论**：所有 reftable/refdb **公开** API（`refdb.h` + `sys/refdb_backend.h` 中的 `GIT_EXTERN` 函数、`repository.h` 相关项）均已绑定。仅剩两项 `git_refdb_init_backend` 与 backend init flags 未绑定，它们仅在实现**自定义后端**（用 Go 实现一个 refdb backend）时才需要，不属于"使用 reftable"场景，列入长期 roadmap。
+**结论（2026-08-04 复审修正）**：reftable/refdb 的**直接公开函数**（`refdb.h` 的 `GIT_EXTERN` 函数、files/reftable 后端构造、repository refdb/init 相关项）均已绑定；但 `git_refdb_backend` 的 17 个 callback 仅桥接 13 个，缺少 `init` / `compress` / `lock` / `unlock`，且 iterator 生命周期/并发设计需修正。因此不能再表述为“全部公开 API 100% 完成”。详见 [reftable-main-compat-audit.md §4](./reftable-main-compat-audit.md)。
 
 ---
 
@@ -325,16 +327,17 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 
 ### 5.1 已完成（截至第二轮 07-29）
 
-- ✅ vendor 升级到含 reftable 的 main（`ddf3b5c85`）并本地重建、编译通过。
+- ✅ 第二轮 vendor 升级到含 reftable 的 main `ddf3b5c85` 并完成当时的重建/回归。
+- ✅ 当前 vendor 已进一步升级到 `939362a3c`；⏸️ 该版本因 SHA256 `git_oid` ABI 变化被安全守卫按预期阻止构建，待 v36 `Oid` 重构。
 - ✅ 完整 `RepositoryInitOptions` + `InitRepositoryExt`（含 `refdb_type`）。
-- ✅ 全部 refdb/reftable 公开 API 绑定（后端构造、compaction、refdb 获取/打开）。
+- ✅ refdb/reftable 直接公开函数绑定（后端构造、compaction、refdb 获取/打开）；⚠️ 自定义 backend callback 桥接仍需补 4 项并重构 iterator 生命周期。
 - ✅ 特性探测助手 `IsReftableSupported()`、后端识别 `RefStorageFormat()`。
 - ✅ files/reftable 双后端测试矩阵（14 个测试，含分支完整 CRUD、stack compaction）。
 
 ### 5.2 短期（下一个 PR 周期）
 
 1. **构建脚本适配 main** ✅ 已完成
-   - `script/build-libgit2.sh` 已加入 `USE_AUTH_NTLM=OFF` / `USE_AUTH_NEGOTIATE=OFF`，bundled 构建默认 `DEPRECATE_HARD=OFF`（可用环境变量覆盖）。现可直接构建当前 vendor。
+   - `script/build-libgit2.sh` 已加入 `USE_AUTH_NTLM=OFF` / `USE_AUTH_NEGOTIATE=OFF`，bundled 构建默认 `DEPRECATE_HARD=OFF`（可用环境变量覆盖）。该脚本可构建第二轮 vendor `ddf3b5c85`；当前 `939362a3c` 在完成 `Oid` ABI 重构前会被守卫有意阻止。
 
 2. **CI 矩阵** ✅ 已完成
    - `.github/workflows/ci.yml` 新增 `build-reftable` job：构建 bundled main（含 reftable）并跑 reftable/refdb 测试子集，含 reftable 仓库创建与分支生命周期专项验证。
@@ -371,14 +374,14 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 
 ### 5.4 长期
 
-1. **自定义 refdb 后端** ✅ 已完成
+1. **自定义 refdb 后端** ⚠️ 部分完成，待 bridge v2
    - ✅ `RefdbBackendInitFlag` 枚举（`RefdbBackendInitIsWorktree` / `RefdbBackendInitForceHead`），main-only，随 `libgit2_reftable` tag。
-   - ✅ 完整回调桥接：`RefdbBackendInterface`（13 个方法：Exists/Lookup/Iterator/Write/Rename/Delete/HasLog/EnsureLog/Free/ReflogRead/Write/Rename/Delete）+ `RefdbBackendIterator`。`NewRefdbBackendFromInterface` 用 Go 实现 refdb backend，经 `Refdb.SetBackend` 挂载。
-     - C 侧（`wrapper.c`）：`_go_managed_refdb_backend` 内嵌 `git_refdb_backend`+handle，13 个 trampoline 转 `//export` Go 回调，错误经 `set_callback_error` 传递；自定义 iterator 亦为内嵌 `git_reference_iterator` 的托管结构。
-     - 生命周期：`pointerHandles` 锚定 Go 实现，`free` 回调触发 Untrack；引用/reflog 对象在回调内转移所有权给 libgit2（`SetFinalizer(nil)`）。
-     - `Reflog` 类型（`reflog.go`）承载 reflog 回调句柄，并已扩展为**完整的 reflog entry 读写 API**（见下）。
-     - 位于 `refdb_backend.go`（无 build tag，v1.9.x 也可编译——`git_refdb_backend` 结构与 `git_refdb_init_backend` 在 v1.9.4 存在）。
-   - 测试：`refdb_backend_test.go` 的 `TestRefdbBackendBridge` 验证 Go 实现 attach 后，libgit2 lookup 路由进 Go 回调、`free` 回调触发、无 cgo handle 泄漏。
+   - ✅ 已桥接 13 个 callback：Exists/Lookup/Iterator/Write/Rename/Delete/HasLog/EnsureLog/Free/ReflogRead/Write/Rename/Delete。
+   - ❌ 最新 main 和当前 vendor 的 `git_refdb_backend` 实际有 17 个 callback，仍缺 `init` / `compress` / `lock` / `unlock`；无 lock/unlock 时 transaction API 无法工作。
+   - ❌ iterator 当前按 backend 共享单一 Go iterator，不能支持多 iterator/并发；C iterator free 未调用 Go `Free()`，`next_name` 的 `strdup` 缓冲也未回收。
+   - ✅ `Reflog` 已扩展为完整 entry 读写 API（见下）。
+   - ✅ 基础测试验证了 lookup/free trampoline，但尚未覆盖全部 callback 与多 iterator 生命周期。
+   - 修复方案：采用可选 capability interfaces（Initializer/Compressor/Locker），并为每个 iterator 建立独立 `pointerHandles` handle。详见 [reftable-main-compat-audit.md §4](./reftable-main-compat-audit.md)。
 
 2. **完整 Reflog entry 读写 API** ✅ 已完成
    - `reflog.go` 绑定 `git2/reflog.h` 全部 13 个公开函数：
@@ -392,7 +395,7 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 4. **per-worktree 引用语义**：⏸️ **已调研，仍为内部 API** —— `git_reference__is_per_worktree_ref` 位于 `src/libgit2/refs.h:108`（非公开），且上游正收紧符号可见性，不应绑定。可选替代：Go 侧按 git 约定自行实现。详见 [reftable-longterm-research.md §2](./reftable-longterm-research.md)。
 5. **SHA-256 与 reftable 组合**：✅ **上游已解锁**，但 ⚠️ **触发 git2go `Oid` ABI 破坏性变更** —— 上游 PR #7261 已将 SHA256 转正（`GIT_EXPERIMENTAL_SHA256` 从公开头文件移除），`git_oid` 由 20 字节变为 33 字节（新增 `type` 字段 + `id[32]`，`GIT_OID_MAX_SIZE` 由 20 变 32），而 git2go 的 `Oid [20]byte` 直接 `unsafe.Pointer` 强转为 `*C.git_oid` 会**越界破坏内存**。reftable 后端已原生支持 `REFTABLE_HASH_SHA256`。落地需分三阶段（编译期尺寸守卫 → `Oid` 重构 → 组合测试矩阵）。详见 [reftable-longterm-research.md §3](./reftable-longterm-research.md)。
 
-> ⚠️ **重要风险提示**：当前 vendor（`ddf3b5c85`）尚未转正 SHA256，`git_oid` 恰为 20 字节，故一切正常。但**任何将 vendor 升级到最新 main 的操作都会触发上述内存损坏问题**，升级前必须先落地 `Oid` 尺寸守卫。
+> ⚠️ **当前迁移状态**：vendor 已由 commit `8b4a398` 从 `ddf3b5c85` 升级到最新审计基线 `939362a3c`。该版本的 `git_oid` 已变为 33 字节；已落地的 `Oid` ABI 守卫会按预期在编译期阻止构建，避免内存损坏。必须完成 v36 `Oid` 方案 A 重构后才能恢复构建并验证 SHA256 + reftable。
 
 ---
 
@@ -400,7 +403,7 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 
 | 风险 | 缓解措施 |
 | --- | --- |
-| main 不稳定，API 可能再变 | vendor pin 到具体 commit `ddf3b5c85`，不随 main 自动滚动；遇上游 break 时同步更新本项目。PR #7327 已证明 reftable API 仍在演进（stack/write options 拆分），需持续跟进。 |
+| main 不稳定，API/ABI 可能再变 | vendor 现 pin 到 `939362a3c`，不随 main 自动滚动。PR #7327 证明 reftable 实现在演进；PR #7261 的 SHA256 转正更直接改变 `git_oid` ABI，当前已由尺寸守卫阻止不安全构建。 |
 | 用户原先使用 v1.9.x 系统库 | `RepositoryInitOptions.RefdbType=0`（默认）行为与旧 `InitRepository` 等价；不主动启用 reftable。 |
 | 未启用 reftable 时的开销 | 零运行时开销：仅多了一个 init options 字段，C 端为 0 时走默认分支。 |
 | 文档/用户期望错配 | 在 GoDoc 与本文档明确：reftable 需 master 构建，发布版不可用。 |

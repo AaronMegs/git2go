@@ -2,12 +2,12 @@
 
 > 调研日期：2026-08-03（初版，对照上游 `d29fe50de`）；2026-08-04（复核，对照上游 `939362a3c`）
 > 本项目分支：`feat-reftable`
-> 当前 vendor：libgit2 main `ddf3b5c85`
-> 上游 main HEAD：`939362a3c`（领先 vendor 26 个 commit）
+> 当前 vendor：libgit2 main `939362a3c`（git2go commit `8b4a398` 已同步）
+> 上游 main HEAD：`939362a3c`（以 2026-08-04 复核时点计，vendor 与上游一致）
 
 本报告针对 `docs/reftable-research.md` §5.4 的三项长期项做上游状态核查、可行性分析与落地方案。
 
-> **2026-08-04 复核结论**：上游从 `d29fe50de` 前进到 `939362a3c`（新增 4 个 commit：PR #7331 `patch: accept empty-file diffs with no hunk`、PR #7332 `index: fix discarded insertion position in D/F conflict check`）。两者均为与本议题无关的 bugfix，仅触及 `src/libgit2/index.c`、`src/libgit2/patch_parse.c` 及对应测试，**未触及** reftable / oid / feature / worktree 任何代码。**三项结论全部维持不变**，本次复核另补充了 §3.3.1 的宏定义细节。
+> **2026-08-04 复核结论**：上游从 `d29fe50de` 前进到 `939362a3c`（新增 4 个 commit：PR #7331 `patch: accept empty-file diffs with no hunk`、PR #7332 `index: fix discarded insertion position in D/F conflict check`）。两者均为与本议题无关的 bugfix，仅触及 `src/libgit2/index.c`、`src/libgit2/patch_parse.c` 及对应测试，**未触及** reftable / oid / feature / worktree 任何代码。**三项结论全部维持不变**，本次复核另补充了 §3.3.1 的宏定义细节。随后 vendor 已由 git2go commit `8b4a398` 同步到该 `939362a3c`；当前 ABI 守卫会按预期阻止构建，直至完成 `Oid` 重构。
 
 ---
 
@@ -205,7 +205,7 @@ typedef struct git_oid {
 } git_oid;                                /* 合计 33 字节（含对齐） */
 ```
 
-**当前 vendor（`ddf3b5c85`）的 `git_oid`：**
+**原 vendor（`ddf3b5c85`，升级前）的 `git_oid`：**
 
 ```c
 typedef struct git_oid {
@@ -238,13 +238,13 @@ func newOidFromC(coid *C.git_oid) *Oid {
 2. `newOidFromC()` 从偏移 0 拷 20 字节 → 实际拷到的是 `type` 字段 + 前 19 字节 id，**所有 OID 全部错位**。
 3. 影响面极广：`Oid` 是 git2go 最基础的类型，被 commit/tree/blob/reference/index/odb/reflog 等**几乎所有 API** 使用。
 
-> 这也解释了为何当前 vendor（`ddf3b5c85`）一切正常——它尚未转正 SHA256，`git_oid` 恰好是 20 字节。**这是一个"沉默的定时炸弹"：任何人无意中把 vendor 升到最新 main 都会触发。**
+> 这也解释了为何原 vendor（`ddf3b5c85`）一切正常——它尚未转正 SHA256，`git_oid` 恰好是 20 字节。vendor 现已更新到 `939362a3c`，因此这个“沉默的定时炸弹”已被 ABI 守卫转化为**预期的编译期报错**；必须完成 `Oid` 重构后才能恢复构建。
 
 #### 3.3.1 尺寸宏的确切定义（复核补充）
 
 `include/git2/oid.h`（`939362a3c`）的相关宏：
 
-| 宏 | 当前 vendor `ddf3b5c85` | 上游 main `939362a3c` |
+| 宏 | 原 vendor `ddf3b5c85` | 当前 vendor/main `939362a3c` |
 | --- | --- | --- |
 | `GIT_OID_SHA1_SIZE` | 20 | 20 |
 | `GIT_OID_SHA256_SIZE` | 32（仅在 `GIT_EXPERIMENTAL_SHA256` 下定义） | **32（无条件）** |
@@ -266,7 +266,7 @@ func newOidFromC(coid *C.git_oid) *Oid {
 #define GIT_OID_MAX_SIZE        GIT_OID_SHA256_SIZE   ← 恒为 32
 ```
 
-因此 §3.4 阶段 1 的 `#if GIT_OID_MAX_SIZE != 20` 守卫是**可靠**的判据：当前 vendor 下为 20（通过），升级到含 SHA256 转正的 main 后为 32（报错）。
+因此 §3.4 阶段 1 的 `#if GIT_OID_MAX_SIZE != 20` 守卫是**可靠**的判据：原 vendor 下为 20（通过），当前 `939362a3c` 下为 32（按预期报错）。
 
 ### 3.4 落地方案（分阶段）
 
@@ -281,7 +281,8 @@ func newOidFromC(coid *C.git_oid) *Oid {
 | 模拟场景 | `GIT_OID_MAX_SIZE` | 结果 |
 | --- | --- | --- |
 | SHA256 转正后的 libgit2 | 32 | ✅ 编译期报错，错误信息指向本文档 §3 |
-| 当前 vendor 的 libgit2 | 20 | ✅ 静默通过 |
+| 原 vendor `ddf3b5c85` | 20 | ✅ 静默通过 |
+| 当前 vendor `939362a3c` | 32 | ✅ 被守卫按预期阻止（待 `Oid` 重构） |
 
 实现如下：
 
@@ -320,7 +321,7 @@ before it can be used. See docs/reftable-longterm-research.md."
 > - 实测上游 `git_oid` 布局为 `sizeof=33, align=1, offset_id=1`；Go 侧 `struct{ Type uint8; ID [32]byte }` 可**精确匹配**（33/1/1），故**方案 A 能保持零拷贝强转**，使 44 处调用点（含 20 处 OUT）**零改动**。
 > - **最终推荐改为方案 A。**
 
-**方案 A（审计后确认推荐）：结构体化，布局精确匹配 C**
+##### 方案 A（审计后确认推荐）：结构体化，布局精确匹配 C
 
 ```go
 // Oid represents the id for a Git object.
@@ -336,7 +337,7 @@ type Oid struct {
 - 注意：`Type` 字段**不能**用公开的 `OidType`（底层 `int`，8 字节）—— 实测会使结构变为 40 字节且 `ID` 偏移错位。应保留 `uint8` 并提供 `OidType()` 访问器。
 - 实测确认：结构体**可比较**，故 `*oid == *oid2`（`Equal`）、`Oid{}` 字面量（`IsZero`）、`Oid` 作 map key **语法均兼容**（原文此处判断有误，已修正）。
 
-**方案 B（审计后不再推荐）：保持数组语义，扩容 + 显式转换函数**
+##### 方案 B（审计后不再推荐）：保持数组语义，扩容 + 显式转换函数
 
 ```go
 type Oid [32]byte    // 仅扩容，不含 type
@@ -352,7 +353,7 @@ func (oid *Oid) toC(t OidType) *C.git_oid {
 - 优点：`oid[:]` / `==` / `Oid{}` 等惯用法大部分仍可用，源码兼容性冲击较小。
 - 缺点：丢失 type 信息（需在调用侧传递，或由 Repository 的 oid_type 推断）；不再能零拷贝强转，所有 `toC` 调用点需审查生命周期（不能返回栈上 `&coid` 给 libgit2 长期持有）。
 
-**方案 C：双类型并存**
+##### 方案 C：双类型并存
 
 保留 `Oid [20]byte` 用于 SHA1 路径，新增 `OidAny`/`Oid256` 用于 SHA256——复杂度高、API 割裂，**不推荐**。
 
