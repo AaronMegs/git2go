@@ -11,7 +11,7 @@
 ## 总览
 
 | # | 工作项 | 状态 |
-|---|---|---|
+| --- | --- | --- |
 | 1 | 修复 managed SSH 远端命令注入与 URL/path 校验 | ✅ 已完成 |
 | 2 | 升级 CI Go/actions/runner 并增加跨平台验证 | ✅ 已完成（Linux + macOS；Windows 留待正式包阶段） |
 | 3 | 将自动 Tag 流程改造为受控的 `v36.0.0-pre.N` 发布 | ✅ 已完成 |
@@ -20,6 +20,7 @@
 | 6 | 审计 deprecated libgit2 API，并验证 `DEPRECATE_HARD=ON` | ✅ 已完成 |
 | 7 | 等待上游正式版本、更新守卫和跨平台正式包验证 | ⏸ 外部阻塞（最新正式版仍为 v1.9.6） |
 | 8 | 绑定 `git_object_id_from_file` 文件路径类型化 hash | ✅ 已完成 |
+| 9 | 修复 Go 1.14+ 自动 vendor 模式导致的 GitHub CI 全任务失败 | ✅ 已完成 |
 
 ---
 
@@ -214,7 +215,7 @@ C shim 构造 `git_object_id_options` 并调用转正后的 `git_object_id_from_
 与上游一致，该 API 哈希文件的 raw content，不应用 `.gitattributes`、CRLF 等 repository filters；
 需要过滤语义时应使用 repository-aware hash API。
 
-### 验证
+### 文件 hash 验证
 
 新增 `TestHashFileWithOidType`，覆盖：
 
@@ -227,3 +228,52 @@ C shim 构造 `git_object_id_options` 并调用转正后的 `git_object_id_from_
 - 文件名包含空格和 apostrophe、文件内容包含 NUL 字节。
 
 定向测试与 bundled-static 全量测试均通过。
+
+---
+
+## 9. GitHub CI vendor 一致性 — ✅ 已完成
+
+### CI 现象
+
+Go 1.18、stable、macOS、dynamic、system static/dynamic、`DEPRECATE_HARD=ON` 等所有 job 在
+执行首个 Go 命令时共同失败：
+
+```text
+go: inconsistent vendoring in .../git2go:
+  github.com/google/shlex ... is explicitly required in go.mod,
+  but not marked as explicit in vendor/modules.txt
+  golang.org/x/crypto ...
+  golang.org/x/sys ...
+```
+
+### vendor 失败根因
+
+项目将 libgit2 子模块放在 `vendor/libgit2`，但没有 Go 的 `vendor/modules.txt`。自 `go 1.14`
+起，只要 `go.mod` 的 Go 版本 >= 1.14 且存在 vendor 目录，Go 命令会自动启用 vendor mode。
+CI 升级到 Go 1.18/stable 后因此把 `vendor/` 视为 Go vendor tree，并在任何测试执行前拒绝不一致
+状态。这不是 macOS 专属问题，所有 job 根因相同。
+
+### vendor 修复方案
+
+运行 `GOFLAGS=-mod=mod go mod vendor` 生成与 `go.mod` 一致的依赖源码和 `vendor/modules.txt`，
+随后恢复同目录下 pinned `vendor/libgit2` 子模块。Makefile 新增 `vendor-go` 目标固化该顺序；后续
+依赖升级应执行 `make vendor-go`，避免 `go mod vendor` 清空 C 子模块工作树。最终 vendor tree
+同时包含：
+
+- `vendor/libgit2`：C 子模块（pin `939362a3`）；
+- `vendor/github.com/google/shlex`；
+- `vendor/golang.org/x/crypto`、`x/sys`；
+- `vendor/modules.txt`：三个 Go module 均标记 `explicit`。
+
+选择提交 Go vendor（约 134 个文件、1.1 MiB），而不是仅在 CI 强制 `-mod=mod`，原因是下游
+使用 Go 1.14+ 直接运行 `go test` 也会遇到同样问题；完整 vendor tree 才能从根因上修复默认行为。
+
+### CI vendor 验证
+
+无需 `GOFLAGS=-mod=mod`：
+
+- `go list -m` → `github.com/libgit2/git2go/v36`；
+- `go run script/check-MakeGitError-thread-lock.go` → 通过；
+- `go list -mod=vendor all` → 215 个 package；
+- `go test -tags static --count=1 ./...` → 全量通过；
+- `go mod verify` → `all modules verified`。

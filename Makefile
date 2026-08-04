@@ -57,3 +57,11 @@ test-static: static-build/install/lib/libgit2.a
 
 install-static: static-build/install/lib/libgit2.a
 	go install --tags "static" ./...
+
+# Go dependencies and the libgit2 submodule intentionally share vendor/. The Go
+# command recreates vendor/ from scratch, so restore the pinned C submodule after
+# every dependency vendor update.
+.PHONY: vendor-go
+vendor-go:
+	go mod vendor
+	git submodule update --init --checkout vendor/libgit2
