@@ -27,7 +27,8 @@
 | --- | --- |
 | ✅ 编译期 ABI 守卫 | `git2go_version_check.h` 新增 `#if GIT_OID_MAX_SIZE != 20`，把"运行时内存损坏"降级为"构建期明确报错"，三种链接方式均受保护；已双向验证 |
 | ✅ oid type 探测 API | `oid_type.go`：`OidType` 枚举（含 `String()` / `Size()` / `HexSize()`）、`Repository.OidType()`、`IsSha256Supported()`，6 个测试全通过 |
-| ⬜ 阻塞项 | `Oid` 类型重构（唯一的SHA256 前置，需独立里程碑） |
+| ✅ 影响面审计 | [oid-refactor-audit.md](./oid-refactor-audit.md)：1 处强转、44 处 `toC()` 调用（**20 处OUT 参数**）、9 处布局依赖；实测布局确认后**推荐方案改为 A** |
+| ⬜ 阻塞项 | `Oid` 类型重构（唯一的SHA256 前置，需独立里程碑 + v36 major bump） |
 
 ---
 
@@ -310,22 +311,32 @@ before it can be used. See docs/reftable-longterm-research.md."
 
 #### 阶段 2：`Oid` 类型重构（大工程，SHA256 支持的前提）
 
-目标：让 `Oid` 与新的 `git_oid`（type + 32 字节）等价，且不破坏现有调用方。
+目标：让 `Oid` 与新的 `git_oid`（type + 32 字节）等价，且尽量少影响现有调用方。
 
-**方案 A（推荐）：结构体化 + 显式转换**
+> ⚠️ **本节的方案对比已被专项审计修正**。详细的调用点清单、实测布局数据与最终结论见 **[oid-refactor-audit.md](./oid-refactor-audit.md)**。要点：
+>
+> - 审计发现 **20 处把 `oid.toC()` 当OUT 参数**（C 写入 Go 内存）的调用点，覆盖提交/标签/树/note/stash/odb 写入等几乎所有写对象路径。
+> - 因此**方案 B 会导致这20 处静默失效**（编译通过但拿不到 OID），其"源码兼容性更好"的原判断**不成立** —— 它只是把错误从编译期推迟到运行期。
+> - 实测上游 `git_oid` 布局为 `sizeof=33, align=1, offset_id=1`；Go 侧 `struct{ Type uint8; ID [32]byte }` 可**精确匹配**（33/1/1），故**方案 A 能保持零拷贝强转**，使 44 处调用点（含 20 处 OUT）**零改动**。
+> - **最终推荐改为方案 A。**
+
+**方案 A（审计后确认推荐）：结构体化，布局精确匹配 C**
 
 ```go
 // Oid represents the id for a Git object.
 type Oid struct {
-    Type OidType          // GIT_OID_SHA1 / GIT_OID_SHA256
-    ID   [32]byte         // GIT_OID_MAX_SIZE
+    Type uint8       // 必须是 uint8 才能匹配 C 的 unsigned char（offset 0）
+    ID   [32]byte    // GIT_OID_MAX_SIZE（offset 1）
 }
+// sizeof = 33, align = 1 —— 与 C 的 git_oid 完全一致
 ```
 
-- 优点：与 C 布局一一对应，可继续零拷贝强转（需 `//go:linkname` 级别的布局校验或改为显式字段拷贝）。
-- 缺点：**破坏源码兼容性**——现有代码 `oid[:]`、`*oid == *oid2`、`Oid{}` 字面量全部失效。git2go 是 v35 模块，此类变更需要 **v36 major bump**。
+- 优点：与 C 布局一一对应，**保持零拷贝强转**，`toC()` 实现与全部 44 处调用点无需改动；不兼容处均在**编译期暴露**，无静默错误风险。
+- 缺点：`oid[:]`、`oid[i]`、`len(oid)`、`[20]byte` 字面量等**数组用法失效**，属破坏性 API 变更，需 **v36 major bump**。
+- 注意：`Type` 字段**不能**用公开的 `OidType`（底层 `int`，8 字节）—— 实测会使结构变为 40 字节且 `ID` 偏移错位。应保留 `uint8` 并提供 `OidType()` 访问器。
+- 实测确认：结构体**可比较**，故 `*oid == *oid2`（`Equal`）、`Oid{}` 字面量（`IsZero`）、`Oid` 作 map key **语法均兼容**（原文此处判断有误，已修正）。
 
-**方案 B：保持数组语义，扩容 + 显式转换函数**
+**方案 B（审计后不再推荐）：保持数组语义，扩容 + 显式转换函数**
 
 ```go
 type Oid [32]byte    // 仅扩容，不含 type
@@ -345,11 +356,11 @@ func (oid *Oid) toC(t OidType) *C.git_oid {
 
 保留 `Oid [20]byte` 用于 SHA1 路径，新增 `OidAny`/`Oid256` 用于 SHA256——复杂度高、API 割裂，**不推荐**。
 
-**推荐路径**：方案 B 作为过渡（v35 内可发布，冲击可控），方案 A 作为 v36 的目标形态。
+**推荐路径**（审计后修正）：**直接采用方案 A**，作为 v36 的形态。原先"方案 B 过渡 + 方案 A 目标"的两步走已被否决 —— 方案 B 会让 20 处OUT 参数静默失效，且 `oid[:]`/`len(oid)` 语义从 20 静默漂移到 32，代价高于直接做方案 A。详见 [oid-refactor-audit.md §5](./oid-refactor-audit.md)。
 
 无论哪种方案，均需完成：
 
-1. **审计所有 `unsafe.Pointer` 强转点**：`grep -rn "unsafe.Pointer" *.go` 找出全部把 Go 类型当 C 类型用的位置，逐一确认布局假设。
+1. ✅ **审计所有 `unsafe.Pointer` 强转点** —— **已完成**，见 [oid-refactor-audit.md](./oid-refactor-audit.md)：全项目仅 `git.go:231` 一处强转，但有 44 处 `oid.toC()` 调用（20 处为 OUT 参数）与 `git.go` 内 9 处布局依赖。
 2. **绑定 oid type API**：
    - ✅ `OidType` 枚举（`OidTypeSha1` / `OidTypeSha256`）—— **已落地**（`oid_type.go`）
    - ✅ `Repository.OidType()` ← `git_repository_oid_type` —— **已落地**（该API 在当前 vendor 已无条件公开）
@@ -415,9 +426,10 @@ func TestReftableWithSha256(t *testing.T) {
 
 1. ✅ **【已完成】** 阶段 1 的编译期尺寸守卫 —— 防止 vendor 误升级造成内存损坏。已双向验证（模拟 32 字节报错、20 字节通过）。
 2. ✅ **【已完成】** 绑定 `OidType` 枚举 + `Repository.OidType()` + `IsSha256Supported()` —— 零风险增量，为后续铺路。6 个新测试全部通过，全量回归基线由 135 增至 141 个用例。
-3. **【规划】** 阶段 2b `Oid` 重构 —— 建议作为独立里程碑，明确是否接受 v36 major bump。这是解锁 SHA256 的唯一前置。
-4. **【规划】** 阶段 3 SHA256 + reftable 组合测试矩阵。
-5. **【冻结】** C3 / C4 保持观察，无上游动作则不改动。
+3. ✅ **【已完成】** `Oid` 重构影响面审计 —— 见 [oid-refactor-audit.md](./oid-refactor-audit.md)。结论：方案 A（结构体 + `uint8` type字段）可保持零拷贝强转，44 处调用点零改动；方案 B 因 20 处 OUT 参数静默失效而否决。
+4. **【规划】** 阶段 2b `Oid` 重构（方案 A）—— 独立里程碑，需接受 v36 major bump。这是解锁 SHA256 的唯一前置。
+5. **【规划】** 阶段 3 SHA256 + reftable 组合测试矩阵。
+6. **【冻结】** C3 / C4 保持观察，无上游动作则不改动。
 
 ---
 
