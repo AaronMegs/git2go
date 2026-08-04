@@ -22,7 +22,7 @@
 | 4 | SHA256 远端协商（transport `oid_type`） | ✅ 已完成（结论：无需适配，原判断有误已更正） |
 | 5 | SHA256 远端端到端用例（clone） | ✅ 已完成 |
 | 6 | `Odb` 类型感知（`Hash` 自动跟随仓库类型） | ✅ 已完成 |
-| 7 | 上游转正后合并双实现 | 🟡 **第一步已完成并经完整性复审；第二步等待上游正式版本号**（见设计文档 §4.8）|
+| 7 | 上游转正后合并双实现 | 🟡 **第一步已完成并经完整性复审；主版本已定为 v36，当前为 v36-pre；等待上游正式版本号完成第二步**（见设计文档 §4.8）|
 | 8 | 第一阶段完整性复审补漏 | ✅ 已完成（CI、standalone ODB/backend、NCmp、能力守卫、真实 indexer commit、文档）|
 | **N1** | `TestApplyDiffAddfile` 在自建 libgit2 上 SIGBUS | ✅ 已修复（根因：本机头污染 + xdiff 用 `-isystem`）|
 | **N2** | 3 个 `TestRebase*` 失败 | ✅ 已修复（测试硬编码 `master` + 取分支名时机错误）|
@@ -312,5 +312,6 @@ libgit2 返回的 all-zeroes id 是 `kind = GIT_OID_SHA1 = 1`。两者 `String()
 | system static（SHA1+SHA256） | 同一 promoted main 安装 | 全量 **全绿** |
 | dynamic（SHA1+SHA256） | 同一 promoted main 安装 | 全量 **全绿** |
 
-阶段四第一步已完成：不再存在实验 build tag 或 `libgit2-experimental` 路径。第二步等待上游
-正式版本号，用于确定版本守卫、git2go 模块主版本和正式发布包的跨平台验证。
+阶段四第一步已完成：不再存在实验 build tag 或 `libgit2-experimental` 路径。git2go 主版本
+已确定为 v36，当前进入 v36-pre（`v36.0.0-pre.N`）阶段；第二步等待上游正式版本号，用于
+确定版本守卫并完成正式发布包的跨平台验证。

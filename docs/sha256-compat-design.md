@@ -4,9 +4,10 @@
 > `GIT_EXPERIMENTAL_SHA256` 宏、`EXPERIMENTAL_SHA256` cmake 选项与实验安装布局均已移除；
 > `git_oid` 无条件为 typed 结构，同一构建同时支持 SHA1 与 SHA256，且 SHA1 仍为默认。
 >
-> 适用范围：本分支 `github.com/libgit2/git2go/v35`；由于 `Oid` 公开类型与 libgit2 ABI 已发生
-> 破坏性变化，正式发布时建议提升 git2go 模块主版本。旧 20 字节 `git_oid` ABI 的 libgit2
-> 1.9.x 发布包不再兼容。
+> 适用范围：`github.com/libgit2/git2go/v36`。主版本已确定为 **v36**；上游 libgit2 尚未
+> 发布包含 SHA256 转正的正式版本前处于 **v36-pre** 阶段（Git tag 使用
+> `v36.0.0-pre.N`）。旧 20 字节 `git_oid` ABI 的 libgit2 1.9.x 发布包不再兼容，相关用户
+> 应停留在 git2go v35。
 >
 > 本文 §1.1–§1.7、§2–§4.5 保留的是转正前双轨方案的**历史设计记录**，不可再作为当前构建
 > 指南。当前实现与两步发版策略分别见 §1.8、§4.8；迁移指南见 §5 和
@@ -523,13 +524,15 @@ loose/pack backend、index/diff/indexer 与 clone/fetch 主链路均有真实端
 - system/static/dynamic 构建增加 `GIT_OID_SHA256_SIZE` 能力守卫，旧 20 字节 `git_oid` ABI
   会在编译期给出明确错误。
 
-#### 第二步：正式版本发布时收敛（等待上游正式版本号）
+#### 第二步：v36-pre → v36.0.0（等待上游正式版本号）
 
+- **已确定**：module 主版本为 v36，路径为 `github.com/libgit2/git2go/v36`；上游正式发布前
+  使用 v36-pre 阶段与 `v36.0.0-pre.N` 标签。v35 继续对应 libgit2 1.9.x。
 - 上游 main 的 `version.h` 目前仍报告 1.9.0，故暂时保留 `LIBGIT2_VER_MAJOR/MINOR == 1.9`
   版本范围；上游发布包含转正 SHA256 的正式版本后，更新三个 `Build_*.go` 的版本守卫。
-- 决定 git2go 模块主版本（建议从 `v35` 提升），同步 `go.mod` 与 README 版本映射表。
 - 在最终 Linux / macOS / Windows CI 上验证正式发布包的 dynamic / system-static / bundled-static。
-- 将 `docs/sha256-breaking-changes.md` 的清单整理进正式 CHANGELOG / release notes。
+- 将 `docs/sha256-breaking-changes.md` 的清单整理进正式 CHANGELOG / release notes，然后发布
+  `v36.0.0`。
 
 完整 breaking changes 与迁移示例见 `docs/sha256-breaking-changes.md`。
 

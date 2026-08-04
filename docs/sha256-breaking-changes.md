@@ -1,6 +1,10 @@
 # SHA1 / SHA256 统一对象 ID 支持：Breaking Changes 清单
 
-> 目标发版：待上游 libgit2 发布包含 SHA256 转正的正式版本后确定（建议 git2go 新主版本）。
+> 目标发版：git2go **v36**。上游 libgit2 尚未发布包含 SHA256 转正的正式版本前，
+> 使用 **v36-pre** 阶段名称和合法 Go SemVer prerelease 标签（`v36.0.0-pre.N`）；上游正式
+> 版本发布并完成跨平台验证后发布 `v36.0.0`。
+>
+> Go module 路径固定为 `github.com/libgit2/git2go/v36`（预发布阶段也不能使用 `/v36-pre`）。
 >
 > 基线：libgit2 `main` @ `939362a3cb575de5f2aaebe1b1732c4ec8c1aebb`。
 >
@@ -143,9 +147,16 @@ go test -tags "static git_experimental_sha256 libgit2_next" ./...
 go test -tags static ./...
 ```
 
-## 发版前待确认
+## 版本策略（已确定）
+
+- git2go 下一主版本确定为 **v36**，module 路径为 `github.com/libgit2/git2go/v36`。
+- libgit2 正式发布转正版本前为 **v36-pre** 阶段，Git tag 使用 Go modules 可识别的
+  `v36.0.0-pre.N`，例如首个预发布为 `v36.0.0-pre.1`。
+- libgit2 正式发布、最低兼容版本确定且跨平台验证完成后发布 `v36.0.0`。
+- v35 继续对应 libgit2 1.9.x；需要旧 20 字节 `git_oid` ABI 的用户应停留在 v35。
+
+## 正式 v36.0.0 发布前待确认
 
 - 上游正式发布版本号及最低兼容版本；当前 main 仍报告 1.9.0。
-- git2go 模块主版本是否从 `v35` 提升（建议提升，因为 `Oid` 的公开类型发生破坏性变化）。
 - README 的 git2go/libgit2 版本映射表和三个 `Build_*.go` 的版本守卫同步到正式版本。
 - 在最终目标 Linux/Windows/macOS CI 上跑常规静态、动态和 system_libgit2 组合。
