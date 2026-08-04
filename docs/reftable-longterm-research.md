@@ -21,6 +21,14 @@
 
 **最重要发现**：上游 main 已将 SHA256 从实验性转正（`GIT_EXPERIMENTAL_SHA256` 宏从公开头文件完全移除），导致 `git_oid` 结构由 20 字节变为 **33 字节**。git2go 现有的 `type Oid [20]byte` + `unsafe.Pointer` 强转将产生**内存越界**。这是升级 vendor 到最新 main 之前必须解决的阻塞问题。
 
+**已落地的防护与铺垫**（详见 §3.4）：
+
+| 交付 | 内容 |
+| --- | --- |
+| ✅ 编译期 ABI 守卫 | `git2go_version_check.h` 新增 `#if GIT_OID_MAX_SIZE != 20`，把"运行时内存损坏"降级为"构建期明确报错"，三种链接方式均受保护；已双向验证 |
+| ✅ oid type 探测 API | `oid_type.go`：`OidType` 枚举（含 `String()` / `Size()` / `HexSize()`）、`Repository.OidType()`、`IsSha256Supported()`，6 个测试全通过 |
+| ⬜ 阻塞项 | `Oid` 类型重构（唯一的SHA256 前置，需独立里程碑） |
+
 ---
 
 ## 1. C3：反向特性探测（`GIT_FEATURE_REFTABLE`）
@@ -261,11 +269,20 @@ func newOidFromC(coid *C.git_oid) *Oid {
 
 ### 3.4 落地方案（分阶段）
 
-#### 阶段 1：立即防护（必做，低成本）
+#### 阶段 1：立即防护（必做，低成本）✅ 已落地
 
 在 vendor 升级前加入**编译期尺寸断言**，让不兼容的 libgit2 在构建时立即失败，而非运行时静默损坏内存。
 
-在 `git2go_version_check.h`（已有的集中式守卫）中追加：
+**落地情况**：已在 `git2go_version_check.h` 中实现 `#if GIT_OID_MAX_SIZE != 20` 守卫（含完整背景注释），三种链接方式（bundled / system-static / system-dynamic）均自动受保护，因为它们都 include 该头。
+
+**双向验证**（用隔离的模拟头文件，避免真实 `oid.h` 干扰）：
+
+| 模拟场景 | `GIT_OID_MAX_SIZE` | 结果 |
+| --- | --- | --- |
+| SHA256 转正后的 libgit2 | 32 | ✅ 编译期报错，错误信息指向本文档 §3 |
+| 当前 vendor 的 libgit2 | 20 | ✅ 静默通过 |
+
+实现如下：
 
 ```c
 #include <git2/oid.h>
@@ -334,16 +351,23 @@ func (oid *Oid) toC(t OidType) *C.git_oid {
 
 1. **审计所有 `unsafe.Pointer` 强转点**：`grep -rn "unsafe.Pointer" *.go` 找出全部把 Go 类型当 C 类型用的位置，逐一确认布局假设。
 2. **绑定 oid type API**：
-   - `OidType` 枚举（`OidTypeSha1` / `OidTypeSha256`）
-   - `Repository.OidType()` ← `git_repository_oid_type`（**已无条件公开，当前 vendor 就能绑**）
-   - `RepositoryInitOptions.OidType` ← init options 的 `oid_type`（需 vendor 升级）
-   - `git_oid_from_string` / `git_oid_from_prefix` / `git_oid_from_raw`（带 type 参数的新式 API，替代 `git_oid_fromstr` 等旧式）
+   - ✅ `OidType` 枚举（`OidTypeSha1` / `OidTypeSha256`）—— **已落地**（`oid_type.go`）
+   - ✅ `Repository.OidType()` ← `git_repository_oid_type` —— **已落地**（该API 在当前 vendor 已无条件公开）
+   - ✅ `IsSha256Supported()` ← `Features() & FeatureSHA256` —— **已落地**（SHA256 有 feature 标志，无需探测）
+   - ⬜ `RepositoryInitOptions.OidType` ← init options 的 `oid_type`（需 vendor 升级；且在 `Oid` 重构前无法安全使用）
+   - ⬜ `git_oid_from_string` / `git_oid_from_prefix` / `git_oid_from_raw`（带 type 参数的新式 API，替代 `git_oid_fromstr` 等旧式）
 3. **`NewOid` / `String` / `Cmp` / `NCmp` / `IsZero` 等按 type 感知长度**（SHA1 比较 20 字节，SHA256 比较 32 字节）。
 4. **`ShortenOids` 等依赖 hexsize 的逻辑**改用 `GIT_OID_MAX_HEXSIZE`。
 
+> **阶段 2 已落地部分的说明**：`OidType` 常量刻意使用 Go 字面量（`1` / `2`）而非 `C.GIT_OID_SHA1` / `C.GIT_OID_SHA256`，因为在当前 vendor 上 `GIT_OID_SHA256` 仍包在 `#ifdef GIT_EXPERIMENTAL_SHA256` 内、并未定义，引用它会导致编译失败。这与`RefdbType` 的处理方式一致。
+>
+> `OidType` 另提供 `String()`（`"sha1"` / `"sha256"`，对应 `extensions.objectFormat` 配置值）、`Size()`（20 / 32）与 `HexSize()`（40 / 64）辅助方法，供后续 `Oid` 重构与探测逻辑复用。
+>
+> 当前这些 API 的定位是**报告与探测**仓库格式，而非创建 SHA256 仓库——后者被阶段 1 的编译期守卫挡住，需先完成 `Oid` 重构。`oid_type_test.go` 中的 `TestOidTypeMatchesOidWidth` 固化了 `len(Oid) == OidTypeSha1.Size()` 这一不变量，与编译期守卫互为呼应。
+
 #### 阶段 3：SHA-256 + reftable 组合验证
 
-前置：阶段 2 完成 + vendor 升级到 `d29fe50de` 或更新。
+前置：阶段 2 完成 + vendor 升级到 `939362a3c` 或更新。
 
 测试矩阵（4 组合）：
 
@@ -374,23 +398,24 @@ func TestReftableWithSha256(t *testing.T) {
 }
 ```
 
-`IsSha256Supported()` 可直接用现成的 `Features() & FeatureSHA256 != 0`（git2go 已绑定 `FeatureSHA256`），**无需 init 探测** — 这与 reftable 不同，因为 SHA256 确实有 feature 标志。
+`IsSha256Supported()` 直接用 `Features() & FeatureSHA256 != 0`（git2go 已绑定 `FeatureSHA256`），**无需 init 探测** — 这与 reftable 不同，因为 SHA256 确实有 feature 标志。该函数**已随阶段 2 落地**。
 
 ### 3.5 风险与工作量评估
 
-| 阶段 | 工作量 | 风险 | 可否独立交付 |
+| 阶段 | 工作量 | 风险 | 状态 |
 | --- | --- | --- | --- |
-| 1 编译期守卫 | 极小（~15 行） | 无 | ✅ 立即可做 |
-| 2 Oid 重构 | **大**（触及全部 API，需审计所有 unsafe 强转） | **高**（内存安全 + 源码兼容性） | 需独立 PR + 充分测试 |
-| 3 SHA256+reftable 验证 | 中（测试为主） | 低 | 依赖阶段 2 |
+| 1 编译期守卫 | 极小（~40 行含注释） | 无 | ✅ **已完成** |
+| 2a oid type 探测 API | 小（`oid_type.go` + 6 个测试） | 无 | ✅ **已完成** |
+| 2b Oid 重构 | **大**（触及全部 API，需审计所有 unsafe 强转） | **高**（内存安全 + 源码兼容性） | ⬜ 需独立 PR + 充分测试 |
+| 3 SHA256+reftable 验证 | 中（测试为主） | 低 | ⬜ 依赖 2b |
 
 ---
 
 ## 4. 建议的行动顺序
 
-1. **【立即】** 阶段 1 的编译期尺寸守卫 —— 防止 vendor 误升级造成内存损坏。
-2. **【立即】** 绑定 `Repository.OidType()`（`git_repository_oid_type` 当前 vendor 已无条件公开）+ `OidType` 枚举 —— 零风险增量，为后续铺路。
-3. **【规划】** 阶段 2 `Oid` 重构 —— 建议作为独立里程碑，明确是否接受 v36 major bump。
+1. ✅ **【已完成】** 阶段 1 的编译期尺寸守卫 —— 防止 vendor 误升级造成内存损坏。已双向验证（模拟 32 字节报错、20 字节通过）。
+2. ✅ **【已完成】** 绑定 `OidType` 枚举 + `Repository.OidType()` + `IsSha256Supported()` —— 零风险增量，为后续铺路。6 个新测试全部通过，全量回归基线由 135 增至 141 个用例。
+3. **【规划】** 阶段 2b `Oid` 重构 —— 建议作为独立里程碑，明确是否接受 v36 major bump。这是解锁 SHA256 的唯一前置。
 4. **【规划】** 阶段 3 SHA256 + reftable 组合测试矩阵。
 5. **【冻结】** C3 / C4 保持观察，无上游动作则不改动。
 
