@@ -9,7 +9,7 @@
 > **两轮适配概述**
 >
 > - **第一轮（06-30）**：vendor 升到 `32b564e63`（含 PR #7117），绑定 `git_repository_init_ext` + `RepositoryInitOptions`（含 `refdb_type`）+ `git_refdb_t` 枚举，产出本报告初版与 3 个 init 冒烟测试。
-> - **第二轮（07-29）**：vendor 升到当时的 main `ddf3b5c85`（含 reftable 更新 PR #7327），补齐 refdb/reftable **直接公开函数**绑定（后端构造函数、compaction、refdb 获取/打开、运行时探测、后端格式识别），新增 11 个覆盖 files/reftable 双后端的测试。后续完整性审计发现自定义 backend callback 仍缺 4 项，见 [reftable-main-compat-audit.md](./reftable-main-compat-audit.md)。
+> - **第二轮（07-29）**：vendor 升到当时的 main `ddf3b5c85`（含 reftable 更新 PR #7327），补齐 refdb/reftable **直接公开函数**绑定（后端构造函数、compaction、refdb 获取/打开、运行时探测、后端格式识别），新增 11 个覆盖 files/reftable 双后端的测试。后续完整性审计发现自定义 backend callback 缺 4 项；该缺口已由 bridge v2 修复，见 [reftable-sha256-integration-progress.md](./reftable-sha256-integration-progress.md)。
 
 ---
 
@@ -319,7 +319,7 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 | `git_reference__is_per_worktree_ref` | 内部函数 | 不绑定 | 非公开 API |
 | `refdb_reftable.c` 后端 | 内部实现 | 不直接绑定 | 调用方对其透明 |
 
-**结论（2026-08-04 复审修正）**：reftable/refdb 的**直接公开函数**（`refdb.h` 的 `GIT_EXTERN` 函数、files/reftable 后端构造、repository refdb/init 相关项）均已绑定；但 `git_refdb_backend` 的 17 个 callback 仅桥接 13 个，缺少 `init` / `compress` / `lock` / `unlock`，且 iterator 生命周期/并发设计需修正。因此不能再表述为“全部公开 API 100% 完成”。详见 [reftable-main-compat-audit.md §4](./reftable-main-compat-audit.md)。
+**结论（2026-08-04 bridge v2 更新）**：reftable/refdb 的直接公开函数已绑定；`git_refdb_backend` 的 17 个 callback 也已通过 13 个核心方法 + 4 个可选 capability（`init` / `compress` / `lock` / `unlock`）完成桥接。iterator 已改为每实例独立 handle，并补齐 Go Free/Untrack、name buffer 回收与 transaction payload 生命周期。latest-main 干净构建仍需等待 SHA256 typed OID 整合后终验。详见 [reftable-sha256-integration-progress.md](./reftable-sha256-integration-progress.md)。
 
 ---
 
@@ -374,14 +374,13 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 
 ### 5.4 长期
 
-1. **自定义 refdb 后端** ⚠️ 部分完成，待 bridge v2
-   - ✅ `RefdbBackendInitFlag` 枚举（`RefdbBackendInitIsWorktree` / `RefdbBackendInitForceHead`），main-only，随 `libgit2_reftable` tag。
-   - ✅ 已桥接 13 个 callback：Exists/Lookup/Iterator/Write/Rename/Delete/HasLog/EnsureLog/Free/ReflogRead/Write/Rename/Delete。
-   - ❌ 最新 main 和当前 vendor 的 `git_refdb_backend` 实际有 17 个 callback，仍缺 `init` / `compress` / `lock` / `unlock`；无 lock/unlock 时 transaction API 无法工作。
-   - ❌ iterator 当前按 backend 共享单一 Go iterator，不能支持多 iterator/并发；C iterator free 未调用 Go `Free()`，`next_name` 的 `strdup` 缓冲也未回收。
+1. **自定义 refdb 后端 bridge v2** ✅ 已完成（latest-main 终验待 SHA256 整合）
+   - ✅ `RefdbBackendInitFlag` 枚举（`RefdbBackendInitIsWorktree` / `RefdbBackendInitForceHead`）。
+   - ✅ 13 个核心 callback + 可选 `Initializer` / `Compressor` / `Locker` capability，覆盖 `init` / `compress` / `lock` / `unlock`。
+   - ✅ 每 iterator 独立 handle，C free 调用 Go `Free()` + Untrack，`next_name` 缓冲回收；并发/race 定向测试通过。
+   - ✅ 新增 `Transaction` 绑定并端到端验证 update/cancel lock payload 与状态。
    - ✅ `Reflog` 已扩展为完整 entry 读写 API（见下）。
-   - ✅ 基础测试验证了 lookup/free trampoline，但尚未覆盖全部 callback 与多 iterator 生命周期。
-   - 修复方案：采用可选 capability interfaces（Initializer/Compressor/Locker），并为每个 iterator 建立独立 `pointerHandles` handle。详见 [reftable-main-compat-audit.md §4](./reftable-main-compat-audit.md)。
+   - ⏸️ 当前 latest-main vendor 的干净构建被 typed OID ABI 迁移阻塞；最终全量验证在与 `feat-sha256` 整合后完成。详见 [reftable-sha256-integration-progress.md](./reftable-sha256-integration-progress.md)。
 
 2. **完整 Reflog entry 读写 API** ✅ 已完成
    - `reflog.go` 绑定 `git2/reflog.h` 全部 13 个公开函数：

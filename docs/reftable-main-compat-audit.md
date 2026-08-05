@@ -28,13 +28,13 @@
 | 等级 | 发现 | 影响 |
 | --- | --- | --- |
 | **P0** | 最新 main 已将 SHA256 转正，`git_oid` 从 20 字节变为 33 字节；当前 `Oid [20]byte` 不兼容 | 现有 ABI 守卫会（正确地）阻止编译；因此当前项目**无法链接最新 main** |
-| **P1** | 自定义 `git_refdb_backend` 桥接只覆盖 **13/17** 个 backend 回调，缺 `init` / `compress` / `lock` / `unlock` | 自定义后端无法初始化、无法实现 backend compaction、**无法使用 transaction API** |
-| **P1** | 自定义 backend iterator 以 backend 级单例保存 Go iterator | 多 iterator/并发场景相互覆盖；旧 iterator 泄漏/失效 |
-| **P1** | iterator `free` 未调用 Go `RefdbBackendIterator.Free()`；`next_name` 每次 `strdup` 且不回收 | Go 资源泄漏 + C 字符串泄漏 |
-| **P1** | CI 的“stable-compatible” job 实际仍链接 main，只是不加 tag；system dynamic 矩阵仍写 `v1.5.0`，与 `>=1.9` 守卫冲突 | CI 没有真实持续验证 v1.9.4；旧 job 预计无法通过版本守卫 |
+| **P1 → 已修复** | 自定义 `git_refdb_backend` 原只覆盖 13/17 callback | bridge v2 已用可选 capability 补齐 `init/compress/lock/unlock`，并新增 transaction 绑定验证 |
+| **P1 → 已修复** | 原 backend 级单例 iterator | 已改为每 iterator 独立 handle，并通过并发/race 测试 |
+| **P1 → 已修复** | 原 iterator/`next_name` 资源泄漏 | C free 现调用 Go Free/Untrack，并回收 name buffer |
+| **P1 → 已配置修复** | 原 CI “stable-compatible” 仍链接 main，且 system dynamic 固定 v1.5.0 | 已改为真实 checkout/build v1.9.4 + no-tag，并将 system dynamic 更新为 v1.9.4；本地重建未获授权，待 CI 运行闭环 |
 | **P1** | 最新 main 静态可见性宏改为 `GIT_STATIC`；当前 Build 文件仍定义 `LIBGIT2_STATIC` | 升级后 Windows/静态消费者存在符号导入/可见性风险 |
 | **P2** | reftable 测试集中在初始化、分支 CRUD、format、compress；未覆盖 reopen 持久化、reflog-on-reftable、namespace/worktree/concurrency 等 | 核心路径已验证，但兼容矩阵不够完整 |
-| **P2** | `Repository.SetRefdb` 丢弃 C 返回码，且未 `runtime.KeepAlive(refdb)` | 发生错误时调用方不可见；生命周期表达不完整 |
+| **P2 → 已修复** | `Repository.SetRefdb` 原丢弃 C 返回码且未 KeepAlive refdb | 现返回 `error`、固定 OS thread、双 KeepAlive 并校验 nil/freed |
 
 **推荐表述**：
 
@@ -202,9 +202,11 @@ type Oid struct {
 
 ---
 
-## 4. P1：自定义 refdb backend 桥接并不完整
+## 4. P1：自定义 refdb backend 桥接完整性
 
-### 4.1 回调覆盖率
+> **2026-08-04 实施更新**：本节审计发现已由 bridge v2 修复：`init/compress/lock/unlock` 使用可选 capability interfaces 接入；iterator 改为每实例独立 handle 并在 free 时调用 Go `Free()`/Untrack；`next_name` 缓冲已回收；transaction API 已绑定并端到端验证 lock/unlock。以下内容保留为问题背景与设计依据。详见 [reftable-sha256-integration-progress.md](./reftable-sha256-integration-progress.md)。
+
+### 4.1 原回调覆盖率
 
 最新 main（也包括当前 vendor）的 `git_refdb_backend` 有 **17 个 backend 回调**：
 
@@ -366,11 +368,11 @@ libgit2: v1.5.0
 
 | 优先级 | 场景 | 当前状态 |
 | --- | --- | --- |
-| P1 | **关闭并重新打开 reftable 仓库**后验证引用/HEAD/分支持久化 | 未覆盖 |
-| P1 | **reftable reflog**：append/write/drop/rename/delete | 现有 reflog 测试只覆盖默认 files repo |
-| P1 | 自定义 backend 全 17 回调 + iterator 多实例/并发/lifecycle | 仅 lookup/free 基础测试 |
-| P1 | SHA1/SHA256 × files/reftable 四组合 | SHA256 被 `Oid` 阻塞 |
-| P2 | symbolic ref create/rename/delete/resolve（reftable） | 无专项覆盖 |
+| P1 | **关闭并重新打开 reftable 仓库**后验证引用/HEAD/分支持久化 | ✅ 已新增 `TestReftableReopenPersistence` |
+| P1 | **reftable reflog**：append/write/drop 持久化 | ✅ 已新增 `TestReftableReflogLifecycle`；rename/delete 仍由通用 reflog 测试覆盖 |
+| P1 | 自定义 backend 全 17 callback + iterator 多实例/并发/lifecycle | ✅ bridge v2 + capability pointer/transaction/race 测试；init 实际调用待 latest-main 整合终验 |
+| P1 | SHA1/SHA256 × files/reftable 四组合 | ⏸️ 等待与 `feat-sha256` 整合 |
+| P2 | symbolic ref create/rename/delete/resolve（reftable） | ✅ 已新增 `TestReftableSymbolicReferenceLifecycle` |
 | P2 | namespace 行为（reftable） | 无；上游已知 `git_reference_list` 会失败 |
 | P2 | worktree + per-worktree refs | git2go 缺完整 worktree API / upstream per-worktree 判定未公开 |
 | P2 | 并发 ref CRUD/compaction | 无 |
@@ -392,9 +394,11 @@ libgit2: v1.5.0
 
 ## 7. 其他代码质量问题
 
-### 7.1 `Repository.SetRefdb`
+### 7.1 `Repository.SetRefdb` ✅ 已修复
 
-当前：
+2026-08-04 已改为返回 `error`、固定 OS thread、校验 nil/freed refdb，并同时 `KeepAlive(repository/refdb)`。原问题如下：
+
+原实现：
 
 ```go
 func (v *Repository) SetRefdb(refdb *Refdb) {
@@ -422,11 +426,11 @@ func (v *Repository) SetRefdb(refdb *Refdb) error {
 
 Go 允许把有返回值的函数调用作为 statement 丢弃，因此多数现有 `repo.SetRefdb(refdb)` 调用仍可编译；需要检查赋值/接口用法。
 
-### 7.2 config 测试竞争
+### 7.2 config 测试竞争 ✅ 已修复
 
-`TestConfigLookups` 与 `TestConfigEntryBackendType` 都 `t.Parallel()` 且共享 `./temp.gitconfig`，`-p 1` 只限制 package 并行，**不会禁止同一 package 内 `t.Parallel()`**。此前文档称“`-p 1` 可规避”并不严谨。
+原问题：`TestConfigLookups` 与 `TestConfigEntryBackendType` 都 `t.Parallel()` 且共享 `./temp.gitconfig`，`-p 1` 只限制 package 并行，**不会禁止同一 package 内 `t.Parallel()`**。
 
-正确修复：每个测试使用 `t.TempDir()` 下的独立 config 路径；不要依赖串行参数。
+2026-08-04 已改为每个测试使用 `t.TempDir()` 下的独立 config 路径，并重复执行 20 次通过。
 
 ### 7.3 `RefStorageFormat` 的未知值处理
 
@@ -438,27 +442,27 @@ Go 允许把有返回值的函数调用作为 statement 丢弃，因此多数现
 
 ### 阶段 A：修复当前 vendor 下的完整性问题（不升级 libgit2）
 
-1. **自定义 backend bridge v2**
+1. ✅ **自定义 backend bridge v2**
    - 可选 capability interfaces：Init/Compress/Lock/Unlock；
    - per-iterator 独立 handle；
    - iterator Free/Untrack；
    - next_name 缓冲管理；
-   - 多 iterator + lifecycle + callback 错误传播测试。
-2. `Repository.SetRefdb` 返回错误并修正 KeepAlive。
-3. reftable 测试扩展：reopen persistence、reftable reflog、symbolic refs。
-4. CI 修复：真实 v1.9.4 stable job、移除 v1.5.0、修复 config 测试竞争。
-5. 文档修正：撤回“全部公开 API 100% 完成”，记录上游 transactions/namespaces/Windows/per-worktree 限制。
+   - 多 iterator + lifecycle + callback/transaction/race 测试。
+2. ✅ `Repository.SetRefdb` 返回错误并修正 KeepAlive。
+3. ✅ reftable 测试扩展：reopen persistence、reftable reflog、symbolic refs。
+4. ✅ CI 配置修复：真实 v1.9.4 stable job、移除 v1.5.0、修复 config 测试竞争；真实 v1.9.4 本地重建未获授权，待 CI 运行闭环。
+5. ✅ 文档修正：撤回“全部公开 API 100% 完成”，记录上游 transactions/namespaces/Windows/per-worktree 限制。
 
 ### 阶段 B：解锁最新 main（v36）
 
 1. ✅ vendor 已升级到 main `939362a3c`（commit `8b4a398`）；
-2. 按 `docs/oid-refactor-audit.md` 方案 A 重构 `Oid`；
-3. 更新 ABI 守卫：`GIT_OID_MAX_SIZE == 32` + Go/C layout 断言；
-4. 更新所有 `git.go` 数组/长度依赖；
-5. 接入新式 `git_oid_from_*` API；
-6. 给 `RepositoryInitOptions` 增加 `OidType`；
-7. static CFLAGS 增加 `GIT_STATIC`；
-8. 全量回归。
+2. ✅ SHA256 工作树已按方案 A 重构 `Oid`，待与 reftable 分支整合；
+3. ✅ SHA256 工作树已有 Go/C layout 断言，待整合；
+4. ✅ SHA256 工作树已更新数组/长度依赖，待整合审计；
+5. ✅ SHA256 工作树已接入新式 typed oid API，待整合；
+6. ⏸️ 整合时给统一的 `RepositoryInitOptions` 增加 `ObjectIdType`；
+7. ⏸️ 整合时补 `GIT_STATIC`（SHA256 工作树目前仍只有 `LIBGIT2_STATIC`）；
+8. ⏸️ 手工合并 `wrapper.c`/CI/构建文件并执行四组合与全量回归。
 
 > vendor 更新被有意提前执行；在第 2–7 步完成前，工作分支处于“vendor 已同步、Go 绑定尚待 ABI 迁移”的预期不可构建状态。
 
@@ -481,7 +485,7 @@ Go 允许把有返回值的函数调用作为 statement 丢弃，因此多数现
 | 当前 pinned vendor 上的 SHA1 + reftable 核心功能 | ✅ 可用，覆盖较好 |
 | v1.9.x 无 reftable 安全降级 | ✅ 已真实验证 |
 | reftable/refdb 直接公开函数映射 | ✅ 基本完整 |
-| 自定义 refdb backend 完整桥接 | ❌ 13/17，iterator 设计有生命周期/并发问题 |
+| 自定义 refdb backend 完整桥接 | ✅ bridge v2 已覆盖 17/17（4 项为可选 capability），iterator/lock 独立 handle；latest-main 干净构建待 SHA256 整合后终验 |
 | 最新 main 编译兼容 | ❌ 被 `git_oid` ABI 守卫阻止（正确行为） |
 | 最新 main SHA256 + reftable | ❌ 尚未落地，需 v36 `Oid` 重构 |
 | 高级场景（transaction/namespace/worktree/Windows concurrency） | ⚠️ 部分为上游限制，部分缺绑定/测试 |
