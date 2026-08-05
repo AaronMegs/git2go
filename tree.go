@@ -232,7 +232,7 @@ func (v *TreeBuilder) Write() (*Oid, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	err := C.git_treebuilder_write(oid.toC(), v.ptr)
+	err := C.git_treebuilder_write(oid.outC(), v.ptr)
 	runtime.KeepAlive(v)
 	if err < 0 {
 		return nil, MakeGitError(err)

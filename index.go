@@ -6,6 +6,8 @@ package git
 extern int _go_git_index_add_all(git_index*, const git_strarray*, unsigned int, void*);
 extern int _go_git_index_update_all(git_index*, const git_strarray*, void*);
 extern int _go_git_index_remove_all(git_index*, const git_strarray*, void*);
+extern int _go_git_index_new(git_index **out, int oid_type);
+extern int _go_git_index_open(git_index **out, const char *index_path, int oid_type);
 
 */
 import "C"
@@ -114,14 +116,23 @@ func newIndexFromC(ptr *C.git_index, repo *Repository) *Index {
 }
 
 // NewIndex allocates a new index. It won't be associated with any
-// file on the filesystem or repository
+// file on the filesystem or repository.
+//
+// The index uses the libgit2 default object id type (SHA1). For a SHA256 index
+// use NewIndexWithOidType.
 func NewIndex() (*Index, error) {
+	return newIndexWithOidType(0)
+}
+
+// newIndexWithOidType is the shared implementation behind NewIndex and
+// NewIndexWithOidType. oidType follows git_oid_t (0 = libgit2 default).
+func newIndexWithOidType(oidType C.int) (*Index, error) {
 	var ptr *C.git_index
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	if err := C.git_index_new(&ptr); err < 0 {
+	if err := C._go_git_index_new(&ptr, oidType); err < 0 {
 		return nil, MakeGitError(err)
 	}
 
@@ -130,7 +141,16 @@ func NewIndex() (*Index, error) {
 
 // OpenIndex creates a new index at the given path. If the file does
 // not exist it will be created when Write() is called.
+//
+// The index uses the libgit2 default object id type (SHA1). To open an index
+// belonging to a SHA256 repository use OpenIndexWithOidType.
 func OpenIndex(path string) (*Index, error) {
+	return openIndexWithOidType(path, 0)
+}
+
+// openIndexWithOidType is the shared implementation behind OpenIndex and
+// OpenIndexWithOidType. oidType follows git_oid_t (0 = libgit2 default).
+func openIndexWithOidType(path string, oidType C.int) (*Index, error) {
 	var ptr *C.git_index
 
 	var cpath = C.CString(path)
@@ -139,7 +159,7 @@ func OpenIndex(path string) (*Index, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	if err := C.git_index_open(&ptr, cpath); err < 0 {
+	if err := C._go_git_index_open(&ptr, cpath, oidType); err < 0 {
 		return nil, MakeGitError(err)
 	}
 
@@ -390,7 +410,7 @@ func (v *Index) WriteTreeTo(repo *Repository) (*Oid, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_index_write_tree_to(oid.toC(), v.ptr, repo.ptr)
+	ret := C.git_index_write_tree_to(oid.outC(), v.ptr, repo.ptr)
 	runtime.KeepAlive(v)
 	runtime.KeepAlive(repo)
 	if ret < 0 {
@@ -422,7 +442,7 @@ func (v *Index) WriteTree() (*Oid, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_index_write_tree(oid.toC(), v.ptr)
+	ret := C.git_index_write_tree(oid.outC(), v.ptr)
 	runtime.KeepAlive(v)
 	if ret < 0 {
 		return nil, MakeGitError(ret)

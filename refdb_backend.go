@@ -1,12 +1,13 @@
 package git
 
 /*
+#cgo CFLAGS: -DGIT2GO_HAS_REFDB_BACKEND_INIT
 #include <git2.h>
 #include <git2/sys/refdb_backend.h>
 
 extern int _go_git_refdb_backend_alloc(git_refdb_backend **out, void *handle, uint32_t capabilities);
+extern int _go_git_refdb_backend_invoke_init(git_refdb_backend *backend, const char *head_target, uint32_t mode, uint32_t flags);
 extern uint32_t _go_git_refdb_backend_capabilities(git_refdb_backend *backend);
-extern void *_go_git_refdb_backend_handle(git_refdb_backend *backend);
 */
 import "C"
 import (
@@ -159,13 +160,6 @@ func NewRefdbBackendFromInterface(impl RefdbBackendInterface) (*RefdbBackend, er
 
 	var capabilities uint32
 	if _, ok := impl.(RefdbBackendInitializer); ok {
-		if !reftableSupported {
-			return nil, &GitError{
-				Message: "refdb backend Init requires a latest-main libgit2 build with the libgit2_reftable tag",
-				Class:   ErrorClassInvalid,
-				Code:    ErrorCodeInvalid,
-			}
-		}
 		capabilities |= refdbBackendCapabilityInit
 	}
 	if _, ok := impl.(RefdbBackendCompressor); ok {
@@ -185,7 +179,9 @@ func NewRefdbBackendFromInterface(impl RefdbBackendInterface) (*RefdbBackend, er
 		return nil, MakeGitError(ret)
 	}
 
-	return &RefdbBackend{ptr: ptr}, nil
+	backend := &RefdbBackend{ptr: ptr}
+	runtime.SetFinalizer(backend, (*RefdbBackend).Free)
+	return backend, nil
 }
 
 func refdbBackendCapabilities(backend *RefdbBackend) uint32 {
@@ -195,6 +191,29 @@ func refdbBackendCapabilities(backend *RefdbBackend) uint32 {
 	capabilities := uint32(C._go_git_refdb_backend_capabilities(backend.ptr))
 	runtime.KeepAlive(backend)
 	return capabilities
+}
+
+// invokeRefdbBackendInit is an internal bridge used to exercise the optional
+// custom-backend init callback. libgit2 has no public entry point that invokes
+// init on an independently constructed backend.
+func invokeRefdbBackendInit(backend *RefdbBackend, initialHead *string, mode RepositoryInitMode, flags RefdbBackendInitFlag) error {
+	if backend == nil || backend.ptr == nil {
+		return &GitError{Message: "refdb backend is nil or already freed", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+	var cInitialHead *C.char
+	if initialHead != nil {
+		cInitialHead = C.CString(*initialHead)
+		defer C.free(unsafe.Pointer(cInitialHead))
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	ret := C._go_git_refdb_backend_invoke_init(backend.ptr, cInitialHead, C.uint32_t(mode), C.uint32_t(flags))
+	runtime.KeepAlive(backend)
+	if ret < 0 {
+		return MakeGitError(ret)
+	}
+	return nil
 }
 
 func backendStateFromHandle(handle unsafe.Pointer) *refdbBackendState {
@@ -209,8 +228,19 @@ func backendLockStateFromHandle(handle unsafe.Pointer) *refdbBackendLockState {
 	return pointerHandles.Get(handle).(*refdbBackendLockState)
 }
 
+func recoverRefdbBackendCallback(errorMessage **C.char, ret *C.int) {
+	if recover() != nil {
+		*ret = setCallbackError(errorMessage, &GitError{
+			Message: "panic in custom refdb backend callback",
+			Class:   ErrorClassCallback,
+			Code:    ErrorCodeUser,
+		})
+	}
+}
+
 //export refdbBackendInitCallback
-func refdbBackendInitCallback(errorMessage **C.char, handle unsafe.Pointer, initialHead *C.char, mode C.uint32_t, flags C.uint32_t) C.int {
+func refdbBackendInitCallback(errorMessage **C.char, handle unsafe.Pointer, initialHead *C.char, mode C.uint32_t, flags C.uint32_t) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	initializer, ok := backendStateFromHandle(handle).backend.(RefdbBackendInitializer)
 	if !ok {
 		return setCallbackError(errorMessage, &GitError{Message: "refdb backend does not implement Init", Class: ErrorClassInvalid, Code: ErrorCodeInvalid})
@@ -222,7 +252,8 @@ func refdbBackendInitCallback(errorMessage **C.char, handle unsafe.Pointer, init
 }
 
 //export refdbBackendExistsCallback
-func refdbBackendExistsCallback(errorMessage **C.char, exists *C.int, handle unsafe.Pointer, refName *C.char) C.int {
+func refdbBackendExistsCallback(errorMessage **C.char, exists *C.int, handle unsafe.Pointer, refName *C.char) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	state := backendStateFromHandle(handle)
 	ok, err := state.backend.Exists(C.GoString(refName))
 	if err != nil {
@@ -237,7 +268,8 @@ func refdbBackendExistsCallback(errorMessage **C.char, exists *C.int, handle uns
 }
 
 //export refdbBackendLookupCallback
-func refdbBackendLookupCallback(errorMessage **C.char, out **C.git_reference, handle unsafe.Pointer, refName *C.char) C.int {
+func refdbBackendLookupCallback(errorMessage **C.char, out **C.git_reference, handle unsafe.Pointer, refName *C.char) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	state := backendStateFromHandle(handle)
 	ref, err := state.backend.Lookup(C.GoString(refName))
 	if err != nil {
@@ -246,14 +278,16 @@ func refdbBackendLookupCallback(errorMessage **C.char, out **C.git_reference, ha
 	if ref == nil || ref.ptr == nil {
 		return setCallbackError(errorMessage, &GitError{Message: "refdb backend Lookup returned a nil reference", Class: ErrorClassInvalid, Code: ErrorCodeInvalid})
 	}
-	// Hand ownership of the reference to libgit2 and detach the Go finalizer.
+	// Hand ownership of the reference to libgit2 and consume the Go wrapper.
 	*out = ref.ptr
+	ref.ptr = nil
 	runtime.SetFinalizer(ref, nil)
 	return C.int(ErrorCodeOK)
 }
 
 //export refdbBackendWriteCallback
-func refdbBackendWriteCallback(errorMessage **C.char, handle unsafe.Pointer, ref *C.git_reference, force C.int, who *C.git_signature, message *C.char, old *C.git_oid, oldTarget *C.char) C.int {
+func refdbBackendWriteCallback(errorMessage **C.char, handle unsafe.Pointer, ref *C.git_reference, force C.int, who *C.git_signature, message *C.char, old *C.git_oid, oldTarget *C.char) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	state := backendStateFromHandle(handle)
 	goRef := newReferenceFromC(ref, nil)
 	runtime.SetFinalizer(goRef, nil) // libgit2 owns ref during the call
@@ -272,7 +306,8 @@ func refdbBackendWriteCallback(errorMessage **C.char, handle unsafe.Pointer, ref
 }
 
 //export refdbBackendRenameCallback
-func refdbBackendRenameCallback(errorMessage **C.char, out **C.git_reference, handle unsafe.Pointer, oldName *C.char, newName *C.char, force C.int, who *C.git_signature, message *C.char) C.int {
+func refdbBackendRenameCallback(errorMessage **C.char, out **C.git_reference, handle unsafe.Pointer, oldName *C.char, newName *C.char, force C.int, who *C.git_signature, message *C.char) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	state := backendStateFromHandle(handle)
 	ref, err := state.backend.Rename(C.GoString(oldName), C.GoString(newName), force != 0, newSignatureFromC(who), goStringOrEmpty(message))
 	if err != nil {
@@ -282,12 +317,14 @@ func refdbBackendRenameCallback(errorMessage **C.char, out **C.git_reference, ha
 		return setCallbackError(errorMessage, &GitError{Message: "refdb backend Rename returned a nil reference", Class: ErrorClassInvalid, Code: ErrorCodeInvalid})
 	}
 	*out = ref.ptr
+	ref.ptr = nil
 	runtime.SetFinalizer(ref, nil)
 	return C.int(ErrorCodeOK)
 }
 
 //export refdbBackendDeleteCallback
-func refdbBackendDeleteCallback(errorMessage **C.char, handle unsafe.Pointer, refName *C.char, oldID *C.git_oid, oldTarget *C.char) C.int {
+func refdbBackendDeleteCallback(errorMessage **C.char, handle unsafe.Pointer, refName *C.char, oldID *C.git_oid, oldTarget *C.char) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	state := backendStateFromHandle(handle)
 	err := state.backend.Delete(C.GoString(refName), newOidFromC(oldID), goStringOrEmpty(oldTarget))
 	if err != nil {
@@ -297,7 +334,8 @@ func refdbBackendDeleteCallback(errorMessage **C.char, handle unsafe.Pointer, re
 }
 
 //export refdbBackendCompressCallback
-func refdbBackendCompressCallback(errorMessage **C.char, handle unsafe.Pointer) C.int {
+func refdbBackendCompressCallback(errorMessage **C.char, handle unsafe.Pointer) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	compressor, ok := backendStateFromHandle(handle).backend.(RefdbBackendCompressor)
 	if !ok {
 		return setCallbackError(errorMessage, &GitError{Message: "refdb backend does not implement Compress", Class: ErrorClassInvalid, Code: ErrorCodeInvalid})
@@ -309,7 +347,8 @@ func refdbBackendCompressCallback(errorMessage **C.char, handle unsafe.Pointer) 
 }
 
 //export refdbBackendHasLogCallback
-func refdbBackendHasLogCallback(errorMessage **C.char, handle unsafe.Pointer, refName *C.char) C.int {
+func refdbBackendHasLogCallback(errorMessage **C.char, handle unsafe.Pointer, refName *C.char) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	state := backendStateFromHandle(handle)
 	ok, err := state.backend.HasLog(C.GoString(refName))
 	if err != nil {
@@ -322,7 +361,8 @@ func refdbBackendHasLogCallback(errorMessage **C.char, handle unsafe.Pointer, re
 }
 
 //export refdbBackendEnsureLogCallback
-func refdbBackendEnsureLogCallback(errorMessage **C.char, handle unsafe.Pointer, refName *C.char) C.int {
+func refdbBackendEnsureLogCallback(errorMessage **C.char, handle unsafe.Pointer, refName *C.char) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	state := backendStateFromHandle(handle)
 	if err := state.backend.EnsureLog(C.GoString(refName)); err != nil {
 		return setCallbackError(errorMessage, err)
@@ -332,13 +372,23 @@ func refdbBackendEnsureLogCallback(errorMessage **C.char, handle unsafe.Pointer,
 
 //export refdbBackendFreeCallback
 func refdbBackendFreeCallback(handle unsafe.Pointer) {
-	state := backendStateFromHandle(handle)
-	state.backend.Free()
+	value, ok := pointerHandles.GetOk(handle)
+	if !ok {
+		return
+	}
+	state, ok := value.(*refdbBackendState)
 	pointerHandles.Untrack(handle)
+	if !ok {
+		return
+	}
+	// The C backend must still be freed even if the user cleanup panics.
+	defer func() { _ = recover() }()
+	state.backend.Free()
 }
 
 //export refdbBackendReflogReadCallback
-func refdbBackendReflogReadCallback(errorMessage **C.char, out **C.git_reflog, handle unsafe.Pointer, name *C.char) C.int {
+func refdbBackendReflogReadCallback(errorMessage **C.char, out **C.git_reflog, handle unsafe.Pointer, name *C.char) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	state := backendStateFromHandle(handle)
 	reflog, err := state.backend.ReflogRead(C.GoString(name))
 	if err != nil {
@@ -348,12 +398,14 @@ func refdbBackendReflogReadCallback(errorMessage **C.char, out **C.git_reflog, h
 		return setCallbackError(errorMessage, &GitError{Message: "refdb backend ReflogRead returned a nil reflog", Class: ErrorClassInvalid, Code: ErrorCodeInvalid})
 	}
 	*out = reflog.ptr
+	reflog.ptr = nil
 	runtime.SetFinalizer(reflog, nil)
 	return C.int(ErrorCodeOK)
 }
 
 //export refdbBackendReflogWriteCallback
-func refdbBackendReflogWriteCallback(errorMessage **C.char, handle unsafe.Pointer, reflog *C.git_reflog) C.int {
+func refdbBackendReflogWriteCallback(errorMessage **C.char, handle unsafe.Pointer, reflog *C.git_reflog) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	state := backendStateFromHandle(handle)
 	goReflog := newReflogFromC(reflog, nil)
 	runtime.SetFinalizer(goReflog, nil)
@@ -364,7 +416,8 @@ func refdbBackendReflogWriteCallback(errorMessage **C.char, handle unsafe.Pointe
 }
 
 //export refdbBackendReflogRenameCallback
-func refdbBackendReflogRenameCallback(errorMessage **C.char, handle unsafe.Pointer, oldName *C.char, newName *C.char) C.int {
+func refdbBackendReflogRenameCallback(errorMessage **C.char, handle unsafe.Pointer, oldName *C.char, newName *C.char) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	state := backendStateFromHandle(handle)
 	if err := state.backend.ReflogRename(C.GoString(oldName), C.GoString(newName)); err != nil {
 		return setCallbackError(errorMessage, err)
@@ -373,7 +426,8 @@ func refdbBackendReflogRenameCallback(errorMessage **C.char, handle unsafe.Point
 }
 
 //export refdbBackendReflogDeleteCallback
-func refdbBackendReflogDeleteCallback(errorMessage **C.char, handle unsafe.Pointer, name *C.char) C.int {
+func refdbBackendReflogDeleteCallback(errorMessage **C.char, handle unsafe.Pointer, name *C.char) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	state := backendStateFromHandle(handle)
 	if err := state.backend.ReflogDelete(C.GoString(name)); err != nil {
 		return setCallbackError(errorMessage, err)
@@ -382,7 +436,8 @@ func refdbBackendReflogDeleteCallback(errorMessage **C.char, handle unsafe.Point
 }
 
 //export refdbBackendIteratorCallback
-func refdbBackendIteratorCallback(errorMessage **C.char, iteratorHandle *unsafe.Pointer, backendHandle unsafe.Pointer, glob *C.char) C.int {
+func refdbBackendIteratorCallback(errorMessage **C.char, iteratorHandle *unsafe.Pointer, backendHandle unsafe.Pointer, glob *C.char) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	iter, err := backendStateFromHandle(backendHandle).backend.Iterator(goStringOrEmpty(glob))
 	if err != nil {
 		return setCallbackError(errorMessage, err)
@@ -395,7 +450,8 @@ func refdbBackendIteratorCallback(errorMessage **C.char, iteratorHandle *unsafe.
 }
 
 //export refdbBackendIteratorNextCallback
-func refdbBackendIteratorNextCallback(errorMessage **C.char, out **C.git_reference, iteratorHandle unsafe.Pointer) C.int {
+func refdbBackendIteratorNextCallback(errorMessage **C.char, out **C.git_reference, iteratorHandle unsafe.Pointer) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	ref, err := backendIteratorStateFromHandle(iteratorHandle).iterator.Next()
 	if err != nil {
 		if IsErrorCode(err, ErrorCodeIterOver) {
@@ -407,19 +463,29 @@ func refdbBackendIteratorNextCallback(errorMessage **C.char, out **C.git_referen
 		return setCallbackError(errorMessage, &GitError{Message: "refdb iterator returned a nil reference", Class: ErrorClassInvalid, Code: ErrorCodeInvalid})
 	}
 	*out = ref.ptr
+	ref.ptr = nil
 	runtime.SetFinalizer(ref, nil)
 	return C.int(ErrorCodeOK)
 }
 
 //export refdbBackendIteratorFreeCallback
 func refdbBackendIteratorFreeCallback(iteratorHandle unsafe.Pointer) {
-	state := backendIteratorStateFromHandle(iteratorHandle)
-	state.iterator.Free()
+	value, ok := pointerHandles.GetOk(iteratorHandle)
+	if !ok {
+		return
+	}
+	state, ok := value.(*refdbBackendIteratorState)
 	pointerHandles.Untrack(iteratorHandle)
+	if !ok {
+		return
+	}
+	defer func() { _ = recover() }()
+	state.iterator.Free()
 }
 
 //export refdbBackendLockCallback
-func refdbBackendLockCallback(errorMessage **C.char, lockHandle *unsafe.Pointer, backendHandle unsafe.Pointer, refName *C.char) C.int {
+func refdbBackendLockCallback(errorMessage **C.char, lockHandle *unsafe.Pointer, backendHandle unsafe.Pointer, refName *C.char) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	locker, ok := backendStateFromHandle(backendHandle).backend.(RefdbBackendLocker)
 	if !ok {
 		return setCallbackError(errorMessage, &GitError{Message: "refdb backend does not implement Lock", Class: ErrorClassInvalid, Code: ErrorCodeInvalid})
@@ -433,7 +499,8 @@ func refdbBackendLockCallback(errorMessage **C.char, lockHandle *unsafe.Pointer,
 }
 
 //export refdbBackendUnlockCallback
-func refdbBackendUnlockCallback(errorMessage **C.char, backendHandle unsafe.Pointer, lockHandle unsafe.Pointer, status C.int, updateReflog C.int, ref *C.git_reference, sig *C.git_signature, message *C.char) C.int {
+func refdbBackendUnlockCallback(errorMessage **C.char, backendHandle unsafe.Pointer, lockHandle unsafe.Pointer, status C.int, updateReflog C.int, ref *C.git_reference, sig *C.git_signature, message *C.char) (ret C.int) {
+	defer recoverRefdbBackendCallback(errorMessage, &ret)
 	locker, ok := backendStateFromHandle(backendHandle).backend.(RefdbBackendLocker)
 	if !ok {
 		return setCallbackError(errorMessage, &GitError{Message: "refdb backend does not implement Unlock", Class: ErrorClassInvalid, Code: ErrorCodeInvalid})

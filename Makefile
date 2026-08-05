@@ -7,6 +7,7 @@ TEST_ARGS ?= --count=1
 # building against a released libgit2 that lacks reftable.
 REFTABLE_TAG ?= libgit2_reftable
 STATIC_TAGS := static $(REFTABLE_TAG)
+DYNAMIC_TAGS := $(REFTABLE_TAG)
 
 default: test
 
@@ -42,11 +43,11 @@ test-dynamic: dynamic-build/install/lib/libgit2.so
 			go run script/check-MakeGitError-thread-lock.go
 	PKG_CONFIG_PATH=dynamic-build/install/lib/pkgconfig \
 			LD_LIBRARY_PATH=dynamic-build/install/lib \
-			go test $(TEST_ARGS) ./...
+			go test --tags "$(DYNAMIC_TAGS)" $(TEST_ARGS) ./...
 
 install-dynamic: dynamic-build/install/lib/libgit2.so
 	PKG_CONFIG_PATH=dynamic-build/install/lib/pkgconfig \
-			go install ./...
+			go install --tags "$(DYNAMIC_TAGS)" ./...
 
 # Bundled static library
 # ======================

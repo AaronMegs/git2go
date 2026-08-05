@@ -7,6 +7,7 @@ extern void _go_git_populate_apply_callbacks(git_apply_options *options);
 extern int _go_git_diff_foreach(git_diff *diff, int eachFile, int eachHunk, int eachLine, void *payload);
 extern void _go_git_setup_diff_notify_callbacks(git_diff_options* opts);
 extern int _go_git_diff_blobs(git_blob *old, const char *old_path, git_blob *new, const char *new_path, git_diff_options *opts, int eachFile, int eachHunk, int eachLine, void *payload);
+extern int _go_git_diff_from_buffer(git_diff **out, const char *content, size_t content_len, int oid_type);
 */
 import "C"
 import (
@@ -1086,7 +1087,17 @@ func (v *Repository) ApplyToTree(diff *Diff, tree *Tree, opts *ApplyOptions) (*I
 // This function will only read patch files created by a git implementation, it
 // will not read unified diffs produced by the diff program, nor any other
 // types of patch files.
+//
+// The patch is parsed using the libgit2 default object id type (SHA1). To parse
+// a SHA256 patch use DiffFromBufferWithOidType.
 func DiffFromBuffer(buffer []byte, repo *Repository) (*Diff, error) {
+	return diffFromBufferWithOidType(buffer, repo, 0)
+}
+
+// diffFromBufferWithOidType is the shared implementation behind DiffFromBuffer
+// and DiffFromBufferWithOidType. oidType follows git_oid_t (0 = libgit2
+// default).
+func diffFromBufferWithOidType(buffer []byte, repo *Repository, oidType C.int) (*Diff, error) {
 	var diff *C.git_diff
 
 	cBuffer := C.CBytes(buffer)
@@ -1095,7 +1106,7 @@ func DiffFromBuffer(buffer []byte, repo *Repository) (*Diff, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ecode := C.git_diff_from_buffer(&diff, (*C.char)(cBuffer), C.size_t(len(buffer)))
+	ecode := C._go_git_diff_from_buffer(&diff, (*C.char)(cBuffer), C.size_t(len(buffer)), oidType)
 	if ecode < 0 {
 		return nil, MakeGitError(ecode)
 	}

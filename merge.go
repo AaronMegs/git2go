@@ -11,7 +11,6 @@ extern int _go_git_merge_file(git_merge_file_result*, char*, size_t, char*, unsi
 */
 import "C"
 import (
-	"reflect"
 	"runtime"
 	"unsafe"
 )
@@ -327,6 +326,9 @@ func (r *Repository) MergeBases(one, two *Oid) ([]*Oid, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
+	if one == nil || two == nil {
+		return nil, &GitError{Message: "merge base oid is nil", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
 	var coids C.git_oidarray
 	ret := C.git_merge_bases(&coids, r.ptr, one.toC(), two.toC())
 	runtime.KeepAlive(one)
@@ -334,18 +336,12 @@ func (r *Repository) MergeBases(one, two *Oid) ([]*Oid, error) {
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
+	defer C.git_oidarray_dispose(&coids)
 
 	oids := make([]*Oid, coids.count)
-	hdr := reflect.SliceHeader{
-		Data: uintptr(unsafe.Pointer(coids.ids)),
-		Len:  int(coids.count),
-		Cap:  int(coids.count),
-	}
-
-	goSlice := *(*[]C.git_oid)(unsafe.Pointer(&hdr))
-
-	for i, cid := range goSlice {
-		oids[i] = newOidFromC(&cid)
+	goSlice := unsafe.Slice(coids.ids, int(coids.count))
+	for i := range goSlice {
+		oids[i] = newOidFromC(&goSlice[i])
 	}
 
 	return oids, nil
@@ -353,8 +349,14 @@ func (r *Repository) MergeBases(one, two *Oid) ([]*Oid, error) {
 
 // MergeBaseMany finds a merge base given a list of commits.
 func (r *Repository) MergeBaseMany(oids []*Oid) (*Oid, error) {
+	if len(oids) == 0 {
+		return nil, &GitError{Message: "merge base oid list is empty", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
 	coids := make([]C.git_oid, len(oids))
 	for i := 0; i < len(oids); i++ {
+		if oids[i] == nil {
+			return nil, &GitError{Message: "merge base oid list contains nil", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+		}
 		coids[i] = *oids[i].toC()
 	}
 
@@ -373,8 +375,14 @@ func (r *Repository) MergeBaseMany(oids []*Oid) (*Oid, error) {
 
 // MergeBasesMany finds all merge bases given a list of commits.
 func (r *Repository) MergeBasesMany(oids []*Oid) ([]*Oid, error) {
+	if len(oids) == 0 {
+		return nil, &GitError{Message: "merge base oid list is empty", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
 	inCoids := make([]C.git_oid, len(oids))
 	for i := 0; i < len(oids); i++ {
+		if oids[i] == nil {
+			return nil, &GitError{Message: "merge base oid list contains nil", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+		}
 		inCoids[i] = *oids[i].toC()
 	}
 
@@ -388,17 +396,12 @@ func (r *Repository) MergeBasesMany(oids []*Oid) ([]*Oid, error) {
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
+	defer C.git_oidarray_dispose(&outCoids)
 
 	outOids := make([]*Oid, outCoids.count)
-	hdr := reflect.SliceHeader{
-		Data: uintptr(unsafe.Pointer(outCoids.ids)),
-		Len:  int(outCoids.count),
-		Cap:  int(outCoids.count),
-	}
-	goSlice := *(*[]C.git_oid)(unsafe.Pointer(&hdr))
-
-	for i, cid := range goSlice {
-		outOids[i] = newOidFromC(&cid)
+	goSlice := unsafe.Slice(outCoids.ids, int(outCoids.count))
+	for i := range goSlice {
+		outOids[i] = newOidFromC(&goSlice[i])
 	}
 
 	return outOids, nil
@@ -406,8 +409,14 @@ func (r *Repository) MergeBasesMany(oids []*Oid) ([]*Oid, error) {
 
 // MergeBaseOctopus finds a merge base in preparation for an octopus merge.
 func (r *Repository) MergeBaseOctopus(oids []*Oid) (*Oid, error) {
+	if len(oids) == 0 {
+		return nil, &GitError{Message: "merge base oid list is empty", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
 	coids := make([]C.git_oid, len(oids))
 	for i := 0; i < len(oids); i++ {
+		if oids[i] == nil {
+			return nil, &GitError{Message: "merge base oid list contains nil", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+		}
 		coids[i] = *oids[i].toC()
 	}
 

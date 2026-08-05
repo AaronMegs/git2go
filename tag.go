@@ -89,7 +89,7 @@ func (c *TagsCollection) Create(name string, obj Objecter, tagger *Signature, me
 	defer runtime.UnlockOSThread()
 
 	o := obj.AsObject()
-	ret := C.git_tag_create(oid.toC(), c.repo.ptr, cname, o.ptr, taggerSig, cmessage, 0)
+	ret := C.git_tag_create(oid.outC(), c.repo.ptr, cname, o.ptr, taggerSig, cmessage, 0)
 	runtime.KeepAlive(c)
 	runtime.KeepAlive(obj)
 	if ret < 0 {
@@ -138,7 +138,7 @@ func (c *TagsCollection) CreateLightweight(name string, obj Objecter, force bool
 	defer runtime.UnlockOSThread()
 
 	o := obj.AsObject()
-	err := C.git_tag_create_lightweight(oid.toC(), c.repo.ptr, cname, o.ptr, cbool(force))
+	err := C.git_tag_create_lightweight(oid.outC(), c.repo.ptr, cname, o.ptr, cbool(force))
 	runtime.KeepAlive(c)
 	runtime.KeepAlive(obj)
 	if err < 0 {

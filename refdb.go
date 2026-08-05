@@ -20,7 +20,8 @@ type Refdb struct {
 
 type RefdbBackend struct {
 	doNotCompare
-	ptr *C.git_refdb_backend
+	ptr   *C.git_refdb_backend
+	owner *Repository
 }
 
 func (v *Repository) NewRefdb() (refdb *Refdb, err error) {
@@ -45,16 +46,31 @@ func NewRefdbBackendFromC(ptr unsafe.Pointer) (backend *RefdbBackend) {
 }
 
 func (v *Refdb) SetBackend(backend *RefdbBackend) (err error) {
+	if v == nil || v.ptr == nil {
+		return &GitError{Message: "refdb is nil or already freed", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+	if backend == nil || backend.ptr == nil {
+		return &GitError{Message: "refdb backend is nil or already freed", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+	if backend.owner != nil && v.r != nil && backend.owner != v.r {
+		return &GitError{Message: "refdb backend belongs to a different repository", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_refdb_set_backend(v.ptr, backend.ptr)
+	ptr := backend.ptr
+	ret := C.git_refdb_set_backend(v.ptr, ptr)
 	runtime.KeepAlive(v)
 	runtime.KeepAlive(backend)
 	if ret < 0 {
-		backend.Free()
+		// libgit2 did not take ownership; the caller may retry or free it.
 		return MakeGitError(ret)
 	}
+	// Ownership transferred to the refdb. The Refdb itself keeps the repository
+	// alive, so the temporary backend wrapper no longer needs its owner anchor.
+	backend.ptr = nil
+	backend.owner = nil
 	return nil
 }
 
@@ -115,6 +131,9 @@ func (v *Repository) OpenRefdb() (refdb *Refdb, err error) {
 //
 // Wraps `git_refdb_compress`.
 func (v *Refdb) Compress() error {
+	if v == nil || v.ptr == nil {
+		return &GitError{Message: "refdb is nil or already freed", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -146,18 +165,27 @@ func (v *Repository) NewRefdbBackendFs() (backend *RefdbBackend, err error) {
 		return nil, MakeGitError(ret)
 	}
 
-	backend = &RefdbBackend{ptr: ptr}
+	backend = &RefdbBackend{ptr: ptr, owner: v}
+	runtime.SetFinalizer(backend, (*RefdbBackend).Free)
 	return backend, nil
 }
 
 // NewRefdbBackendReftable explicitly constructs the reftable-based refdb
 // backend for a repository. It is only available when git2go is built with
 // the `libgit2_reftable` build tag against a libgit2 that has reftable
-// support (see refdb_reftable.go / refdb_noreftable.go).
+// support (see reftable_on.go / reftable_off.go).
 
 func (v *RefdbBackend) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
+	owner := v.owner
+	v.owner = nil
 	runtime.SetFinalizer(v, nil)
-	C._go_git_refdb_backend_free(v.ptr)
+	C._go_git_refdb_backend_free(ptr)
+	runtime.KeepAlive(owner)
 }
 
 // RefdbType selects which on-disk reference storage format a repository uses.

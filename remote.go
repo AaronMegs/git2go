@@ -12,7 +12,6 @@ import "C"
 import (
 	"crypto/x509"
 	"errors"
-	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -936,42 +935,44 @@ func (c *RemoteCollection) AddFetch(remote, refspec string) error {
 	return nil
 }
 
-func sptr(p uintptr) *C.char {
-	return *(**C.char)(unsafe.Pointer(p))
-}
-
 func makeStringsFromCStrings(x **C.char, l int) []string {
+	if l == 0 || x == nil {
+		return nil
+	}
+	cStrings := unsafe.Slice(x, l)
 	s := make([]string, l)
-	i := 0
-	for p := uintptr(unsafe.Pointer(x)); i < l; p += unsafe.Sizeof(uintptr(0)) {
-		s[i] = C.GoString(sptr(p))
-		i++
+	for i := range cStrings {
+		s[i] = C.GoString(cStrings[i])
 	}
 	return s
 }
 
 func makeCStringsFromStrings(s []string) **C.char {
-	l := len(s)
-	x := (**C.char)(C.malloc(C.size_t(unsafe.Sizeof(unsafe.Pointer(nil)) * uintptr(l))))
-	i := 0
-	for p := uintptr(unsafe.Pointer(x)); i < l; p += unsafe.Sizeof(uintptr(0)) {
-		*(**C.char)(unsafe.Pointer(p)) = C.CString(s[i])
-		i++
+	if len(s) == 0 {
+		return nil
+	}
+	x := (**C.char)(C.calloc(C.size_t(len(s)), C.size_t(unsafe.Sizeof(unsafe.Pointer(nil)))))
+	if x == nil {
+		return nil
+	}
+	cStrings := unsafe.Slice(x, len(s))
+	for i := range s {
+		cStrings[i] = C.CString(s[i])
 	}
 	return x
 }
 
 func freeStrarray(arr *C.git_strarray) {
-	count := int(arr.count)
-	size := unsafe.Sizeof(unsafe.Pointer(nil))
-
-	i := 0
-	for p := uintptr(unsafe.Pointer(arr.strings)); i < count; p += size {
-		C.free(unsafe.Pointer(sptr(p)))
-		i++
+	if arr == nil || arr.strings == nil {
+		return
 	}
-
+	cStrings := unsafe.Slice(arr.strings, int(arr.count))
+	for i := range cStrings {
+		C.free(unsafe.Pointer(cStrings[i]))
+	}
 	C.free(unsafe.Pointer(arr.strings))
+	arr.strings = nil
+	arr.count = 0
 }
 
 func (o *Remote) FetchRefspecs() ([]string, error) {
@@ -1201,13 +1202,7 @@ func (o *Remote) Ls(filterRefs ...string) ([]RemoteHead, error) {
 		return make([]RemoteHead, 0), nil
 	}
 
-	hdr := reflect.SliceHeader{
-		Data: uintptr(unsafe.Pointer(refs)),
-		Len:  size,
-		Cap:  size,
-	}
-
-	goSlice := *(*[]*C.git_remote_head)(unsafe.Pointer(&hdr))
+	goSlice := unsafe.Slice(refs, size)
 
 	var heads []RemoteHead
 

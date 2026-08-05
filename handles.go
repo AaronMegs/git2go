@@ -54,15 +54,19 @@ func (v *HandleList) Clear() {
 	v.Unlock()
 }
 
-// Get retrieves the pointer from the given handle
+// Get retrieves the pointer from the given handle.
 func (v *HandleList) Get(handle unsafe.Pointer) interface{} {
-	v.RLock()
-	defer v.RUnlock()
-
-	ptr, ok := v.handles[handle]
+	ptr, ok := v.GetOk(handle)
 	if !ok {
 		panic(fmt.Sprintf("invalid pointer handle: %p", handle))
 	}
-
 	return ptr
+}
+
+// GetOk retrieves the pointer and reports whether the handle is still valid.
+func (v *HandleList) GetOk(handle unsafe.Pointer) (interface{}, bool) {
+	v.RLock()
+	defer v.RUnlock()
+	ptr, ok := v.handles[handle]
+	return ptr, ok
 }

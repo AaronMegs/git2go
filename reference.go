@@ -360,8 +360,13 @@ func (v *Reference) IsNote() bool {
 }
 
 func (v *Reference) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
 	runtime.SetFinalizer(v, nil)
-	C.git_reference_free(v.ptr)
+	C.git_reference_free(ptr)
 }
 
 type ReferenceIterator struct {

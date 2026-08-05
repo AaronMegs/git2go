@@ -13,6 +13,7 @@ static git_commit *_go_git_commitarray_get(git_commitarray *array, size_t idx) {
 import "C"
 import (
 	"runtime"
+	"strings"
 	"unsafe"
 )
 
@@ -206,6 +207,9 @@ type RepositoryInitOptions struct {
 	// OriginURL, if set, adds an "origin" remote pointing to this URL
 	// after initialization.
 	OriginURL string
+	// OidType selects the object-id hash algorithm. The zero value lets
+	// libgit2 use its default (SHA1).
+	OidType ObjectIdType
 	// RefdbType selects the on-disk reference storage backend.
 	//
 	// Mapped to the `refdb_type` field of `git_repository_init_options`
@@ -242,6 +246,31 @@ type RepositoryInitOptions struct {
 //		RefdbType: git.RefdbReftable,
 //	})
 func InitRepositoryExt(path string, opts *RepositoryInitOptions) (*Repository, error) {
+	if opts != nil {
+		if err := validateObjectIdType(opts.OidType); err != nil {
+			return nil, err
+		}
+		switch opts.RefdbType {
+		case RefdbDefault, RefdbFiles, RefdbReftable:
+		default:
+			return nil, &GitError{Message: "invalid repository reference storage type", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+		}
+		for name, value := range map[string]string{
+			"repository path": path,
+			"workdir path":    opts.WorkdirPath,
+			"description":     opts.Description,
+			"template path":   opts.TemplatePath,
+			"initial head":    opts.InitialHead,
+			"origin URL":      opts.OriginURL,
+		} {
+			if strings.IndexByte(value, 0) >= 0 {
+				return nil, &GitError{Message: name + " contains a NUL byte", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+			}
+		}
+	} else if strings.IndexByte(path, 0) >= 0 {
+		return nil, &GitError{Message: "repository path contains a NUL byte", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
 
@@ -279,6 +308,9 @@ func InitRepositoryExt(path string, opts *RepositoryInitOptions) (*Repository, e
 			defer C.free(unsafe.Pointer(curl))
 			copts.origin_url = curl
 		}
+		if opts.OidType != ObjectIdTypeDefault {
+			copts.oid_type = C.git_oid_t(opts.OidType)
+		}
 		// The reference-storage backend (refdb_type) is only present on
 		// libgit2 main. applyRefdbType is a no-op unless git2go is built
 		// with the `libgit2_reftable` build tag; this keeps InitRepositoryExt
@@ -295,6 +327,9 @@ func InitRepositoryExt(path string, opts *RepositoryInitOptions) (*Repository, e
 	var ptr *C.git_repository
 	ret := C.git_repository_init_ext(&ptr, cpath, &copts)
 	if ret < 0 {
+		if ptr != nil {
+			C.git_repository_free(ptr)
+		}
 		return nil, MakeGitError(ret)
 	}
 
@@ -665,7 +700,7 @@ func (v *Repository) CreateCommit(
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_commit_create(
-		oid.toC(), v.ptr, cref,
+		oid.outC(), v.ptr, cref,
 		authorSig, committerSig,
 		nil, cmsg, tree.cast_ptr, C.size_t(nparents), parentsarg)
 
@@ -701,7 +736,7 @@ func (v *Repository) CreateCommitWithSignature(
 	defer runtime.UnlockOSThread()
 
 	oid := new(Oid)
-	ret := C.git_commit_create_with_signature(oid.toC(), v.ptr, cCommitContent, cSignature, cSignatureField)
+	ret := C.git_commit_create_with_signature(oid.outC(), v.ptr, cCommitContent, cSignature, cSignatureField)
 
 	runtime.KeepAlive(v)
 	runtime.KeepAlive(oid)
@@ -796,19 +831,19 @@ func (v *Repository) CreateCommitFromIds(
 
 	nparents := len(parents)
 	if nparents > 0 {
-		// All this awful pointer arithmetic is needed to avoid passing a Go
-		// pointer to Go pointer into C. Other methods (like CreateCommits) are
-		// fine without this workaround because they are just passing Go pointers
-		// to C pointers, but arrays-of-pointers-to-git_oid are a bit special since
-		// both the array and the objects are allocated from Go.
-		var emptyOidPtr *C.git_oid
-		sizeofOidPtr := unsafe.Sizeof(emptyOidPtr)
-		parentsarg = (**C.git_oid)(C.calloc(C.size_t(uintptr(nparents)), C.size_t(sizeofOidPtr)))
+		for _, parent := range parents {
+			if parent == nil {
+				return nil, &GitError{Message: "commit parent oid is nil", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+			}
+		}
+		parentsarg = (**C.git_oid)(C.calloc(C.size_t(nparents), C.size_t(unsafe.Sizeof((*C.git_oid)(nil)))))
+		if parentsarg == nil {
+			return nil, &GitError{Message: "failed to allocate commit parent array", Class: ErrorClassNoMemory, Code: ErrorCodeGeneric}
+		}
 		defer C.free(unsafe.Pointer(parentsarg))
-		parentsptr := uintptr(unsafe.Pointer(parentsarg))
-		for _, v := range parents {
-			*(**C.git_oid)(unsafe.Pointer(parentsptr)) = v.toC()
-			parentsptr += sizeofOidPtr
+		cParents := unsafe.Slice(parentsarg, nparents)
+		for i := range parents {
+			cParents[i] = parents[i].toC()
 		}
 	}
 
@@ -828,7 +863,7 @@ func (v *Repository) CreateCommitFromIds(
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_commit_create_from_ids(
-		oid.toC(), v.ptr, cref,
+		oid.outC(), v.ptr, cref,
 		authorSig, committerSig,
 		nil, cmsg, tree.toC(), C.size_t(nparents), parentsarg)
 
@@ -849,8 +884,16 @@ func (v *Odb) Free() {
 }
 
 func (v *Refdb) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
+	owner := v.r
+	v.r = nil
 	runtime.SetFinalizer(v, nil)
-	C.git_refdb_free(v.ptr)
+	C.git_refdb_free(ptr)
+	runtime.KeepAlive(owner)
 }
 
 func (v *Repository) Odb() (odb *Odb, err error) {
@@ -864,6 +907,9 @@ func (v *Repository) Odb() (odb *Odb, err error) {
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
+
+	// Keep Odb.Hash and HashFile aligned with the repository object format.
+	odb.oidType = C.int(v.OidType())
 
 	runtime.SetFinalizer(odb, (*Odb).Free)
 	return odb, nil

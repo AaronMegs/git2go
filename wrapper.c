@@ -528,12 +528,93 @@ int _go_git_indexer_new(
 		const char *path,
 		unsigned int mode,
 		git_odb *odb,
+		int oid_type,
 		void *progress_cb_payload)
 {
 	git_indexer_options indexer_options = GIT_INDEXER_OPTIONS_INIT;
 	indexer_options.progress_cb = transfer_progress_callback;
 	indexer_options.progress_cb_payload = progress_cb_payload;
-	return git_indexer_new(out, path, mode, odb, &indexer_options);
+	indexer_options.mode = mode;
+	indexer_options.odb = odb;
+	indexer_options.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
+	return git_indexer_new(out, path, &indexer_options);
+}
+
+// SHA1/SHA256 helpers for libgit2 option structures. Oid parsing itself is
+// implemented in Go and does not require C parsing shims.
+int _go_git_repository_oid_type(git_repository *repo)
+{
+	return (int)git_repository_oid_type(repo);
+}
+
+int _go_git_odb_hash(git_oid *out, const void *data, size_t len, git_object_t obj_type, int oid_type)
+{
+	git_object_id_options opts = GIT_OBJECT_ID_OPTIONS_INIT;
+	opts.object_type = obj_type;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
+	return git_object_id_from_buffer(out, data, len, &opts);
+}
+
+int _go_git_object_id_from_file(git_oid *out, const char *path, git_object_t obj_type, int oid_type)
+{
+	git_object_id_options opts = GIT_OBJECT_ID_OPTIONS_INIT;
+	opts.object_type = obj_type;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
+	return git_object_id_from_file(out, path, &opts);
+}
+
+int _go_git_odb_new(git_odb **out, int oid_type)
+{
+	git_odb_options opts = GIT_ODB_OPTIONS_INIT;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
+	return git_odb_new_ext(out, &opts);
+}
+
+int _go_git_index_new(git_index **out, int oid_type)
+{
+	git_index_options opts = GIT_INDEX_OPTIONS_INIT;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
+	return git_index_new_ext(out, &opts);
+}
+
+int _go_git_index_open(git_index **out, const char *index_path, int oid_type)
+{
+	git_index_options opts = GIT_INDEX_OPTIONS_INIT;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
+	return git_index_open_ext(out, index_path, &opts);
+}
+
+int _go_git_diff_from_buffer(git_diff **out, const char *content, size_t content_len, int oid_type)
+{
+	git_diff_parse_options opts = GIT_DIFF_PARSE_OPTIONS_INIT;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
+	return git_diff_from_buffer_ext(out, content, content_len, &opts);
+}
+
+int _go_git_odb_backend_one_pack(git_odb_backend **out, const char *index_file, int oid_type)
+{
+	git_odb_backend_pack_options opts = GIT_ODB_BACKEND_PACK_OPTIONS_INIT;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
+	return git_odb_backend_one_pack(out, index_file, &opts);
+}
+
+int _go_git_odb_backend_loose(
+		git_odb_backend **out,
+		const char *objects_dir,
+		int compression_level,
+		int do_fsync,
+		unsigned int dir_mode,
+		unsigned int file_mode,
+		int oid_type)
+{
+	git_odb_backend_loose_options opts = GIT_ODB_BACKEND_LOOSE_OPTIONS_INIT;
+	opts.compression_level = compression_level;
+	if (do_fsync)
+		opts.flags |= GIT_ODB_BACKEND_LOOSE_FSYNC;
+	opts.dir_mode = dir_mode;
+	opts.file_mode = file_mode;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
+	return git_odb_backend_loose(out, objects_dir, &opts);
 }
 
 static int smart_transport_callback(
@@ -672,11 +753,6 @@ typedef struct {
 	void *handle;
 	char *last_name;
 } _go_managed_refdb_iterator;
-
-void *_go_git_refdb_backend_handle(git_refdb_backend *backend)
-{
-	return ((_go_managed_refdb_backend *)backend)->handle;
-}
 
 #ifdef GIT2GO_HAS_REFDB_BACKEND_INIT
 static int _go_refdb_init(git_refdb_backend *backend, const char *head_target, mode_t mode, uint32_t flags)

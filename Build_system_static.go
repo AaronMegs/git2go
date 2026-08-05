@@ -5,7 +5,7 @@ package git
 
 /*
 #cgo pkg-config: libgit2 --static
-#cgo CFLAGS: -DLIBGIT2_STATIC
+#cgo CFLAGS: -DGIT_STATIC -DLIBGIT2_STATIC
 #include <git2.h>
 
 #include "git2go_version_check.h"

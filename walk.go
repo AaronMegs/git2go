@@ -167,7 +167,7 @@ func (v *RevWalk) Next(id *Oid) (err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_revwalk_next(id.toC(), v.ptr)
+	ret := C.git_revwalk_next(id.outC(), v.ptr)
 	runtime.KeepAlive(v)
 	switch {
 	case ret < 0:

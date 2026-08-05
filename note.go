@@ -51,7 +51,7 @@ func (c *NoteCollection) Create(
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_note_create(
-		oid.toC(), c.repo.ptr, cref, authorSig,
+		oid.outC(), c.repo.ptr, cref, authorSig,
 		committerSig, id.toC(), cnote, cbool(force))
 	runtime.KeepAlive(c)
 	runtime.KeepAlive(id)
@@ -236,7 +236,7 @@ func (it *NoteIterator) Next() (noteId, annotatedId *Oid, err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_note_next(noteId.toC(), annotatedId.toC(), it.ptr)
+	ret := C.git_note_next(noteId.outC(), annotatedId.outC(), it.ptr)
 	runtime.KeepAlive(noteId)
 	runtime.KeepAlive(annotatedId)
 	runtime.KeepAlive(it)

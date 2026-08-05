@@ -51,12 +51,9 @@ if [ -n "${BUILD_LIBGIT_REF}" ]; then
 	trap "git submodule update --init" EXIT
 fi
 
-# git2go still calls a few deprecated libgit2 symbols (e.g. git_odb_hash),
-# which are compiled out when DEPRECATE_HARD=ON. On libgit2 v1.9.x these
-# symbols were not hard-deprecated so the bundled build happened to link, but
-# on newer libgit2 (main, with reftable) they moved behind DEPRECATE_HARD and
-# the static link fails with "Undefined symbols: _git_odb_hash". Keep
-# deprecated symbols available by default; can be overridden via the env var.
+# Keep deprecated declarations by default while tracking libgit2 main. CI also
+# builds with BUILD_DEPRECATED_HARD=ON to prove the v36-pre bindings no longer
+# depend on APIs hidden behind upstream's hard-deprecation gate.
 BUILD_DEPRECATED_HARD="${BUILD_DEPRECATED_HARD-OFF}"
 if [ "${BUILD_SYSTEM}" = "ON" ]; then
 	BUILD_INSTALL_PREFIX=${SYSTEM_INSTALL_PREFIX-"/usr"}
@@ -72,6 +69,13 @@ if [ "${USE_CHROMIUM_ZLIB}" = "ON" ]; then
 	USE_BUNDLED_ZLIB="Chromium"
 fi
 
+# Force the vendored libgit2 headers to win over stale system-installed
+# libgit2 headers for every CMake target. libgit2's bundled xdiff target uses
+# SYSTEM include directories; without a plain -I here, macOS can select an old
+# /usr/local/include/git2 header and compile xdiff against a different
+# git_allocator layout, leading to SIGBUS in xdl_prepare_env.
+LIBGIT2_INTREE_INCLUDE="-I${VENDORED_PATH}/include"
+
 mkdir -p "${BUILD_PATH}/build" &&
 cd "${BUILD_PATH}/build" &&
 cmake -DTHREADSAFE=ON \
@@ -83,16 +87,20 @@ cmake -DTHREADSAFE=ON \
       -DUSE_SSH=OFF \
       -DUSE_AUTH_NTLM=OFF \
       -DUSE_AUTH_NEGOTIATE=OFF \
-      -DCMAKE_C_FLAGS=-fPIC \
+      -DCMAKE_C_FLAGS="-fPIC ${LIBGIT2_INTREE_INCLUDE}" \
       -DCMAKE_BUILD_TYPE="RelWithDebInfo" \
       -DCMAKE_INSTALL_PREFIX="${BUILD_INSTALL_PREFIX}" \
       -DCMAKE_INSTALL_LIBDIR="lib" \
       -DDEPRECATE_HARD="${BUILD_DEPRECATED_HARD}" \
       "${VENDORED_PATH}"
 
-if which make nproc >/dev/null && [ -f Makefile ]; then
-	# Make the build parallel if make is available and cmake used Makefiles.
-	exec make "-j$(nproc --all)" install
-else
-	exec cmake --build . --target install
-fi
+build_and_install() {
+	if which make nproc >/dev/null && [ -f Makefile ]; then
+		# Make the build parallel if make is available and cmake used Makefiles.
+		make "-j$(nproc --all)" install
+	else
+		cmake --build . --target install
+	fi
+}
+
+build_and_install

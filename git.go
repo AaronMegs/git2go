@@ -6,8 +6,6 @@ package git
 */
 import "C"
 import (
-	"bytes"
-	"encoding/hex"
 	"errors"
 	"runtime"
 	"strings"
@@ -206,99 +204,6 @@ func Shutdown() {
 func ReInit() {
 	Shutdown()
 	initLibGit2()
-}
-
-// Oid represents the id for a Git object.
-type Oid [20]byte
-
-func newOidFromC(coid *C.git_oid) *Oid {
-	if coid == nil {
-		return nil
-	}
-
-	oid := new(Oid)
-	copy(oid[0:20], C.GoBytes(unsafe.Pointer(coid), 20))
-	return oid
-}
-
-func NewOidFromBytes(b []byte) *Oid {
-	oid := new(Oid)
-	copy(oid[0:20], b[0:20])
-	return oid
-}
-
-func (oid *Oid) toC() *C.git_oid {
-	return (*C.git_oid)(unsafe.Pointer(oid))
-}
-
-func NewOid(s string) (*Oid, error) {
-	if len(s) > C.GIT_OID_HEXSZ {
-		return nil, errors.New("string is too long for oid")
-	}
-
-	o := new(Oid)
-
-	slice, err := hex.DecodeString(s)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(slice) != 20 {
-		return nil, &GitError{"invalid oid", ErrorClassNone, ErrorCodeGeneric}
-	}
-
-	copy(o[:], slice[:20])
-	return o, nil
-}
-
-func (oid *Oid) String() string {
-	return hex.EncodeToString(oid[:])
-}
-
-func (oid *Oid) Cmp(oid2 *Oid) int {
-	return bytes.Compare(oid[:], oid2[:])
-}
-
-func (oid *Oid) Copy() *Oid {
-	ret := *oid
-	return &ret
-}
-
-func (oid *Oid) Equal(oid2 *Oid) bool {
-	return *oid == *oid2
-}
-
-func (oid *Oid) IsZero() bool {
-	return *oid == Oid{}
-}
-
-func (oid *Oid) NCmp(oid2 *Oid, n uint) int {
-	return bytes.Compare(oid[:n], oid2[:n])
-}
-
-func ShortenOids(ids []*Oid, minlen int) (int, error) {
-	shorten := C.git_oid_shorten_new(C.size_t(minlen))
-	if shorten == nil {
-		panic("Out of memory")
-	}
-	defer C.git_oid_shorten_free(shorten)
-
-	var ret C.int
-
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	for _, id := range ids {
-		buf := make([]byte, 41)
-		C.git_oid_fmt((*C.char)(unsafe.Pointer(&buf[0])), id.toC())
-		buf[40] = 0
-		ret = C.git_oid_shorten_add(shorten, (*C.char)(unsafe.Pointer(&buf[0])))
-		if ret < 0 {
-			return int(ret), MakeGitError(ret)
-		}
-	}
-	runtime.KeepAlive(ids)
-	return int(ret), nil
 }
 
 type GitError struct {

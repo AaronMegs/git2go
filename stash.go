@@ -66,7 +66,7 @@ func (c *StashCollection) Save(
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_stash_save(
-		oid.toC(), c.repo.ptr,
+		oid.outC(), c.repo.ptr,
 		stasherC, messageC, C.uint32_t(flags))
 	runtime.KeepAlive(c)
 	if ret < 0 {
@@ -119,7 +119,7 @@ func (c *StashCollection) SaveWithOptions(opts *StashSaveOptions) (*Oid, error) 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_stash_save_with_opts(oid.toC(), c.repo.ptr, &copts)
+	ret := C.git_stash_save_with_opts(oid.outC(), c.repo.ptr, &copts)
 	runtime.KeepAlive(c)
 	if ret < 0 {
 		return nil, MakeGitError(ret)

@@ -29,8 +29,13 @@ func newReflogFromC(ptr *C.git_reflog, repo *Repository) *Reflog {
 
 // Free releases the memory held by the reflog.
 func (r *Reflog) Free() {
+	if r == nil || r.ptr == nil {
+		return
+	}
+	ptr := r.ptr
+	r.ptr = nil
 	runtime.SetFinalizer(r, nil)
-	C.git_reflog_free(r.ptr)
+	C.git_reflog_free(ptr)
 }
 
 // ReflogEntry is a single entry within a Reflog. Its accessors read data owned

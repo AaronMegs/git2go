@@ -7,6 +7,7 @@ package git
 import "C"
 import (
 	"runtime"
+	"strings"
 	"unsafe"
 )
 
@@ -37,8 +38,28 @@ func (v *Repository) NewTransaction() (*Transaction, error) {
 	return tx, nil
 }
 
+func (tx *Transaction) requireOpen() error {
+	if tx == nil || tx.ptr == nil {
+		return &GitError{Message: "transaction is closed", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+	return nil
+}
+
+func validateTransactionString(name, value string) error {
+	if strings.IndexByte(value, 0) >= 0 {
+		return &GitError{Message: name + " contains a NUL byte", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+	return nil
+}
+
 // LockRef locks refName for a subsequent update in this transaction.
 func (tx *Transaction) LockRef(refName string) error {
+	if err := tx.requireOpen(); err != nil {
+		return err
+	}
+	if err := validateTransactionString("reference name", refName); err != nil {
+		return err
+	}
 	cRefName := C.CString(refName)
 	defer C.free(unsafe.Pointer(cRefName))
 
@@ -55,8 +76,17 @@ func (tx *Transaction) LockRef(refName string) error {
 
 // SetTarget queues a direct-reference update. refName must already be locked.
 func (tx *Transaction) SetTarget(refName string, target *Oid, sig *Signature, message string) error {
+	if err := tx.requireOpen(); err != nil {
+		return err
+	}
 	if target == nil {
 		return &GitError{Message: "transaction target is nil", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+	if err := validateTransactionString("reference name", refName); err != nil {
+		return err
+	}
+	if err := validateTransactionString("reflog message", message); err != nil {
+		return err
 	}
 	cRefName := C.CString(refName)
 	defer C.free(unsafe.Pointer(cRefName))
@@ -85,6 +115,14 @@ func (tx *Transaction) SetTarget(refName string, target *Oid, sig *Signature, me
 // SetSymbolicTarget queues a symbolic-reference update. refName must already
 // be locked.
 func (tx *Transaction) SetSymbolicTarget(refName, target string, sig *Signature, message string) error {
+	if err := tx.requireOpen(); err != nil {
+		return err
+	}
+	for name, value := range map[string]string{"reference name": refName, "symbolic target": target, "reflog message": message} {
+		if err := validateTransactionString(name, value); err != nil {
+			return err
+		}
+	}
 	cRefName := C.CString(refName)
 	defer C.free(unsafe.Pointer(cRefName))
 	cTarget := C.CString(target)
@@ -113,6 +151,12 @@ func (tx *Transaction) SetSymbolicTarget(refName, target string, sig *Signature,
 // SetReflog queues a complete reflog replacement. refName must already be
 // locked.
 func (tx *Transaction) SetReflog(refName string, reflog *Reflog) error {
+	if err := tx.requireOpen(); err != nil {
+		return err
+	}
+	if err := validateTransactionString("reference name", refName); err != nil {
+		return err
+	}
 	if reflog == nil || reflog.ptr == nil {
 		return &GitError{Message: "transaction reflog is nil or already freed", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
 	}
@@ -133,6 +177,12 @@ func (tx *Transaction) SetReflog(refName string, reflog *Reflog) error {
 
 // Remove queues deletion of a locked reference.
 func (tx *Transaction) Remove(refName string) error {
+	if err := tx.requireOpen(); err != nil {
+		return err
+	}
+	if err := validateTransactionString("reference name", refName); err != nil {
+		return err
+	}
 	cRefName := C.CString(refName)
 	defer C.free(unsafe.Pointer(cRefName))
 
@@ -149,14 +199,24 @@ func (tx *Transaction) Remove(refName string) error {
 
 // Commit applies all queued updates and releases their locks.
 func (tx *Transaction) Commit() error {
+	if err := tx.requireOpen(); err != nil {
+		return err
+	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_transaction_commit(tx.ptr)
+	ptr := tx.ptr
+	ret := C.git_transaction_commit(ptr)
 	runtime.KeepAlive(tx)
 	if ret < 0 {
 		return MakeGitError(ret)
 	}
+	// A committed transaction must never be reused: upstream retains entries
+	// whose lock payloads have already been released.
+	tx.ptr = nil
+	runtime.SetFinalizer(tx, nil)
+	C.git_transaction_free(ptr)
+	runtime.KeepAlive(tx.repo)
 	return nil
 }
 

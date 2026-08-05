@@ -442,24 +442,6 @@ func ConfigFindXDG() (string, error) {
 	return C.GoString(buf.ptr), nil
 }
 
-// ConfigFindProgramdata locate the path to the configuration file in ProgramData.
-//
-// Look for the file in %PROGRAMDATA%\Git\config used by portable git.
-func ConfigFindProgramdata() (string, error) {
-	var buf C.git_buf
-	defer C.git_buf_dispose(&buf)
-
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	ret := C.git_config_find_programdata(&buf)
-	if ret < 0 {
-		return "", MakeGitError(ret)
-	}
-
-	return C.GoString(buf.ptr), nil
-}
-
 // OpenDefault opens the default config according to git rules
 func OpenDefault() (*Config, error) {
 	runtime.LockOSThread()
