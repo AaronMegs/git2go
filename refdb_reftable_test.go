@@ -221,6 +221,98 @@ func TestReftableBranchLifecycle(t *testing.T) {
 
 // seedCommit creates an empty-tree initial commit on HEAD and returns its OID.
 // Works on both files and reftable repositories.
+func TestReftableReopenPersistence(t *testing.T) {
+	repo, dir := newReftableRepo(t)
+	defer os.RemoveAll(dir)
+
+	commitID := seedCommit(t, repo)
+	commit, err := repo.LookupCommit(commitID)
+	checkFatal(t, err)
+	branch, err := repo.CreateBranch("persisted", commit, false)
+	checkFatal(t, err)
+	branch.Free()
+	commit.Free()
+	repoPath := filepath.Join(dir, "repo")
+	repo.Free()
+
+	reopened, err := OpenRepository(repoPath)
+	checkFatal(t, err)
+	defer reopened.Free()
+	format, err := reopened.RefStorageFormat()
+	checkFatal(t, err)
+	if format != RefdbReftable {
+		t.Fatalf("reopened RefStorageFormat() = %v, want RefdbReftable", format)
+	}
+	persisted, err := reopened.LookupBranch("persisted", BranchLocal)
+	checkFatal(t, err)
+	defer persisted.Free()
+	if target := persisted.Target(); target == nil || !target.Equal(commitID) {
+		t.Fatalf("reopened branch target = %v, want %v", target, commitID)
+	}
+}
+
+func TestReftableReflogLifecycle(t *testing.T) {
+	repo, dir := newReftableRepo(t)
+	defer os.RemoveAll(dir)
+	defer repo.Free()
+	commitID := seedCommit(t, repo)
+
+	reflog, err := repo.ReadReflog("HEAD")
+	checkFatal(t, err)
+	before := reflog.EntryCount()
+	sig := &Signature{Name: "Reftable Reflog", Email: "reftable-reflog@example.com", When: time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)}
+	if err := reflog.Append(commitID, sig, "reftable reflog entry"); err != nil {
+		t.Fatalf("Append failed: %v", err)
+	}
+	if err := reflog.Write(); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+	reflog.Free()
+
+	reloaded, err := repo.ReadReflog("HEAD")
+	checkFatal(t, err)
+	defer reloaded.Free()
+	if reloaded.EntryCount() != before+1 {
+		t.Fatalf("reftable reflog entry count = %d, want %d", reloaded.EntryCount(), before+1)
+	}
+	entry := reloaded.EntryByIndex(0)
+	if entry == nil || entry.Message() != "reftable reflog entry" {
+		t.Fatalf("latest reftable reflog message = %v, want reftable reflog entry", entry)
+	}
+	if err := reloaded.Drop(0, false); err != nil {
+		t.Fatalf("Drop failed: %v", err)
+	}
+	if err := reloaded.Write(); err != nil {
+		t.Fatalf("Write after drop failed: %v", err)
+	}
+}
+
+func TestReftableSymbolicReferenceLifecycle(t *testing.T) {
+	repo, dir := newReftableRepo(t)
+	defer os.RemoveAll(dir)
+	defer repo.Free()
+	seedCommit(t, repo)
+
+	ref, err := repo.References.CreateSymbolic("refs/test/symbolic", "refs/heads/master", true, "create symbolic")
+	checkFatal(t, err)
+	if ref.SymbolicTarget() != "refs/heads/master" {
+		t.Fatalf("symbolic target = %q, want refs/heads/master", ref.SymbolicTarget())
+	}
+	renamed, err := ref.Rename("refs/test/renamed", true, "rename symbolic")
+	ref.Free()
+	checkFatal(t, err)
+	if renamed.Name() != "refs/test/renamed" || renamed.SymbolicTarget() != "refs/heads/master" {
+		t.Fatalf("renamed symbolic ref = %q -> %q", renamed.Name(), renamed.SymbolicTarget())
+	}
+	if err := renamed.Delete(); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+	renamed.Free()
+	if _, err := repo.References.Lookup("refs/test/renamed"); err == nil {
+		t.Fatal("expected deleted symbolic reference lookup to fail")
+	}
+}
+
 func seedCommit(t *testing.T, repo *Repository) *Oid {
 	t.Helper()
 
