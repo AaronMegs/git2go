@@ -17,11 +17,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version: ${{ matrix.go }}
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         submodules: recursive
     - name: Build libgit2
@@ -37,11 +37,11 @@ jobs:
     runs-on: macos-latest
     steps:
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version: stable
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         submodules: recursive
     - name: Build libgit2
@@ -54,11 +54,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version: stable
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         submodules: recursive
     - name: Build libgit2
@@ -69,19 +69,19 @@ jobs:
     - name: Test
       run: make TEST_ARGS=-test.v test-dynamic
 
-  # Real stable track: build and test against released libgit2 v1.9.4 with no
-  # libgit2_reftable build tag. This verifies that main-only fields and symbols
-  # are fully isolated instead of merely compiling a reduced API against main.
-  build-stable-v1-9-4:
-    name: Stable compatibility (libgit2 v1.9.4, tag off)
+  # v36-pre intentionally requires promoted typed OIDs from libgit2 main.
+  # Released v1.9.4 belongs to the v35 maintenance line; this is a negative
+  # compatibility test that ensures the ABI guard rejects it clearly.
+  reject-legacy-v1-9-4:
+    name: Reject legacy libgit2 v1.9.4 ABI
     runs-on: ubuntu-latest
     steps:
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version: stable
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         submodules: recursive
     - name: Build libgit2 v1.9.4
@@ -90,10 +90,13 @@ jobs:
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
         git -C vendor/libgit2 fetch --tags --force
         BUILD_LIBGIT_REF=v1.9.4 make build-libgit2-static
-    - name: Build core subset
-      run: go build --tags static ./...
-    - name: Test core subset
-      run: make REFTABLE_TAG= TEST_ARGS=-test.v test-static
+    - name: Verify v36 ABI guard rejects the legacy git_oid layout
+      run: |
+        if go build --tags static ./... > /tmp/legacy-build.log 2>&1; then
+          echo "expected v36-pre build against libgit2 v1.9.4 to fail"
+          exit 1
+        fi
+        grep -q "requires promoted typed object ids" /tmp/legacy-build.log
 
   # Main/reftable track: exercises the backend itself and the Go-defined
   # backend bridge v2, including per-iterator handles and transaction locks.
@@ -102,11 +105,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version: stable
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         submodules: recursive
     - name: Build libgit2 main
@@ -125,11 +128,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version: stable
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         submodules: recursive
     - name: Build libgit2 with deprecated APIs hidden
@@ -140,37 +143,36 @@ jobs:
     - name: Test
       run: make TEST_ARGS=-test.v test-static
 
-  build-system-dynamic-v1-9-4:
-    name: Go (system-wide dynamic, libgit2 v1.9.4)
+  build-system-dynamic-main:
+    name: Go (system-wide dynamic, bundled main)
     runs-on: ubuntu-latest
     steps:
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version: stable
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         submodules: recursive
-    - name: Build libgit2 v1.9.4 system-wide
+    - name: Build libgit2 main system-wide
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
-        git -C vendor/libgit2 fetch --tags --force
-        sudo env BUILD_LIBGIT_REF=v1.9.4 ./script/build-libgit2.sh --dynamic --system
+        sudo ./script/build-libgit2.sh --dynamic --system
     - name: Test
-      run: make TEST_ARGS=-test.v test
+      run: go test --count=1 --tags libgit2_reftable -v ./...
 
   build-system-static:
     name: Go (system-wide static, bundled main)
     runs-on: ubuntu-latest
     steps:
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version: stable
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         submodules: recursive
     - name: Build libgit2 system-wide
@@ -186,18 +188,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version: stable
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         submodules: recursive
     - name: Install build dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
-        go install golang.org/x/tools/cmd/stringer@latest
+        go install golang.org/x/tools/cmd/stringer@v0.1.12
     - name: Generate files
       run: |
         export PATH=$(go env GOPATH)/bin:$PATH
