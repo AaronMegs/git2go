@@ -8,8 +8,9 @@ import (
 func TestVersion(t *testing.T) {
 	major, minor, patch := Version()
 
-	// git2go v35 targets libgit2 1.9+; the runtime version must satisfy the
-	// same lower bound the compile-time guard enforces.
+	// v36-pre targets the promoted typed-OID libgit2 main ABI. The version
+	// header still reports 1.9.x, so capability/layout guards carry the ABI
+	// check while this assertion preserves the historical numeric floor.
 	if major < 1 || (major == 1 && minor < 9) {
 		t.Fatalf("unexpected libgit2 version %d.%d.%d, want >= 1.9.0", major, minor, patch)
 	}

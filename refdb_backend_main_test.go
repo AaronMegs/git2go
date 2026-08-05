@@ -1,6 +1,3 @@
-//go:build libgit2_reftable
-// +build libgit2_reftable
-
 package git
 
 import "testing"

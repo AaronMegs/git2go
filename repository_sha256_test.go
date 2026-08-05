@@ -1,0 +1,379 @@
+package git
+
+// End-to-end tests for SHA256 support. They exercise the full
+// create->write->commit->lookup loop on a real SHA256 repository, which is where
+// git_oid type-prefix/32-byte layout assumptions are most likely to break if a
+// binding is mis-wired.
+//
+// Run with, e.g.:
+//   ./script/build-libgit2.sh --static
+//   go test -tags static -run SHA256 -v .
+
+import (
+	"bytes"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+// createTestRepoSHA256 initializes a non-bare repository whose object format is
+// SHA256, seeded with a single README file (mirrors createTestRepo).
+func createTestRepoSHA256(t *testing.T) *Repository {
+	t.Helper()
+
+	path, err := ioutil.TempDir("", "git2go-sha256")
+	checkFatal(t, err)
+
+	repo, err := InitRepositoryWithOidType(path, false, ObjectIdSHA256)
+	checkFatal(t, err)
+
+	err = ioutil.WriteFile(path+"/README", []byte("foo\n"), 0644)
+	checkFatal(t, err)
+
+	return repo
+}
+
+// TestSHA256RepositoryOdbWrite verifies that objects written to a SHA256
+// repository's ODB come back with a 32-byte, SHA256-typed oid, and that the
+// stored data round-trips.
+func TestSHA256RepositoryOdbWrite(t *testing.T) {
+	repo := createTestRepoSHA256(t)
+	defer cleanupTestRepo(t, repo)
+
+	odb, err := repo.Odb()
+	checkFatal(t, err)
+
+	payload := []byte("hello sha256\n")
+	oid, err := odb.Write(payload, ObjectBlob)
+	checkFatal(t, err)
+
+	if got := oid.Type(); got != ObjectIdSHA256 {
+		t.Fatalf("written oid Type() = %d, want SHA256 (%d)", got, ObjectIdSHA256)
+	}
+	if got := len(oid.Bytes()); got != 32 {
+		t.Fatalf("written oid has %d raw bytes, want 32", got)
+	}
+	if got := len(oid.String()); got != 64 {
+		t.Fatalf("written oid hex length = %d, want 64", got)
+	}
+
+	// HashWithType must agree with the id assigned by Write (this catches a
+	// mis-wired shim or a type-prefix offset bug end to end).
+	hashed, err := odb.HashWithType(payload, ObjectBlob, ObjectIdSHA256)
+	checkFatal(t, err)
+	if !oid.Equal(hashed) {
+		t.Fatalf("Write oid %s != HashWithType oid %s", oid, hashed)
+	}
+
+	// Read the object back and confirm the data survived the round-trip.
+	obj, err := odb.Read(oid)
+	checkFatal(t, err)
+	defer obj.Free()
+	if string(obj.Data()) != string(payload) {
+		t.Fatalf("odb round-trip mismatch: got %q, want %q", obj.Data(), payload)
+	}
+}
+
+// TestSHA256RepositoryCommitRoundTrip drives the full index -> tree -> commit ->
+// lookup pipeline on a SHA256 repository and validates that every returned oid
+// is a 64-hex SHA256 id and that lookups by those ids succeed.
+func TestSHA256RepositoryCommitRoundTrip(t *testing.T) {
+	repo := createTestRepoSHA256(t)
+	defer cleanupTestRepo(t, repo)
+
+	idx, err := repo.Index()
+	checkFatal(t, err)
+	checkFatal(t, idx.AddByPath("README"))
+	checkFatal(t, idx.Write())
+
+	treeID, err := idx.WriteTree()
+	checkFatal(t, err)
+	if treeID.Type() != ObjectIdSHA256 || len(treeID.String()) != 64 {
+		t.Fatalf("tree oid not SHA256: type=%d hexlen=%d", treeID.Type(), len(treeID.String()))
+	}
+
+	tree, err := repo.LookupTree(treeID)
+	checkFatal(t, err)
+	defer tree.Free()
+
+	loc, err := time.LoadLocation("Europe/Berlin")
+	checkFatal(t, err)
+	sig := &Signature{
+		Name:  "Rand Om Hacker",
+		Email: "random@hacker.com",
+		When:  time.Date(2013, 03, 06, 14, 30, 0, 0, loc),
+	}
+
+	commitID, err := repo.CreateCommit("HEAD", sig, sig, "sha256 commit\n", tree)
+	checkFatal(t, err)
+	if commitID.Type() != ObjectIdSHA256 || len(commitID.String()) != 64 {
+		t.Fatalf("commit oid not SHA256: type=%d hexlen=%d", commitID.Type(), len(commitID.String()))
+	}
+
+	// Lookup by the SHA256 oid and verify identity round-trips through C.
+	commit, err := repo.LookupCommit(commitID)
+	checkFatal(t, err)
+	defer commit.Free()
+	if !commit.Id().Equal(commitID) {
+		t.Fatalf("looked-up commit id %s != created id %s", commit.Id(), commitID)
+	}
+
+	// Re-parse the textual oid and confirm it equals the original (NewOid must
+	// infer SHA256 from the 64-hex length).
+	reparsed, err := NewOid(commitID.String())
+	checkFatal(t, err)
+	if !reparsed.Equal(commitID) {
+		t.Fatalf("NewOid(%q) round-trip mismatch", commitID.String())
+	}
+}
+
+// TestSHA256IndexerForOidType builds a packfile from the SHA256 repo and indexes
+// it via the SHA256-aware indexer constructor, asserting the produced pack name
+// is a 64-hex SHA256 id.
+func TestSHA256IndexerForOidType(t *testing.T) {
+	repo := createTestRepoSHA256(t)
+	defer cleanupTestRepo(t, repo)
+
+	// Seed one object and build a real pack containing it.
+	odb, err := repo.Odb()
+	checkFatal(t, err)
+	data := []byte("packme\n")
+	blobID, err := odb.Write(data, ObjectBlob)
+	checkFatal(t, err)
+
+	pb, err := repo.NewPackbuilder()
+	checkFatal(t, err)
+	defer pb.Free()
+	checkFatal(t, pb.Insert(blobID, "packme"))
+
+	var pack bytes.Buffer
+	checkFatal(t, pb.Write(&pack))
+
+	tmp, err := ioutil.TempDir("", "git2go-sha256-pack")
+	checkFatal(t, err)
+	defer os.RemoveAll(tmp)
+
+	idx, err := NewIndexerForOidType(tmp, odb, ObjectIdSHA256, nil)
+	checkFatal(t, err)
+	defer idx.Free()
+	if n, err := idx.Write(pack.Bytes()); err != nil {
+		t.Fatal(err)
+	} else if n != pack.Len() {
+		t.Fatalf("Indexer.Write wrote %d bytes, want %d", n, pack.Len())
+	}
+
+	packID, err := idx.Commit()
+	checkFatal(t, err)
+	if packID.Type() != ObjectIdSHA256 || len(packID.String()) != 64 {
+		t.Fatalf("pack id type=%d hexlen=%d, want SHA256/64", packID.Type(), len(packID.String()))
+	}
+
+	indexPath := filepath.Join(tmp, "pack-"+packID.String()+".idx")
+	if _, err := os.Stat(indexPath); err != nil {
+		t.Fatalf("indexer did not create %s: %v", indexPath, err)
+	}
+
+	// Open the generated pack through a standalone SHA256 one-pack backend and
+	// read the original object, covering the backend's oid_type option too.
+	packedOdb, err := NewOdbWithOidType(ObjectIdSHA256)
+	checkFatal(t, err)
+	defer packedOdb.Free()
+	backend, err := NewOdbBackendOnePackWithOidType(indexPath, ObjectIdSHA256)
+	checkFatal(t, err)
+	checkFatal(t, packedOdb.AddBackend(backend, 1))
+
+	obj, err := packedOdb.Read(blobID)
+	checkFatal(t, err)
+	defer obj.Free()
+	if got := obj.Data(); !bytes.Equal(got, data) {
+		t.Errorf("packed object = %q, want %q", got, data)
+	}
+}
+
+// seedTestRepoSHA256 stages README and creates one commit on HEAD, returning the
+// commit id (a 64-hex SHA256 id).
+func seedTestRepoSHA256(t *testing.T, repo *Repository) *Oid {
+	t.Helper()
+
+	idx, err := repo.Index()
+	checkFatal(t, err)
+	checkFatal(t, idx.AddByPath("README"))
+	checkFatal(t, idx.Write())
+
+	treeID, err := idx.WriteTree()
+	checkFatal(t, err)
+
+	tree, err := repo.LookupTree(treeID)
+	checkFatal(t, err)
+	defer tree.Free()
+
+	sig := &Signature{
+		Name:  "Rand Om Hacker",
+		Email: "random@hacker.com",
+		When:  time.Date(2013, 03, 06, 14, 30, 0, 0, time.UTC),
+	}
+
+	commitID, err := repo.CreateCommit("HEAD", sig, sig, "sha256 commit\n", tree)
+	checkFatal(t, err)
+	return commitID
+}
+
+// TestSHA256Clone clones a SHA256 repository and asserts the clone keeps the
+// SHA256 object format: the transferred ref target must be a 64-hex SHA256 id and
+// the cloned commit must be readable from the clone. This exercises the
+// fetch/negotiation and pack-indexing paths, where the object format is carried
+// by libgit2's own smart transport (git_smart__oid_type) rather than by git2go.
+func TestSHA256Clone(t *testing.T) {
+	source := createTestRepoSHA256(t)
+	defer cleanupTestRepo(t, source)
+
+	commitID := seedTestRepoSHA256(t, source)
+
+	branchName := defaultBranchName(t, source)
+	srcRef, err := source.References.Lookup("refs/heads/" + branchName)
+	checkFatal(t, err)
+
+	path, err := ioutil.TempDir("", "git2go-sha256-clone")
+	checkFatal(t, err)
+	defer os.RemoveAll(path)
+
+	clone, err := Clone(source.Path(), path, &CloneOptions{Bare: true})
+	checkFatal(t, err)
+	defer clone.Free()
+
+	cloneRef, err := clone.References.Lookup("refs/heads/" + branchName)
+	checkFatal(t, err)
+
+	if srcRef.Cmp(cloneRef) != 0 {
+		t.Fatal("reference in SHA256 clone does not match the original ref")
+	}
+	if target := cloneRef.Target(); target == nil || !target.Equal(commitID) {
+		t.Fatalf("clone ref target = %v, want %s", target, commitID)
+	}
+	if target := cloneRef.Target(); target.Type() != ObjectIdSHA256 || len(target.String()) != 64 {
+		t.Errorf("clone ref target is not a SHA256 id: type=%d hexlen=%d",
+			target.Type(), len(target.String()))
+	}
+
+	// The cloned commit must be readable through the clone's own odb, proving the
+	// received pack was indexed with the right object format.
+	clonedCommit, err := clone.LookupCommit(commitID)
+	checkFatal(t, err)
+	defer clonedCommit.Free()
+	if msg := clonedCommit.Message(); msg != "sha256 commit\n" {
+		t.Errorf("cloned commit message = %q", msg)
+	}
+}
+
+// TestSHA256PushToLocalBare pushes a real SHA256 pack through libgit2's push /
+// receive-pack path into a bare SHA256 repository and verifies the updated ref
+// and object. It does not require an external network service.
+func TestSHA256PushToLocalBare(t *testing.T) {
+	source := createTestRepoSHA256(t)
+	defer cleanupTestRepo(t, source)
+	commitID := seedTestRepoSHA256(t, source)
+	branchName := defaultBranchName(t, source)
+
+	targetPath, err := ioutil.TempDir("", "git2go-sha256-push-target")
+	checkFatal(t, err)
+	defer os.RemoveAll(targetPath)
+	target, err := InitRepositoryWithOidType(targetPath, true, ObjectIdSHA256)
+	checkFatal(t, err)
+	defer target.Free()
+
+	remote, err := source.Remotes.Create("push-target", target.Path())
+	checkFatal(t, err)
+	defer remote.Free()
+
+	refName := "refs/heads/" + branchName
+	checkFatal(t, remote.Push([]string{refName + ":" + refName}, nil))
+
+	targetRef, err := target.References.Lookup(refName)
+	checkFatal(t, err)
+	defer targetRef.Free()
+	if got := targetRef.Target(); got == nil || !got.Equal(commitID) {
+		t.Fatalf("pushed ref target = %v, want %s", got, commitID)
+	}
+	if got := targetRef.Target(); got.Type() != ObjectIdSHA256 || len(got.String()) != 64 {
+		t.Fatalf("pushed ref target type=%d hexlen=%d, want SHA256/64", got.Type(), len(got.String()))
+	}
+
+	commit, err := target.LookupCommit(commitID)
+	checkFatal(t, err)
+	defer commit.Free()
+	if got := commit.Message(); got != "sha256 commit\n" {
+		t.Errorf("pushed commit message = %q", got)
+	}
+}
+
+// TestSHA256IndexWithOidType verifies that an in-memory SHA256 index can write a
+// tree into a SHA256 repository, and a standalone (repository-less) open of a
+// real SHA256 index file yields 64-hex
+// entry ids. Both paths go through git_index_options.oid_type, which is silently
+// SHA1 if the option is not plumbed through.
+func TestSHA256IndexWithOidType(t *testing.T) {
+	repo := createTestRepoSHA256(t)
+	defer cleanupTestRepo(t, repo)
+
+	// Populate and persist the repository index so there is a real SHA256
+	// index file on disk to reopen standalone.
+	repoIdx, err := repo.Index()
+	checkFatal(t, err)
+	checkFatal(t, repoIdx.AddByPath("README"))
+	checkFatal(t, repoIdx.Write())
+	indexPath := repoIdx.Path()
+
+	reopened, err := OpenIndexWithOidType(indexPath, ObjectIdSHA256)
+	checkFatal(t, err)
+	defer reopened.Free()
+
+	entry, err := reopened.EntryByPath("README", 0)
+	checkFatal(t, err)
+	if entry.Id.Type() != ObjectIdSHA256 {
+		t.Errorf("standalone index entry type = %d, want SHA256", entry.Id.Type())
+	}
+	if got := len(entry.Id.String()); got != 64 {
+		t.Errorf("standalone index entry id is %d hex chars, want 64", got)
+	}
+
+	// An in-memory SHA256 index must be able to write a tree into the SHA256
+	// repository.
+	mem, err := NewIndexWithOidType(ObjectIdSHA256)
+	checkFatal(t, err)
+	defer mem.Free()
+
+	treeID, err := mem.WriteTreeTo(repo)
+	checkFatal(t, err)
+	if treeID.Type() != ObjectIdSHA256 {
+		t.Errorf("tree id type = %d, want SHA256", treeID.Type())
+	}
+}
+
+// TestSHA256DiffFromBufferWithOidType parses a patch whose index line carries
+// 64-hexids. Parsing it as SHA1 must fail, which proves
+// git_diff_parse_options.oid_type is actually honored.
+func TestSHA256DiffFromBufferWithOidType(t *testing.T) {
+	const patch = "diff --git a/README b/README\n" +
+		"index 0000000000000000000000000000000000000000000000000000000000000000..1111111111111111111111111111111111111111111111111111111111111111 100644\n" +
+		"--- a/README\n" +
+		"+++ b/README\n" +
+		"@@ -1 +1 @@\n" +
+		"-foo\n" +
+		"+bar\n"
+
+	diff, err := DiffFromBufferWithOidType([]byte(patch), nil, ObjectIdSHA256)
+	checkFatal(t, err)
+	defer diff.Free()
+
+	n, err := diff.NumDeltas()
+	checkFatal(t, err)
+	if n != 1 {
+		t.Errorf("NumDeltas() = %d, want 1", n)
+	}
+
+	if _, err := DiffFromBufferWithOidType([]byte(patch), nil, ObjectIdSHA1); err == nil {
+		t.Error("parsing a 64-hex patch as SHA1 unexpectedly succeeded")
+	}
+}

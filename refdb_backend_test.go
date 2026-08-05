@@ -100,6 +100,14 @@ func (b *compressingRefdbBackend) Compress() error {
 	return nil
 }
 
+type panickingRefdbBackend struct {
+	*countingRefdbBackend
+}
+
+func (b *panickingRefdbBackend) Lookup(refName string) (*Reference, error) {
+	panic("backend panic should be recovered")
+}
+
 type transactionRefdbBackend struct {
 	*countingRefdbBackend
 	lockCalls       int
@@ -274,6 +282,21 @@ func TestRefdbBackendCompressCapability(t *testing.T) {
 	_ = os.RemoveAll(repoWorkdir)
 }
 
+func TestRefdbBackendCallbackPanicBecomesError(t *testing.T) {
+	repo := createTestRepo(t)
+	repoWorkdir := repo.Workdir()
+	impl := &panickingRefdbBackend{countingRefdbBackend: &countingRefdbBackend{}}
+	refdb := installTestRefdbBackend(t, repo, impl)
+
+	if _, err := repo.References.Lookup("refs/heads/panic"); !IsErrorCode(err, ErrorCodeUser) {
+		t.Fatalf("panicking callback error = %v, want ErrorCodeUser", err)
+	}
+
+	refdb.Free()
+	repo.Free()
+	_ = os.RemoveAll(repoWorkdir)
+}
+
 func TestRefdbBackendTransactionUpdate(t *testing.T) {
 	repo := createTestRepo(t)
 	repoWorkdir := repo.Workdir()
@@ -316,6 +339,54 @@ func TestRefdbBackendTransactionUpdate(t *testing.T) {
 	_ = os.RemoveAll(repoWorkdir)
 }
 
+func TestRefdbBackendTransactionCannotBeReusedAfterCommit(t *testing.T) {
+	repo := createTestRepo(t)
+	defer cleanupTestRepo(t, repo)
+	commitID := seedCommit(t, repo)
+	impl := &transactionRefdbBackend{countingRefdbBackend: &countingRefdbBackend{}}
+	refdb := installTestRefdbBackend(t, repo, impl)
+	defer refdb.Free()
+
+	tx, err := repo.NewTransaction()
+	checkFatal(t, err)
+	if err := tx.LockRef("refs/heads/once"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.SetTarget("refs/heads/once", commitID, nil, "once"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("second Commit error = %v, want ErrorCodeInvalid", err)
+	}
+	if err := tx.LockRef("refs/heads/twice"); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("LockRef after Commit error = %v, want ErrorCodeInvalid", err)
+	}
+	tx.Free() // idempotent after successful commit
+	if impl.unlockCalls != 1 {
+		t.Fatalf("unlock callbacks = %d, want 1", impl.unlockCalls)
+	}
+}
+
+func TestTransactionRejectsNULBeforeLocking(t *testing.T) {
+	repo := createTestRepo(t)
+	defer cleanupTestRepo(t, repo)
+	tx, err := repo.NewTransaction()
+	checkFatal(t, err)
+	defer tx.Free()
+	for _, call := range []func() error{
+		func() error { return tx.LockRef("refs/heads/a\x00b") },
+		func() error { return tx.Remove("refs/heads/a\x00b") },
+		func() error { return tx.SetSymbolicTarget("refs/heads/a", "refs/heads/b\x00c", nil, "msg") },
+	} {
+		if err := call(); !IsErrorCode(err, ErrorCodeInvalid) {
+			t.Fatalf("NUL validation error = %v, want ErrorCodeInvalid", err)
+		}
+	}
+}
+
 func TestRefdbBackendTransactionCancel(t *testing.T) {
 	repo := createTestRepo(t)
 	repoWorkdir := repo.Workdir()
@@ -342,6 +413,85 @@ func TestRefdbBackendTransactionCancel(t *testing.T) {
 	refdb.Free()
 	repo.Free()
 	_ = os.RemoveAll(repoWorkdir)
+}
+
+func TestRepositoryBackendOwnerLifecycle(t *testing.T) {
+	repo := createTestRepo(t)
+	defer cleanupTestRepo(t, repo)
+	backend, err := repo.NewRefdbBackendFs()
+	checkFatal(t, err)
+	if backend.owner != repo {
+		t.Fatal("repository backend does not retain its owner")
+	}
+	refdb, err := repo.NewRefdb()
+	checkFatal(t, err)
+	defer refdb.Free()
+	if err := refdb.SetBackend(backend); err != nil {
+		t.Fatal(err)
+	}
+	if backend.owner != nil || backend.ptr != nil {
+		t.Fatal("SetBackend did not consume backend owner and pointer")
+	}
+}
+
+func TestRefdbBackendOwnershipTransferIsIdempotent(t *testing.T) {
+	repo := createTestRepo(t)
+	repoWorkdir := repo.Workdir()
+	impl := &countingRefdbBackend{}
+	backend, err := NewRefdbBackendFromInterface(impl)
+	checkFatal(t, err)
+	refdb, err := repo.NewRefdb()
+	checkFatal(t, err)
+
+	if err := refdb.SetBackend(backend); err != nil {
+		t.Fatalf("SetBackend failed: %v", err)
+	}
+	if backend.ptr != nil {
+		t.Fatal("SetBackend did not consume backend wrapper")
+	}
+	backend.Free() // must be a no-op after ownership transfer
+	backend.Free()
+	if err := repo.SetRefdb(refdb); err != nil {
+		t.Fatalf("SetRefdb failed: %v", err)
+	}
+
+	refdb.Free()
+	repo.Free()
+	if impl.freeCalls != 1 {
+		t.Fatalf("backend Free callback count = %d, want 1", impl.freeCalls)
+	}
+	_ = os.RemoveAll(repoWorkdir)
+}
+
+func TestRefdbFreeIsIdempotent(t *testing.T) {
+	repo := createTestRepo(t)
+	defer cleanupTestRepo(t, repo)
+	refdb, err := repo.NewRefdb()
+	checkFatal(t, err)
+	refdb.Free()
+	refdb.Free()
+	if err := refdb.Compress(); err == nil {
+		t.Fatal("Compress on freed Refdb unexpectedly succeeded")
+	}
+}
+
+func TestSetBackendRejectsNilAndFreed(t *testing.T) {
+	repo := createTestRepo(t)
+	defer cleanupTestRepo(t, repo)
+	refdb, err := repo.NewRefdb()
+	checkFatal(t, err)
+	defer refdb.Free()
+
+	if err := refdb.SetBackend(nil); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("SetBackend(nil) error = %v, want ErrorCodeInvalid", err)
+	}
+	impl := &countingRefdbBackend{}
+	backend, err := NewRefdbBackendFromInterface(impl)
+	checkFatal(t, err)
+	backend.Free()
+	if err := refdb.SetBackend(backend); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("SetBackend(freed) error = %v, want ErrorCodeInvalid", err)
+	}
 }
 
 func TestSetRefdbRejectsNil(t *testing.T) {

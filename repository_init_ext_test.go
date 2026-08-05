@@ -73,6 +73,31 @@ func TestInitRepositoryExtNilOptions(t *testing.T) {
 // On a libgit2 build without reftable support, the call is expected to fail
 // with an error from libgit2 itself; the test then skips rather than failing
 // so the suite stays green on stable v1.9.x.
+func TestInitRepositoryExtRejectsInvalidOptionsBeforeCreatingPath(t *testing.T) {
+	dir, err := ioutil.TempDir("", "git2go-init-ext-invalid")
+	checkFatal(t, err)
+	defer os.RemoveAll(dir)
+
+	for _, tc := range []struct {
+		name string
+		opts RepositoryInitOptions
+	}{
+		{"oid-type", RepositoryInitOptions{OidType: ObjectIdType(99)}},
+		{"refdb-type", RepositoryInitOptions{RefdbType: RefdbType(99)}},
+		{"nul-origin", RepositoryInitOptions{OriginURL: "https://example.invalid/repo\x00evil"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name)
+			if _, err := InitRepositoryExt(path, &tc.opts); !IsErrorCode(err, ErrorCodeInvalid) {
+				t.Fatalf("InitRepositoryExt invalid options error = %v, want ErrorCodeInvalid", err)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("invalid options created repository path %q", path)
+			}
+		})
+	}
+}
+
 func TestInitRepositoryExtReftable(t *testing.T) {
 	dir, err := ioutil.TempDir("", "git2go-init-ext-reftable")
 	checkFatal(t, err)

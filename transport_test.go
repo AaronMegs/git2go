@@ -2,7 +2,6 @@ package git
 
 import (
 	"io"
-	"reflect"
 	"testing"
 )
 
@@ -62,11 +61,16 @@ func TestTransport(t *testing.T) {
 	remoteHeads, err := remote.Ls()
 	checkFatal(t, err)
 
-	expectedRemoteHeads := []RemoteHead{
-		{&Oid{}, "HEAD"},
-		{&Oid{}, "refs/heads/master"},
+	expectedNames := []string{"HEAD", "refs/heads/master"}
+	if len(remoteHeads) != len(expectedNames) {
+		t.Fatalf("remote head count = %d, want %d: %v", len(remoteHeads), len(expectedNames), remoteHeads)
 	}
-	if !reflect.DeepEqual(expectedRemoteHeads, remoteHeads) {
-		t.Errorf("mismatched remote heads. expected %v, got %v", expectedRemoteHeads, remoteHeads)
+	for i, head := range remoteHeads {
+		if head.Name != expectedNames[i] {
+			t.Errorf("remote head %d name = %q, want %q", i, head.Name, expectedNames[i])
+		}
+		if head.Id == nil || !head.Id.IsZero() {
+			t.Errorf("remote head %d oid = %v, want zero oid", i, head.Id)
+		}
 	}
 }
