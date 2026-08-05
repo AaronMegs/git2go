@@ -4,8 +4,11 @@
 package git
 
 /*
+#cgo CFLAGS: -DGIT2GO_HAS_REFDB_BACKEND_INIT
 #include <git2.h>
 #include <git2/sys/refdb_backend.h>
+
+extern int _go_git_refdb_backend_invoke_init(git_refdb_backend *backend, const char *head_target, uint32_t mode, uint32_t flags);
 */
 import "C"
 import (
@@ -13,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"unsafe"
 )
 
 // reftableSupported is a compile-time constant reporting whether this build of
@@ -26,6 +30,30 @@ const reftableSupported = true
 // the `git_refdb_t` enum.
 func applyRefdbType(copts *C.git_repository_init_options, t RefdbType) error {
 	copts.refdb_type = C.git_refdb_t(t)
+	return nil
+}
+
+// invokeRefdbBackendInit is an internal bridge used to verify the optional
+// latest-main init callback. Repository initialization normally selects its
+// own built-in backend, so libgit2 has no public entry point that can invoke a
+// separately constructed custom backend's init function.
+func invokeRefdbBackendInit(backend *RefdbBackend, initialHead *string, mode RepositoryInitMode, flags RefdbBackendInitFlag) error {
+	if backend == nil || backend.ptr == nil {
+		return &GitError{Message: "refdb backend is nil or already freed", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+	var cInitialHead *C.char
+	if initialHead != nil {
+		cInitialHead = C.CString(*initialHead)
+		defer C.free(unsafe.Pointer(cInitialHead))
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	ret := C._go_git_refdb_backend_invoke_init(backend.ptr, cInitialHead, C.uint32_t(mode), C.uint32_t(flags))
+	runtime.KeepAlive(backend)
+	if ret < 0 {
+		return MakeGitError(ret)
+	}
 	return nil
 }
 
@@ -49,7 +77,7 @@ func applyRefdbType(copts *C.git_repository_init_options, t RefdbType) error {
 //	backend, err := repo.NewRefdbBackendReftable()
 //	if err != nil { /* reftable unsupported by this build */ }
 //	if err := refdb.SetBackend(backend); err != nil { /* ... */ }
-//	repo.SetRefdb(refdb)
+//	if err := repo.SetRefdb(refdb); err != nil { /* ... */ }
 //
 // Wraps `git_refdb_backend_reftable`.
 func (v *Repository) NewRefdbBackendReftable() (backend *RefdbBackend, err error) {
@@ -95,19 +123,3 @@ func IsReftableSupported() bool {
 	repo.Free()
 	return true
 }
-
-// RefdbBackendInitFlag is a bitmask controlling how a custom refdb backend is
-// initialized, mirroring the upstream `git_refdb_backend_init_flag_t` enum.
-//
-// These flags are main-only (they do not exist in released libgit2 v1.9.x),
-// so they are defined only under the `libgit2_reftable` build tag.
-type RefdbBackendInitFlag uint32
-
-const (
-	// RefdbBackendInitIsWorktree indicates the refdb being initialized is for
-	// a worktree. Maps to GIT_REFDB_BACKEND_INIT_IS_WORKTREE.
-	RefdbBackendInitIsWorktree RefdbBackendInitFlag = C.GIT_REFDB_BACKEND_INIT_IS_WORKTREE
-	// RefdbBackendInitForceHead force-overwrites HEAD when the refdb is already
-	// (partially) initialized. Maps to GIT_REFDB_BACKEND_INIT_FORCE_HEAD.
-	RefdbBackendInitForceHead RefdbBackendInitFlag = C.GIT_REFDB_BACKEND_INIT_FORCE_HEAD
-)

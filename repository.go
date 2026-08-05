@@ -315,9 +315,21 @@ func NewRepositoryWrapOdb(odb *Odb) (repo *Repository, err error) {
 	return newRepositoryFromC(ptr), nil
 }
 
-func (v *Repository) SetRefdb(refdb *Refdb) {
-	C.git_repository_set_refdb(v.ptr, refdb.ptr)
+func (v *Repository) SetRefdb(refdb *Refdb) error {
+	if refdb == nil || refdb.ptr == nil {
+		return &GitError{Message: "refdb is nil or already freed", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	ret := C.git_repository_set_refdb(v.ptr, refdb.ptr)
 	runtime.KeepAlive(v)
+	runtime.KeepAlive(refdb)
+	if ret < 0 {
+		return MakeGitError(ret)
+	}
+	return nil
 }
 
 func (v *Repository) Free() {
