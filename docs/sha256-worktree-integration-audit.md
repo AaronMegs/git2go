@@ -138,8 +138,15 @@ v35 reftable 分支可真实验证 v1.9.4 no-tag；v36-pre typed OID 分支不�
 6. 跑 SHA1/SHA256 × files/reftable 四组合以及全量回归。
 7. 仅发布 `v36.0.0-pre.N`；上游正式 release 之前不发布 `v36.0.0`。
 
-## 6. 当前验证边界
+## 6. 整合结果（2026-08-05）
 
-- SHA256 工作树自身记录 bundled/system static/dynamic 全量通过，且 pin 同一 `939362a3c`。
-- reftable 阶段 A 当前使用旧 SHA1-compatible static build 做局部验证。
-- 两者尚未整合，因此任何“SHA256 + reftable 已通过”结论都为时过早。
+- typed Oid/ODB/index/indexer/diff 与 reftable bridge v2 已手工合并；
+- `ObjectIdType` 已成为统一类型，临时 `OidType` 已移除；
+- `RepositoryInitOptions` 同时包含 `OidType` 与 `RefdbType`；
+- `wrapper.c` 同时保留 typed OID shims 与 17-callback backend bridge v2；
+- static CFLAGS 已增加 `GIT_STATIC`；module 已切 `/v36`；
+- SHA1/SHA256 × files/reftable 四组合全部通过；
+- latest-main static/dynamic 无跳过全量、race 定向和 DEPRECATE_HARD=ON 均通过；xdiff 系统头污染已修复；
+- `v36.0.0-pre.N` workflow/CHANGELOG/迁移文档已整合。
+
+剩余外部边界：上游尚未发布包含 promoted typed OID + reftable 的正式版本，因此暂不发布稳定 `v36.0.0`。

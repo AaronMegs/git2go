@@ -12,7 +12,7 @@
 
 ### 0.1 总体结论
 
-当前实现对原 vendor `ddf3b5c85` 的 **SHA1 + reftable** 场景已经具备较完整的使用能力；vendor 现已更新为 `939362a3c`，因此下一步构建会由 `git_oid` ABI 守卫主动阻止，直至完成 `Oid` 重构：
+当前 v36-pre 已完成 vendor `939362a3c`、promoted typed `Oid`、reftable/refdb/reflog/transaction 与 SHA1/SHA256 四组合整合：
 
 - 能初始化/打开 reftable 仓库；
 - 能识别引用存储格式；
@@ -23,11 +23,11 @@
 - v1.9.x（无 reftable）可通过 build tag 安全降级；
 - 已有针对 files/reftable 的测试与 CI job。
 
-但是，**不能把当前状态描述为“已完整适配最新 libgit2 main”或“全部 refdb 公开 API 100% 完成”**。本次审计发现以下阻塞/缺口：
+本次审计发现的问题及当前处理状态：
 
 | 等级 | 发现 | 影响 |
 | --- | --- | --- |
-| **P0** | 最新 main 已将 SHA256 转正，`git_oid` 从 20 字节变为 33 字节；当前 `Oid [20]byte` 不兼容 | 现有 ABI 守卫会（正确地）阻止编译；因此当前项目**无法链接最新 main** |
+| **P0 → 已修复** | 最新 main 将 `git_oid` 从 20 字节变为 33 字节 | v36-pre 已整合 typed `Oid`、Go/C 布局断言和 promoted API；latest-main static/dynamic 均通过 |
 | **P1 → 已修复** | 自定义 `git_refdb_backend` 原只覆盖 13/17 callback | bridge v2 已用可选 capability 补齐 `init/compress/lock/unlock`，并新增 transaction 绑定验证 |
 | **P1 → 已修复** | 原 backend 级单例 iterator | 已改为每 iterator 独立 handle，并通过并发/race 测试 |
 | **P1 → 已修复** | 原 iterator/`next_name` 资源泄漏 | C free 现调用 Go Free/Untrack，并回收 name buffer |
@@ -38,7 +38,7 @@
 
 **推荐表述**：
 
-> 当前 git2go 已完成基于旧 vendor `ddf3b5c85` 的 **SHA1 + reftable 核心能力适配**，并具备 v1.9.x 安全降级能力；vendor 已同步到最新 main `939362a3c`，但编译会被 SHA256 `git_oid` ABI 守卫阻止，必须先完成 `Oid` 重构。自定义 refdb backend 桥接与测试矩阵亦仍需补齐。
+> **实施更新（2026-08-05）**：v36-pre 已整合 promoted typed `Oid`、完整 refdb backend bridge v2 与统一 `RepositoryInitOptions{OidType, RefdbType}`；latest-main static/dynamic build、四组合、race 定向及全量基线均已通过。v1.9.x 旧 ABI 继续由 v35 维护线支持。
 
 ---
 
@@ -53,7 +53,7 @@ upstream main:   939362a3c
 commits behind:  0（以 2026-08-04 审计时点计）
 ```
 
-子模块更新已由 git2go commit `8b4a398` 提交。由于该版本含 SHA256 转正后的 33 字节 `git_oid`，当前项目在完成 `Oid` 重构前**预期无法构建**；这是 `git2go_version_check.h` 的安全守卫行为，不是构建回归。
+子模块更新已由 git2go commit `8b4a398` 提交。v36-pre 已完成 33 字节 typed `git_oid` 重构，并将 `git2go_version_check.h` 更新为要求/校验 promoted ABI（32-byte max id、33-byte struct、type/id 字段偏移）。
 
 vendor 之后与 reftable/oid 直接相关的上游 commit：
 
@@ -100,7 +100,7 @@ vendor 之后与 reftable/oid 直接相关的上游 commit：
 | `git_repository_init_options`（flags/mode/path/template/head/origin） | `RepositoryInitOptions` | ✅ |
 | `git_repository_init_options.refdb_type` | `RepositoryInitOptions.RefdbType` + build-tag shim | ✅（SHA1 main） |
 | `git_refdb_t` | `RefdbType`（Default/Files/Reftable） | ✅ |
-| `git_repository_init_options.oid_type` | 无 | ❌（等待 `Oid` 重构） |
+| `git_repository_init_options.oid_type` | `RepositoryInitOptions.OidType` | ✅（与 `RefdbType` 统一组合） |
 
 ### 2.2 refdb 公开函数
 
@@ -139,14 +139,13 @@ vendor 之后与 reftable/oid 直接相关的上游 commit：
 
 该部分与最新 main 保持兼容（前提仍是先解决全局 `Oid` ABI）。
 
-### 2.5 稳定版兼容
+### 2.5 ABI 与 build tag 边界（整合后更新）
 
-- `libgit2_reftable` tag 隔离 main-only C 符号；
-- 无 tag 时 `IsReftableSupported() == false`；
-- 无 tag 时请求 `RefdbReftable` 返回明确错误；
-- 已做过真实 v1.9.4 构建/编译验证：无 tag 成功、带 tag 按预期因缺符号失败。
-
-该设计方向正确。
+- v36-pre 整体要求 promoted typed OID latest-main ABI，不再运行兼容 v1.9.x；旧 ABI 由 v35 维护线支持。
+- `libgit2_reftable` tag 只控制 reftable 特定 API；无 tag 是 latest-main 上的 files-only 子集。
+- 无 tag 时 `IsReftableSupported() == false`，请求 `RefdbReftable` 返回明确错误。
+- custom backend `init/compress/lock/unlock` 属 latest-main ABI，在 v36 的 tag-on/tag-off 两种构建中都可用。
+- CI 对真实 v1.9.4 执行负向 capability-guard 测试，确保错误信息明确。
 
 ---
 
@@ -161,44 +160,32 @@ typedef struct git_oid {
 } git_oid;  /* sizeof=33 */
 ```
 
-当前 git2go：
+审计时 git2go 仍是 `Oid [20]byte`，直接升级会错位/越界，因此先以编译期守卫阻止。**2026-08-05 已完成修复**：
 
 ```go
-type Oid [20]byte
-
-func (oid *Oid) toC() *C.git_oid {
-    return (*C.git_oid)(unsafe.Pointer(oid))
+type Oid struct {
+    kind uint8
+    id   [32]byte
 }
 ```
 
-如果直接升级 vendor，所有 OID 读写都会错位/越界。已经落地的：
-
-```c
-#if GIT_OID_MAX_SIZE != 20
-# error "Incompatible libgit2 ..."
-#endif
-```
-
-因此现在的状态是：
-
-- ✅ vendor 已指向最新 main `939362a3c`；
-- ✅ 不会静默损坏内存；
-- ❌ 当前会在编译期阻止链接该 vendor；
-- ❌ `RepositoryInitOptions.OidType` 尚不能安全提供；
-- ❌ SHA256 + files/reftable 组合不能运行。
+- ✅ Go/C 布局均为 size=33、type offset=0、id offset=1，并有双侧断言；
+- ✅ vendor 指向 main `939362a3c` 且 static/dynamic 构建通过；
+- ✅ `RepositoryInitOptions.OidType` 与 `RefdbType` 已统一；
+- ✅ SHA1/SHA256 × files/reftable 四组合全部通过。
 
 专项审计 `docs/oid-refactor-audit.md` 已确认应采用 **方案 A**：
 
 ```go
 type Oid struct {
-    Type uint8
-    ID   [32]byte
+    kind uint8
+    id   [32]byte
 }
 ```
 
 该布局精确匹配 C 的 33/1/1，能保留唯一的 `unsafe.Pointer` 强转与全部 44 个调用点（包含 20 个 OUT 参数）。但数组 API 会破坏，需 v36 major bump。
 
-**结论**：在完成 v36 `Oid` 重构前，项目只能支持 pinned SHA1 main，而不能宣称最新 main 兼容。
+**实施结论**：v36 typed `Oid` 重构及 latest-main 构建/四组合验证已完成；旧数组 API 的 breaking changes 已记录在 `sha256-breaking-changes.md`。
 
 ---
 
@@ -362,7 +349,7 @@ libgit2: v1.5.0
 - reflog 全生命周期（但主要在 files repo）；
 - OidType/Version 探测。
 
-全量回归（排除已知本机 xdiff/环境项）为 141 个用例基线。
+整合后的 latest-main static 全量回归（无跳过、DEPRECATE_HARD=ON）为 201 PASS / 0 FAIL / 0 SKIP；dynamic 全量亦通过。
 
 ### 6.2 建议补充场景
 
@@ -371,7 +358,7 @@ libgit2: v1.5.0
 | P1 | **关闭并重新打开 reftable 仓库**后验证引用/HEAD/分支持久化 | ✅ 已新增 `TestReftableReopenPersistence` |
 | P1 | **reftable reflog**：append/write/drop 持久化 | ✅ 已新增 `TestReftableReflogLifecycle`；rename/delete 仍由通用 reflog 测试覆盖 |
 | P1 | 自定义 backend 全 17 callback + iterator 多实例/并发/lifecycle | ✅ bridge v2 + capability pointer/transaction/race 测试；init 实际调用待 latest-main 整合终验 |
-| P1 | SHA1/SHA256 × files/reftable 四组合 | ⏸️ 等待与 `feat-sha256` 整合 |
+| P1 | SHA1/SHA256 × files/reftable 四组合 | ✅ 已整合并通过 4/4 |
 | P2 | symbolic ref create/rename/delete/resolve（reftable） | ✅ 已新增 `TestReftableSymbolicReferenceLifecycle` |
 | P2 | namespace 行为（reftable） | 无；上游已知 `git_reference_list` 会失败 |
 | P2 | worktree + per-worktree refs | git2go 缺完整 worktree API / upstream per-worktree 判定未公开 |
@@ -464,7 +451,7 @@ Go 允许把有返回值的函数调用作为 statement 丢弃，因此多数现
 7. ⏸️ 整合时补 `GIT_STATIC`（SHA256 工作树目前仍只有 `LIBGIT2_STATIC`）；
 8. ⏸️ 手工合并 `wrapper.c`/CI/构建文件并执行四组合与全量回归。
 
-> vendor 更新被有意提前执行；在第 2–7 步完成前，工作分支处于“vendor 已同步、Go 绑定尚待 ABI 迁移”的预期不可构建状态。
+> **2026-08-05 更新**：上述第 2–8 步已完成；latest-main static/dynamic、四组合、race 定向与 DEPRECATE_HARD=ON 验证通过。
 
 ### 阶段 C：SHA256 + reftable 完整矩阵
 
@@ -482,13 +469,13 @@ Go 允许把有返回值的函数调用作为 statement 丢弃，因此多数现
 
 | 维度 | 判定 |
 | --- | --- |
-| 当前 pinned vendor 上的 SHA1 + reftable 核心功能 | ✅ 可用，覆盖较好 |
-| v1.9.x 无 reftable 安全降级 | ✅ 已真实验证 |
-| reftable/refdb 直接公开函数映射 | ✅ 基本完整 |
-| 自定义 refdb backend 完整桥接 | ✅ bridge v2 已覆盖 17/17（4 项为可选 capability），iterator/lock 独立 handle；latest-main 干净构建待 SHA256 整合后终验 |
-| 最新 main 编译兼容 | ❌ 被 `git_oid` ABI 守卫阻止（正确行为） |
-| 最新 main SHA256 + reftable | ❌ 尚未落地，需 v36 `Oid` 重构 |
-| 高级场景（transaction/namespace/worktree/Windows concurrency） | ⚠️ 部分为上游限制，部分缺绑定/测试 |
-| “整体完整性适配完成” | **尚不能下此结论** |
+| latest-main SHA1 + reftable | ✅ 四组合矩阵与全量覆盖 |
+| latest-main SHA256 + reftable | ✅ init/commit/branch/reopen/compress/config/OID 长度均验证 |
+| reftable/refdb 公开函数映射 | ✅ 完成 |
+| 自定义 refdb backend 完整桥接 | ✅ 17/17（4 项可选 capability），iterator/lock 独立 handle，panic/所有权防护 |
+| latest-main static/dynamic | ✅ 无跳过全量通过 |
+| v1.9.x | v35 维护线；v36-pre ABI guard 明确拒绝 |
+| 高级场景（namespace/worktree/Windows concurrency） | ⚠️ 仍受上游限制，持续跟踪 |
+| 整体适配 | ✅ 当前 pinned main 范围完成；正式 v36.0.0 等上游 release |
 
-**建议下一步**：先执行阶段 A，把当前 vendor 下能解决的完整性问题补齐；再决定 v36 并执行阶段 B/C。这样能把“绑定自身缺陷”与“上游 SHA256 ABI 大迁移”解耦，降低回归风险。
+**后续重点**：运行 CI/发布门禁，持续跟踪上游 namespace/worktree/Windows reftable 限制；在上游正式 release 前只发布 `v36.0.0-pre.N`。

@@ -10,8 +10,8 @@
 - reftable 与 SHA256 先在各自分支独立实现和验证，随后整合。
 - SHA256 适配不在本分支重复设计；涉及 `Oid`、typed oid API、`RepositoryInitOptions.OidType`、`GIT_STATIC`、CI 和发布流程时，以 `feat-sha256` 已验证实现为主要参考，集成时做冲突审计。
 - 在 libgit2 尚未发布包含 reftable/SHA256 转正能力的稳定版本前，git2go 使用 **`v36.0.0-pre.N`** 预发布版本；不发布稳定 `v36.0.0`。
-- 当前 `feat-reftable` 仍保持 `/v35` module path，直到 reftable 阶段 A 完成并与 `feat-sha256` 集成；集成线切换到 `/v36`，发布 tag 使用 `v36.0.0-pre.N`。
-- 当前 vendor 已升级到含 SHA256 typed OID ABI 的 main，因此本分支的干净构建会被 `git_oid` ABI 守卫按预期阻止。阶段 A 可在旧的 SHA1-compatible 构建产物上做局部验证；最终验证必须在与 `feat-sha256` 集成后执行。
+- 集成线已切换到 `/v36`，发布 tag 使用 `v36.0.0-pre.N`。
+- vendor 已升级到含 SHA256 typed OID ABI 的 main，typed `Oid` 与 reftable 已完成整合，static/dynamic 全量验证通过。
 
 ## 2. 推荐顺序与状态
 
@@ -21,31 +21,32 @@
 | --- | --- | --- | --- |
 | A1 | 自定义 backend bridge v2 设计 | ✅ 完成 | 可选 capability interfaces；完整 callback 映射 |
 | A2 | iterator 生命周期/并发/泄漏修复 | ✅ 完成 | 每 iterator 独立 handle；Free/Untrack；name buffer 回收 |
-| A3 | 补 `init/compress/lock/unlock` | ✅ 完成（latest-main 干净构建终验待整合） | 四项均端到端验证；`init` 通过包内 C bridge 验证 head/mode/flags |
+| A3 | 补 `init/compress/lock/unlock` | ✅ 完成 | 四项均端到端验证；latest-main clean build 通过 |
 | A4 | 修复 `Repository.SetRefdb` | ✅ 完成 | 返回 `error`；OS thread；双 KeepAlive；nil 校验 |
-| A5 | CI 真正 v1.9.4 + main 双轨 | ✅ 配置完成；本地 v1.9.4 重建未获授权 | stable job 真正 checkout/build v1.9.4；main/reftable；race；配置竞争已修复 |
-| A6 | 扩展 reftable 测试矩阵 | ✅ 完成（latest-main 最终回归待集成） | reopen、reflog、symbolic refs、iterator/bridge v2/transaction |
+| A5 | CI v35/v36 ABI 边界 + main/reftable | ✅ 完成 | v1.9.4 负向 guard 测试；v36 main/reftable/race；system dynamic main；配置竞争已修复 |
+| A6 | 扩展 reftable 测试矩阵 | ✅ 完成并终验 | reopen、reflog、symbolic refs、iterator/bridge v2/transaction；latest-main 全量通过 |
 
 ### 阶段 B：v36-pre 解锁最新 main
 
 | # | 项目 | 状态 | 来源 |
 | --- | --- | --- | --- |
-| B1 | `Oid` 方案 A / typed OID ABI | SHA256 分支已实现，待整合 | `feat-sha256`: `oid_typed.go`, `oid.go` |
-| B2 | 更新 Go/C 布局断言 | SHA256 分支已实现，待整合 | `oid_typed.go` runtime layout checks |
-| B3 | 新式 typed oid API | SHA256 分支已实现，待整合审计 | `oid_type_api.go` 与相关 wrapper |
-| B4 | `RepositoryInitOptions.OidType` | 待整合时补齐 | reftable 与 SHA256 init options 合并点 |
-| B5 | `GIT_STATIC` | SHA256 分支已实现，待整合 | `Build_*.go` |
-| B6 | vendor 最新 main | 已完成 | `939362a3c`, commit `8b4a398` |
-| B7 | v36-pre 版本/发布线 | SHA256 分支已实现，待整合 | `/v36`, `v36.0.0-pre.N` workflow/changelog |
+| B1 | `Oid` 方案 A / typed OID ABI | ✅ 完成 | typed Oid/ODB/index/indexer/diff 与专项测试已整合 |
+| B2 | 更新 Go/C 布局断言 | ✅ 完成 | v36 guard = 32，C size/type/id offsets + Go size；latest-main 构建通过 |
+| B3 | 新式 typed oid API | ✅ 完成 | typed OID/ODB/index/indexer/diff shims 已与 bridge v2 手工合并并验证 |
+| B4 | `RepositoryInitOptions.OidType` | ✅ 完成 | 统一 Options 同时包含 `OidType` + `RefdbType`；便利函数委托统一入口 |
+| B5 | `GIT_STATIC` | ✅ 完成 | static 同时定义 `GIT_STATIC`/旧宏；v36 promoted ABI 集中守卫 |
+| B6 | vendor 最新 main | ✅ 完成 | `939362a3c`, commit `8b4a398` |
+| B7 | v36-pre 版本/发布线 | ✅ 完成 | module `/v36`、`v36.0.0-pre.N` tag workflow、CHANGELOG/迁移文档 |
+| B8 | latest-main 全量回归 | ✅ 完成 | in-tree header 修复后 static 201/0/0；dynamic PASS；race 定向 PASS；DEPRECATE_HARD=ON PASS |
 
 ### 阶段 C：SHA256 + reftable 组合验证
 
 | 组合 | 状态 |
 | --- | --- |
-| SHA1 + files | 待最终集成回归 |
-| SHA1 + reftable | reftable 分支已有基础覆盖，待集成回归 |
-| SHA256 + files | SHA256 分支已有覆盖，待集成回归 |
-| SHA256 + reftable | 待新增完整组合测试 |
+| SHA1 + files | ✅ init/commit/branch/reopen/config |
+| SHA1 + reftable | ✅ init/commit/branch/reopen/config |
+| SHA256 + files | ✅ init/commit/64-hex/branch/reopen/objectFormat |
+| SHA256 + reftable | ✅ init/commit/64-hex/branch/reopen/objectFormat/refStorage |
 
 ## 3. 阶段 A1-A4 实施记录
 
@@ -59,7 +60,7 @@
 - `RefdbBackendUnlockStatus` 精确保留 cancel(0) / update(1) / delete(2)；
 - `*string` 保留 C `NULL` 与显式空字符串的差异。
 
-`init` 字段只存在于 libgit2 main；`reftable_on.go` 通过 package-wide `GIT2GO_HAS_REFDB_BACKEND_INIT` CFLAG 打开 C 结构字段接线。无 tag/v1.9.x 路径不引用该字段，并在 Go 侧拒绝安装 initializer capability。`compress/lock/unlock` 在 v1.9.4 已存在，两个轨道都可用。
+`init` 字段只存在于 libgit2 main。v36-pre 已整体要求 promoted latest-main ABI，因此由 `refdb_backend.go` 在所有 v36 构建中通过 package-wide `GIT2GO_HAS_REFDB_BACKEND_INIT` 接线；files-only（无 reftable tag）也支持 custom backend init。v1.9.x 的 20-byte OID ABI 由 v36 guard 明确拒绝，继续由 v35 维护线支持。
 
 ### 3.2 iterator 与 lock 生命周期
 
@@ -86,19 +87,19 @@ go test -race -tags "static libgit2_reftable" \
   -run "TestRefdbBackendConcurrentIterators|TestRefdbBackendTransaction"      PASS
 ```
 
-上述验证使用现有 SHA1-compatible `static-build` 产物，证明 bridge v2 的 Go/C 行为；不是 latest-main 干净构建证明。latest-main 的最终验证等待与 `feat-sha256` typed OID 实现整合。
+上述 bridge v2 局部验证随后已由 latest-main 干净 static/dynamic 全量、race 与四组合验证取代；最终结论见 §5。
 
 额外验证：
 
 ```text
 optional callback 指针（init/compress/lock+unlock）按 capability 安装     PASS
 init callback head/mode/flags 端到端调用                              PASS
-无 tag 构建拒绝 main-only initializer capability                        PASS
+无 tag/files-only latest-main 构建仍支持 custom backend initializer         PASS
 并行 config 测试重复 20 次（每测试独立 t.TempDir）                      PASS
 reftable reopen / reflog / symbolic ref 定向测试                         PASS
 ```
 
-真实 v1.9.4 临时重建命令未获执行授权，因此本轮不宣称本地 stable 真库验证；CI 已改为真实 checkout/build v1.9.4，并在后续 CI 运行中闭环。
+v36-pre 不兼容 v1.9.4 的 legacy 20-byte OID ABI；CI 使用真实 v1.9.4 作为负向 guard 测试，v1.9.x 运行兼容由 v35 维护线负责。
 
 ## 4. SHA256 工作树复用原则
 
@@ -109,7 +110,29 @@ reftable reopen / reflog / symbolic ref 定向测试                         PAS
 - 预计可直接复用文件：`oid_typed.go`、`oid_type_api.go`、SHA256 专项测试与 v36-pre 发布文档/工作流；整合前仍需代码审计。
 - v36-pre 不再与 v1.9.x 的 20-byte `git_oid` ABI 同二进制兼容；真实 v1.9.4 job 属于 v35 维护线。整合后的 v36 CI 应改为验证旧 ABI 被 capability guard 拒绝，而不是宣称可运行兼容。
 
-## 5. 验证分层
+## 5. 整合验证结果（2026-08-05）
+
+```text
+latest-main static build (default)                         PASS
+latest-main dynamic build                                 PASS
+go build static + reftable                                PASS
+四组合 TestRepositoryFormatMatrix                         PASS (4/4)
+typed OID/SHA256 + reftable + bridge 定向测试             PASS
+race: matrix + bridge iterators/transactions              PASS
+dynamic 全量（无跳过）                                   PASS
+static 全量（无跳过，DEPRECATE_HARD=ON）                  PASS (201/0/0)
+DEPRECATE_HARD=ON rebuild + typed/reftable/bridge tests    PASS
+files-only latest-main/no-reftable-tag                     PASS
+xdiff in-tree header 修复后原 10 个崩溃用例              PASS
+审计修复（Oid零值/所有权/panic/init校验/merge泄漏）       PASS
+二次审计（transaction复用/NUL/refdb owner/SHA256 shorten） PASS
+CI action/发布 token/stringer 固定与隔离                  PASS
+最终 static full + dynamic full + race（无跳过）           PASS
+```
+
+xdiff SIGBUS 已通过 vendored include 优先级修复闭环：原 10 个崩溃用例全部通过。导入的默认分支无关 rebase 测试同样通过，因此当前 static/dynamic 全量基线均无需跳过。
+
+## 6. 验证分层
 
 1. 阶段 A 局部：Go/C bridge 单测、race/多 iterator 生命周期、错误传播。
 2. 阶段 A stable：真实 libgit2 v1.9.4 no-reftable 构建。
@@ -117,7 +140,7 @@ reftable reopen / reflog / symbolic ref 定向测试                         PAS
 4. 阶段 B 集成：最新 main 全量编译、布局断言、typed OID 全量回归。
 5. 阶段 C：四组合矩阵 + reopen/persistence/reflog/branch/symbolic ref。
 
-## 6. 记录规范
+## 7. 记录规范
 
 - 每完成一个阶段项，更新本文件状态、验证命令与结果。
 - 代码与文档分开提交；每个提交保持单一主题。

@@ -1,6 +1,6 @@
 git2go
 ======
-[![GoDoc](https://godoc.org/github.com/libgit2/git2go?status.svg)](http://godoc.org/github.com/libgit2/git2go/v35) [![Build Status](https://travis-ci.org/libgit2/git2go.svg?branch=main)](https://travis-ci.org/libgit2/git2go)
+[![GoDoc](https://godoc.org/github.com/libgit2/git2go?status.svg)](http://godoc.org/github.com/libgit2/git2go/v36) [![Build Status](https://travis-ci.org/libgit2/git2go.svg?branch=main)](https://travis-ci.org/libgit2/git2go)
 
 Go bindings for [libgit2](http://libgit2.github.com/).
 
@@ -10,6 +10,7 @@ Due to the fact that Go 1.11 module versions have semantic meaning and don't nec
 
 | libgit2 | git2go        |
 |---------|---------------|
+| main with promoted typed OIDs + reftable | v36.0.0-pre.N |
 | 1.9     | v35           |
 | 1.5     | v34           |
 | 1.3     | v33           |
@@ -20,18 +21,18 @@ Due to the fact that Go 1.11 module versions have semantic meaning and don't nec
 | 0.28    | v28           |
 | 0.27    | v27           |
 
-You can import them in your project with the version's major number as a suffix. For example, if you have libgit2 v1.9 installed, you'd import git2go v35 with:
+You can import released libgit2 v1.9 support from the v35 maintenance line. The current integration line targets libgit2 main and is published only as v36 prereleases:
 
 ```sh
-go get github.com/libgit2/git2go/v35
+go get github.com/libgit2/git2go/v36@v36.0.0-pre.N
 ```
 ```go
-import "github.com/libgit2/git2go/v35"
+import "github.com/libgit2/git2go/v36"
 ```
 
 which will ensure there are no sudden changes to the API.
 
-The `main` branch follows the tip of libgit2 itself (with some lag) and as such has no guarantees on the stability of libgit2's API. Thus this only supports statically linking against libgit2.
+The v36 prerelease line follows a pinned libgit2 main commit and has no upstream ABI stability guarantee. It supports the bundled static/dynamic builds and compatible system builds of that promoted typed-OID API; released libgit2 v1.9.x remains on git2go v35.
 
 ### Which branch to send Pull requests to
 
@@ -47,11 +48,7 @@ This project wraps the functionality provided by libgit2. If you're using a vers
 
 ### Versioned branch, dynamic linking
 
-When linking dynamically against a released version of libgit2, install it via your system's package manager. CGo will take care of finding its pkg-config file and set up the linking. Import via Go modules, e.g. to work against libgit2 v1.2
-
-```go
-import "github.com/libgit2/git2go/v35"
-```
+When linking dynamically against a released libgit2, use the matching git2go maintenance line (for example libgit2 v1.9 with git2go v35). The v36 prerelease line requires the promoted typed-OID libgit2 main ABI and is not compatible with released v1.9.x.
 
 ### Versioned branch, static linking
 
@@ -65,7 +62,7 @@ Follow the instructions for [Versioned branch, dynamic linking](#versioned-branc
 
 If using `main` or building a branch with the vendored libgit2 statically, we need to build libgit2 first. In order to build it, you need `cmake`, `pkg-config` and a C compiler. You will also need the development packages for OpenSSL (outside of Windows or macOS) and LibSSH2 installed if you want libgit2 to support HTTPS and SSH respectively. Note that even if libgit2 is included in the resulting binary, its dependencies will not be.
 
-Run `go get -d github.com/libgit2/git2go` to download the code and go to your `$GOPATH/src/github.com/libgit2/git2go` directory. From there, we need to build the C code and put it into the resulting go binary.
+Run `go get github.com/libgit2/git2go/v36@v36.0.0-pre.N` (replace `N` with the desired prerelease number), then build from the checked-out module source so the vendored libgit2 commit and Go bindings stay aligned.
 
     git submodule update --init # get libgit2
     make install-static
@@ -80,7 +77,7 @@ In order to let Go pass the correct flags to `pkg-config`, `-tags static` needs 
 
 One thing to take into account is that since Go expects the `pkg-config` file to be within the same directory where `make install-static` was called, so the `go.mod` file may need to have a [`replace` directive](https://github.com/golang/go/wiki/Modules#when-should-i-use-the-replace-directive) so that the correct setup is achieved. So if `git2go` is checked out at `$GOPATH/src/github.com/libgit2/git2go` and your project at `$GOPATH/src/github.com/my/project`, the `go.mod` file of `github.com/my/project` might need to have a line like
 
-    replace github.com/libgit2/git2go/v35 => ../../libgit2/git2go
+    replace github.com/libgit2/git2go/v36 => ../../libgit2/git2go
 
 Reference storage backends (reftable)
 -------------------------------------
@@ -96,12 +93,12 @@ reference storage backend in addition to the traditional `files` backend
 > libgit2 will not support reftable.
 >
 > **Build tag:** the reftable bindings are gated behind the `libgit2_reftable`
-> build tag. The bundled static/dynamic builds (`make install-static` /
-> `test-static`) enable it by default. If you build against a **released**
-> libgit2 (v1.9.x, which lacks the reftable C symbols), simply omit the tag:
-> git2go still compiles, `IsReftableSupported()` returns `false`, and
-> requesting `RefdbReftable` returns an error instead of failing to build.
-> Override the default with `make ... REFTABLE_TAG=` to force the stable subset.
+> build tag. The bundled static/dynamic builds enable it by default. Omitting
+> the tag builds the files-only subset against a compatible libgit2 main, but
+> does **not** make v36-pre compatible with released libgit2 v1.9.x: that release
+> has the legacy 20-byte `git_oid` ABI and must use git2go v35. Override with
+> `make ... REFTABLE_TAG=` only when intentionally building the files-only
+> subset on the promoted typed-OID ABI.
 
 Detecting support and a repository's format at runtime (there is no
 `GIT_FEATURE_REFTABLE` flag upstream):

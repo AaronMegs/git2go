@@ -2,14 +2,15 @@
 
 > 目标：分析上游 libgit2 main 中 reftable 的支持现状，结合本项目（git2go fork）当前绑定情况，给出兼容性适配的范围、落地内容，以及后续 roadmap。
 
-调研日期：2026-06-30（初版）、2026-07-29（第二轮：完整 refdb/reftable API 绑定）
+调研日期：2026-06-30（初版）、2026-07-29（第二轮）、2026-08-05（v36-pre SHA256 + reftable 整合完成）
 本项目分支：`feat-reftable`
-本项目模块：`cnb.cool/cnb/git2go/v35`
+当前整合模块：`github.com/libgit2/git2go/v36`（上游正式发布前仅使用 `v36.0.0-pre.N` tag）
 
 > **两轮适配概述**
 >
 > - **第一轮（06-30）**：vendor 升到 `32b564e63`（含 PR #7117），绑定 `git_repository_init_ext` + `RepositoryInitOptions`（含 `refdb_type`）+ `git_refdb_t` 枚举，产出本报告初版与 3 个 init 冒烟测试。
-> - **第二轮（07-29）**：vendor 升到当时的 main `ddf3b5c85`（含 reftable 更新 PR #7327），补齐 refdb/reftable **直接公开函数**绑定（后端构造函数、compaction、refdb 获取/打开、运行时探测、后端格式识别），新增 11 个覆盖 files/reftable 双后端的测试。后续完整性审计发现自定义 backend callback 缺 4 项；该缺口已由 bridge v2 修复，见 [reftable-sha256-integration-progress.md](./reftable-sha256-integration-progress.md)。
+> - **第二轮（07-29）**：vendor 升到当时的 main `ddf3b5c85`（含 reftable 更新 PR #7327），补齐 refdb/reftable 直接公开函数绑定并扩展测试。
+> - **整合轮（08-05）**：vendor `939362a3c`，完成 promoted typed OID、bridge v2、reflog/transaction、SHA1/SHA256 × files/reftable 四组合、static/dynamic/race/DEPRECATE_HARD 验证，并切换到 `/v36` + `v36.0.0-pre.N` 发布线。
 
 ---
 
@@ -38,7 +39,7 @@
 | `v1.9.4`（最新发布） | **否** |
 | `main` `32b564e63`（第一轮 vendor） | 是（PR #7117） |
 | `main` `ddf3b5c85`（第二轮 vendor） | 是（PR #7117 + #7327 修复） |
-| `main` `939362a3c`（**当前 vendor**） | 是（含 SHA256 转正；当前被 `Oid` ABI 守卫阻止构建，待 v36 重构） |
+| `main` `939362a3c`（**当前 vendor**） | 是（含 SHA256 转正；v36 typed `Oid` 已适配并通过四组合） |
 
 > **重要**：reftable 目前仅存在于未发布的 main 分支，所有 1.9.x 发布版均不含。任何依赖 reftable 的工程都必须自行构建 main，并接受其 API 与 ABI 的不稳定性。
 
@@ -192,7 +193,7 @@ const (
 
 | 问题 | 现象 | 状态 |
 | --- | --- | --- |
-| xdiff 崩溃（10 个用例，见 §3.7） | 所有基于 xdiff 的 diff/patch/blame/merge/rebase 在 cgo 中 SIGBUS | 已定性为本地 libgit2 构建/工具链 bug（纯 C 亦崩、跨版本/后端/优化一致），与 git2go 无关，见 §3.6 |
+| xdiff 崩溃（10 个用例，见 §3.7） | bundled xdiff 误用陈旧系统 libgit2 头，allocator ABI 错配并 SIGBUS | ✅ 已修复：构建脚本把 vendored include 以普通 `-I` 置于 SYSTEM/系统目录之前；10 个用例及 201 个全量测试均通过，见 §3.6 |
 | `script/build-libgit2.sh` 与 main 不兼容（NTLM） | `USE_HTTPS=OFF` 时 ntlmclient CMake 报错 | ✅ 已修复（脚本加 `USE_AUTH_NTLM=OFF`） |
 | GSS.framework 静态链接缺符号 | `Undefined symbols _gss_*` | ✅ 已修复（脚本加 `USE_AUTH_NEGOTIATE=OFF`） |
 | `DEPRECATE_HARD=ON` 移除 `git_odb_hash` | 链接缺失 `_git_odb_hash` | ✅ 已修复（脚本 bundled 构建默认 `DEPRECATE_HARD=OFF`） |
@@ -236,9 +237,9 @@ vendor 进一步升级到当时的 main `ddf3b5c85`（含 reftable 修复 PR #73
 
 > `TestReftableBranchLifecycle` 是本轮最有价值的验证：它证明 git2go 现有的高层引用 API（`CreateCommit` / `CreateBranch` / `LookupBranch` / `Branch.Delete`）在 reftable 后端上**行为完全兼容**，无需任何针对性改造——这正是 reftable 作为"透明后端"的设计目标。
 
-### 3.6 xdiff SIGBUS 深入调研（结论：本地 libgit2 构建/工具链 bug，与 git2go 及 reftable 无关）
+### 3.6 xdiff SIGBUS 深入调研与最终修复
 
-现象：任何经 xdiff 的操作在本机 SIGBUS，共影响 10 个测试用例（完整清单见 §3.7），涉及 `git_apply` / `git_blame_file` / `git_diff_*` / `git_patch_from_diff` / `git_merge_file` / `git_rebase_next`。经**多轮真实构建对照**，最终定性为本地 libgit2 构建/工具链问题，**与 git2go 代码、cgo、reftable、libgit2 版本均无关**。
+现象：任何经 xdiff 的操作在本机 SIGBUS，共影响 10 个测试用例（完整清单见 §3.7），涉及 `git_apply` / `git_blame_file` / `git_diff_*` / `git_patch_from_diff` / `git_merge_file` / `git_rebase_next`。前期已证明问题存在于生成的 libgit2 库而非 Go/cgo 调用层；后续对照 `feat-sha256` 找到最终根因：**libgit2 的 xdiff CMake target 使用 SYSTEM include，macOS 会优先选中陈旧的系统 libgit2 头，导致 xdiff 与库其余对象使用不同的 `git_allocator` 布局**。
 
 #### 调研过程与证据（按时间顺序，含一次自我订正）
 
@@ -255,17 +256,24 @@ vendor 进一步升级到当时的 main `ddf3b5c85`（含 reftable 修复 PR #73
 
 #### 定性结论
 
-纯 C 都崩，且跨 libgit2 版本、跨 regex 后端、跨优化级别一致复现 → 这是 **libgit2 的 xdiff 在本机环境（macOS arm64 + 当前 clang 工具链）经 CMake 构建后的运行时 bug**，属 libgit2 / 工具链层面，**与 git2go 绑定代码完全无关，也不影响 reftable 功能**（reftable 全部测试通过；reftable 不经 xdiff）。
+纯 C 同样崩溃是因为其链接的 `libgit2.a` 本身已经由混合版本头文件误编译。旧系统头中的 `git_allocator` 有 9 个函数指针，而当前 main 只有 3 个；xdiff 按错误布局读取 allocator callback，最终跳转到垃圾地址（如 `PC=0x12`）。
 
-#### 影响与后续
+#### 修复与验证
 
-- 影响面：仅 diff/patch/blame 等走 xdiff 的路径；reftable、引用、提交、config 等均不受影响。
-- 后续（libgit2/环境侧，非 git2go）：在其它工具链/平台（如 CI 的 Linux）复核是否复现；若可复现则向上游 libgit2 报 issue（附纯 C 复现与本节回溯）；本机可尝试更换 clang 版本 / 关闭特定优化再排查。
-- git2go 侧无需改动。
+`script/build-libgit2.sh` 现在把 `${VENDORED_PATH}/include` 作为普通 `-I` 注入 `CMAKE_C_FLAGS`，确保它优先于 xdiff target 的 `-isystem` 和编译器系统目录。并取消 `exec make/cmake --build`，使临时 `BUILD_LIBGIT_REF` 的 EXIT trap 能恢复子模块。
+
+修复后验证：
+
+- 原 10 个 SIGBUS 用例全部通过；
+- latest-main + DEPRECATE_HARD=ON static 全量：**201 PASS / 0 FAIL / 0 SKIP**；
+- latest-main dynamic 全量：PASS；
+- reftable/SHA256 四组合及 race 定向：PASS。
+
+该问题与 reftable 逻辑本身无关，但属于 git2go bundled 构建脚本需要负责的头文件隔离问题，现已闭环。
 
 ### 3.7 全量回归基线（2026-08-03）
 
-在 vendor = main `ddf3b5c85`、`-tags "static libgit2_reftable"` 下做了一次完整全量回归。由于 xdiff 崩溃会终止整个 test binary，采用「逐轮排除崩溃点」的方式定位全部受影响用例，最终得到干净基线。
+这是修复前的历史基线：在 vendor = main `ddf3b5c85`、`-tags "static libgit2_reftable"` 下，采用逐轮排除崩溃点定位受影响用例。**该基线已被 2026-08-05 的不跳过全量结果取代：latest-main static 201/0/0、dynamic PASS。**
 
 #### 基线结果
 
@@ -319,7 +327,7 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 | `git_reference__is_per_worktree_ref` | 内部函数 | 不绑定 | 非公开 API |
 | `refdb_reftable.c` 后端 | 内部实现 | 不直接绑定 | 调用方对其透明 |
 
-**结论（2026-08-04 bridge v2 更新）**：reftable/refdb 的直接公开函数已绑定；`git_refdb_backend` 的 17 个 callback 也已通过 13 个核心方法 + 4 个可选 capability（`init` / `compress` / `lock` / `unlock`）完成桥接。iterator 已改为每实例独立 handle，并补齐 Go Free/Untrack、name buffer 回收与 transaction payload 生命周期。latest-main 干净构建仍需等待 SHA256 typed OID 整合后终验。详见 [reftable-sha256-integration-progress.md](./reftable-sha256-integration-progress.md)。
+**结论（2026-08-05 整合终验）**：reftable/refdb 直接公开函数与 `git_refdb_backend` 17 个 callback 均已绑定；iterator/lock 独立 handle、Go Free/Untrack、name buffer、panic recovery 与所有权转移均已验证。promoted typed OID 已整合，latest-main static/dynamic/race/DEPRECATE_HARD 终验通过。详见 [reftable-sha256-integration-progress.md](./reftable-sha256-integration-progress.md)。
 
 ---
 
@@ -328,24 +336,22 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 ### 5.1 已完成（截至第二轮 07-29）
 
 - ✅ 第二轮 vendor 升级到含 reftable 的 main `ddf3b5c85` 并完成当时的重建/回归。
-- ✅ 当前 vendor 已进一步升级到 `939362a3c`；⏸️ 该版本因 SHA256 `git_oid` ABI 变化被安全守卫按预期阻止构建，待 v36 `Oid` 重构。
+- ✅ 当前 vendor 已进一步升级到 `939362a3c`，v36 typed `Oid` 与 promoted ABI 守卫已完成，static/dynamic 和四组合验证通过。
 - ✅ 完整 `RepositoryInitOptions` + `InitRepositoryExt`（含 `refdb_type`）。
-- ✅ refdb/reftable 直接公开函数绑定（后端构造、compaction、refdb 获取/打开）；⚠️ 自定义 backend callback 桥接仍需补 4 项并重构 iterator 生命周期。
+- ✅ refdb/reftable 直接公开函数及 17-callback backend bridge v2（含 iterator/transaction 生命周期）已完成。
 - ✅ 特性探测助手 `IsReftableSupported()`、后端识别 `RefStorageFormat()`。
 - ✅ files/reftable 双后端测试矩阵（14 个测试，含分支完整 CRUD、stack compaction）。
 
 ### 5.2 短期（下一个 PR 周期）
 
 1. **构建脚本适配 main** ✅ 已完成
-   - `script/build-libgit2.sh` 已加入 `USE_AUTH_NTLM=OFF` / `USE_AUTH_NEGOTIATE=OFF`，bundled 构建默认 `DEPRECATE_HARD=OFF`（可用环境变量覆盖）。该脚本可构建第二轮 vendor `ddf3b5c85`；当前 `939362a3c` 在完成 `Oid` ABI 重构前会被守卫有意阻止。
+   - `script/build-libgit2.sh` 已适配 main、支持 DEPRECATE_HARD 审计，并通过 vendored include 普通 `-I` 消除 xdiff 的系统头污染。当前 `939362a3c` static/dynamic 构建均通过。
 
 2. **CI 矩阵** ✅ 已完成
-   - `.github/workflows/ci.yml` 新增 `build-reftable` job：构建 bundled main（含 reftable）并跑 reftable/refdb 测试子集，含 reftable 仓库创建与分支生命周期专项验证。
-   - 稳定版（system build）上 reftable 测试通过 `t.Skipf` 优雅跳过，形成 stable/main 双轨。
+   - `.github/workflows/ci.yml` 的 v36 轨道构建 bundled/system main，覆盖 reftable/refdb/transaction 与 race；真实 v1.9.4 用作 promoted ABI guard 的负向测试，v35 维护线负责旧 ABI。
 
-3. **xdiff SIGBUS**（见 §3.6，已定性、与 reftable/git2go 无关）
-   - 结论：本地 libgit2 构建/工具链 bug（纯 C 复现、跨 libgit2 版本/regex 后端/优化级别一致崩溃）。git2go 侧无需改动。
-   - 后续（环境/上游侧）：在其它工具链/平台复核，可复现则报 libgit2 上游。
+3. **xdiff SIGBUS** ✅ 已修复（见 §3.6）
+   - 根因是 bundled xdiff target 被陈旧系统 libgit2 头污染，allocator ABI 错配；构建脚本现强制 vendored include 优先。原 10 个崩溃用例和无跳过全量套件均通过。
    - 历史问题 `TestConfigLookups` / `TestConfigEntryBackendType` 共享 `./temp.gitconfig` 的并发竞争，独立处理（`-p 1` 可规避）。
 
 4. **文档与 README** ✅ 已完成
@@ -374,7 +380,7 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 
 ### 5.4 长期
 
-1. **自定义 refdb 后端 bridge v2** ✅ 已完成（latest-main 终验待 SHA256 整合）
+1. **自定义 refdb 后端 bridge v2** ✅ 已完成并通过 latest-main 终验
    - ✅ `RefdbBackendInitFlag` 枚举（`RefdbBackendInitIsWorktree` / `RefdbBackendInitForceHead`）。
    - ✅ 13 个核心 callback + 可选 `Initializer` / `Compressor` / `Locker` capability，覆盖 `init` / `compress` / `lock` / `unlock`。
    - ✅ 每 iterator 独立 handle，C free 调用 Go `Free()` + Untrack，`next_name` 缓冲回收；并发/race 定向测试通过。
@@ -394,7 +400,7 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 4. **per-worktree 引用语义**：⏸️ **已调研，仍为内部 API** —— `git_reference__is_per_worktree_ref` 位于 `src/libgit2/refs.h:108`（非公开），且上游正收紧符号可见性，不应绑定。可选替代：Go 侧按 git 约定自行实现。详见 [reftable-longterm-research.md §2](./reftable-longterm-research.md)。
 5. **SHA-256 与 reftable 组合**：✅ **上游已解锁**，但 ⚠️ **触发 git2go `Oid` ABI 破坏性变更** —— 上游 PR #7261 已将 SHA256 转正（`GIT_EXPERIMENTAL_SHA256` 从公开头文件移除），`git_oid` 由 20 字节变为 33 字节（新增 `type` 字段 + `id[32]`，`GIT_OID_MAX_SIZE` 由 20 变 32），而 git2go 的 `Oid [20]byte` 直接 `unsafe.Pointer` 强转为 `*C.git_oid` 会**越界破坏内存**。reftable 后端已原生支持 `REFTABLE_HASH_SHA256`。落地需分三阶段（编译期尺寸守卫 → `Oid` 重构 → 组合测试矩阵）。详见 [reftable-longterm-research.md §3](./reftable-longterm-research.md)。
 
-> ⚠️ **当前迁移状态**：vendor 已由 commit `8b4a398` 从 `ddf3b5c85` 升级到最新审计基线 `939362a3c`。该版本的 `git_oid` 已变为 33 字节；已落地的 `Oid` ABI 守卫会按预期在编译期阻止构建，避免内存损坏。必须完成 v36 `Oid` 方案 A 重构后才能恢复构建并验证 SHA256 + reftable。
+> ✅ **当前迁移状态（2026-08-05）**：vendor 已升级到 `939362a3c`；v36 已采用 33 字节 typed `Oid` 方案并统一 `OidType + RefdbType` 初始化。SHA1/SHA256 × files/reftable 四组合、static/dynamic、race 定向和 DEPRECATE_HARD=ON 验证均通过。
 
 ---
 
