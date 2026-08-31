@@ -16,6 +16,11 @@ on:
 permissions:
   contents: read
 
+# vendor/ contains only the pinned libgit2 C submodule; without this the Go
+# toolchain auto-selects -mod=vendor and fails with "inconsistent vendoring".
+env:
+  GOFLAGS: -mod=readonly
+
 concurrency:
   group: v36-prerelease-tag
   cancel-in-progress: false

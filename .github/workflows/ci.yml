@@ -7,6 +7,14 @@ on:
     - release-*
     - v*
 
+# vendor/ contains only the pinned libgit2 C submodule, so the Go toolchain's
+# automatic -mod=vendor selection (Go 1.14+, triggered merely by vendor/
+# existing) must be disabled or every job fails with "inconsistent vendoring".
+# The Makefile sets this too; declaring it here covers the jobs that invoke go
+# directly.
+env:
+  GOFLAGS: -mod=readonly
+
 jobs:
   build-static:
     strategy:
