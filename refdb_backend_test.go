@@ -23,14 +23,25 @@ func (b *countingRefdbBackend) Exists(refName string) (bool, error) {
 	return false, nil
 }
 
+// refdbBackendTestError builds an error that the C bridge maps back to the
+// given libgit2 error code.
+//
+// Go-defined backend callbacks are the *producers* of these errors, so they
+// must not consult libgit2's thread-local last error (as MakeGitError does);
+// they construct the GitError directly instead. setCallbackError reads
+// GitError.Code, so the bridge reports the intended code either way.
+func refdbBackendTestError(code ErrorCode) error {
+	return &GitError{Message: code.String(), Class: ErrorClassReference, Code: code}
+}
+
 func (b *countingRefdbBackend) Lookup(refName string) (*Reference, error) {
 	b.lookupCalls++
 	b.lastRefName = refName
-	return nil, MakeGitError2(int(ErrorCodeNotFound))
+	return nil, refdbBackendTestError(ErrorCodeNotFound)
 }
 
 func (b *countingRefdbBackend) Iterator(glob string) (RefdbBackendIterator, error) {
-	return nil, MakeGitError2(int(ErrorCodeNotFound))
+	return nil, refdbBackendTestError(ErrorCodeNotFound)
 }
 
 func (b *countingRefdbBackend) Write(ref *Reference, force bool, who *Signature, message string, old *Oid, oldTarget string) error {
@@ -38,7 +49,7 @@ func (b *countingRefdbBackend) Write(ref *Reference, force bool, who *Signature,
 }
 
 func (b *countingRefdbBackend) Rename(oldName, newName string, force bool, who *Signature, message string) (*Reference, error) {
-	return nil, MakeGitError2(int(ErrorCodeNotFound))
+	return nil, refdbBackendTestError(ErrorCodeNotFound)
 }
 
 func (b *countingRefdbBackend) Delete(refName string, oldID *Oid, oldTarget string) error {
@@ -50,7 +61,7 @@ func (b *countingRefdbBackend) EnsureLog(refName string) error      { return nil
 func (b *countingRefdbBackend) Free()                               { b.freeCalls++ }
 
 func (b *countingRefdbBackend) ReflogRead(name string) (*Reflog, error) {
-	return nil, MakeGitError2(int(ErrorCodeNotFound))
+	return nil, refdbBackendTestError(ErrorCodeNotFound)
 }
 func (b *countingRefdbBackend) ReflogWrite(reflog *Reflog) error           { return nil }
 func (b *countingRefdbBackend) ReflogRename(oldName, newName string) error { return nil }
@@ -75,7 +86,7 @@ func (b *iteratorRefdbBackend) Iterator(glob string) (RefdbBackendIterator, erro
 }
 
 func (i *emptyRefdbBackendIterator) Next() (*Reference, error) {
-	return nil, MakeGitError2(int(ErrorCodeIterOver))
+	return nil, refdbBackendTestError(ErrorCodeIterOver)
 }
 
 func (i *emptyRefdbBackendIterator) Free() {

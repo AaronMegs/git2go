@@ -172,6 +172,9 @@ func NewRefdbBackendFromInterface(impl RefdbBackendInterface) (*RefdbBackend, er
 	state := &refdbBackendState{backend: impl}
 	handle := pointerHandles.Track(state)
 
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	var ptr *C.git_refdb_backend
 	ret := C._go_git_refdb_backend_alloc(&ptr, handle, C.uint32_t(capabilities))
 	if ret < 0 {
