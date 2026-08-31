@@ -21,6 +21,7 @@
 | 7 | 等待上游正式版本、更新守卫和跨平台正式包验证 | ⏸ 外部阻塞（最新正式版仍为 v1.9.6） |
 | 8 | 绑定 `git_object_id_from_file` 文件路径类型化 hash | ✅ 已完成 |
 | 9 | 修复 Go 1.14+ 自动 vendor 模式导致的 GitHub CI 全任务失败 | ✅ 已完成 |
+| 10 | `feat-reftable` 分支收敛：自动 vendor 模式、线程锁检查、动态链接可移植性、managed HTTP 竞态 | ✅ 已完成 |
 
 ---
 
@@ -277,3 +278,139 @@ CI 升级到 Go 1.18/stable 后因此把 `vendor/` 视为 Go vendor tree，并�
 - `go list -mod=vendor all` → 215 个 package；
 - `go test -tags static --count=1 ./...` → 全量通过；
 - `go mod verify` → `all modules verified`。
+
+> **注**：以上是 `feat-sha256` 分支当时的处理方式（提交 Go vendor 树）。`feat-reftable` 改用
+> `GOFLAGS=-mod=readonly` 显式退出自动 vendor 模式，`vendor/` 仅保留 libgit2 C 子模块。
+> 取舍理由见 [§10.1](#101-自动-vendor-模式阻塞所有-go-命令)。
+
+---
+
+## 10. `feat-reftable` 分支收敛 — ✅ 已完成
+
+第 9 项的 Go vendor 修复此前只落在 `feat-sha256`。本轮在 `feat-reftable`（vendor 已 pin 到
+main `939362a3c`）上重新执行端到端验证时，暴露并修复了四个彼此独立的阻塞点（§10.1–§10.4）。
+
+### 10.1 自动 vendor 模式阻塞所有 Go 命令
+
+`make test-static` 在第一个 Go 命令即失败：
+
+```text
+go: inconsistent vendoring in .../git2go:
+  github.com/google/shlex ... is explicitly required in go.mod,
+  but not marked as explicit in vendor/modules.txt
+```
+
+根因与第 9 项相同：自 Go 1.14 起，**只要 `vendor/` 目录存在**（判定条件是目录本身，不是
+`vendor/modules.txt`）且 `go.mod` 声明的 Go 版本 ≥ 1.14，工具链就自动选择 `-mod=vendor`；
+本项目的 `vendor/libgit2` C 子模块恰好让该目录存在，随后校验 `vendor/modules.txt` 必然失败。
+
+但**本分支的修复方式与第 9 项不同**：`vendor/` 只承载 pinned 的 libgit2 C 子模块，不提交任何
+Go 依赖源码，因此改为显式退出自动 vendor 模式：
+
+- `Makefile` 顶层 `export GOFLAGS ?= -mod=readonly`，覆盖所有 recipe；
+- `.github/workflows/{ci,tag}.yml` 顶层 `env.GOFLAGS`，覆盖不经 Makefile 直接调用 `go` 的
+  job（`reject-legacy-v1-9-4`、`build-reftable`、`build-system-*`、`check-generate`、
+  发布校验）。
+
+选择 `readonly` 而非 `mod`：两者都能退出 vendor 模式，但 `-mod=mod` 允许 Go 在解析依赖时改写
+`go.mod` / `go.sum`，`readonly` 不会，因此构建过程对版本文件保持只读。二者本地实测均可通过，
+取更保守的一个。
+
+不采用“提交 Go vendor 树”的原因：本仓库的 `vendor/` 语义是 C 子模块目录，混入约 134 个
+Go 依赖文件（约 1.1 MiB）会让该目录承担两种互相冲突的职责——`go mod vendor` 会重建整个
+`vendor/`，从而清空 C 子模块工作树，必须靠额外的 make 目标兜底。相比之下一行 `GOFLAGS`
+不引入这种耦合。此选择对下游无影响：Go module zip 不包含子模块内容，下游取到的包里不存在
+`vendor/` 目录，因此不会触发自动 vendor 模式。
+
+### 10.2 `MakeGitError` 线程锁检查 6 处违规
+
+`script/check-MakeGitError-thread-lock.go` 报出 1 处生产代码 + 5 处测试回调：
+
+| 位置 | 性质 | 处理 |
+| --- | --- | --- |
+| `refdb_backend.go` `NewRefdbBackendFromInterface` | **真实缺陷**：`_go_git_refdb_backend_alloc` 失败后 `MakeGitError` 读取线程局部 `git_error_last()`，未锁线程可能读到其他 goroutine 的错误 | 补 `runtime.LockOSThread()` / `defer runtime.UnlockOSThread()` |
+| `refdb_backend_test.go` 的 `Lookup` / `Iterator` / `Rename` / `ReflogRead` / `Next` | **语义误用**：这些 Go 回调是错误的*产生方*，却用 `MakeGitError2` 去*读取* libgit2 的线程局部错误 | 改为直接构造 `&GitError{...}`（`refdbBackendTestError`）。C 桥接的 `setCallbackError` 按 `GitError.Code` 回传错误码，因此行为等价且语义正确 |
+
+注：加锁不是唯一正确解。对回调而言，正确做法恰恰是不去读 libgit2 的 last error，因此这里选择
+消除误用而非机械加锁。
+
+### 10.3 macOS 动态链接不可用
+
+bundled dylib 的 install name 是 `@rpath/libgit2.1.9.dylib`，而 `make test-dynamic` 只导出
+`LD_LIBRARY_PATH`——dyld 并不使用该变量，且测试二进制没有 `LC_RPATH`：
+
+```text
+dyld[...]: Library not loaded: @rpath/libgit2.1.9.dylib
+  Reason: no LC_RPATH's found
+```
+
+修复：`Makefile` 在 `test-dynamic` 中额外注入 `CGO_LDFLAGS=-Wl,-rpath,$(DYNAMIC_LIBDIR)`
+（绝对路径），Linux 下冗余但无害，从而保持单一代码路径，同时保留 `LD_LIBRARY_PATH`。
+
+### 10.4 managed HTTP 传输的数据竞态
+
+全量 `--race` 回归（而非仅定向用例）暴露出 2 处 `DATA RACE`，分别由
+`TestCloneWithExternalHTTPUrl` 与 `TestCertificateCheck` 触发，读写点都在
+`http.go` 的 `httpSmartSubtransportStream`。该文件属上游既有代码，与 reftable 工作无关，
+但确认是真实缺陷而非误报：
+
+```go
+// 修复前
+func (self *httpSmartSubtransportStream) sendRequestBackground() {
+	go func() {
+		self.httpError = self.sendRequest() // 赋值发生在 recvReply.Done() 之后
+	}()
+	self.sentRequest = true
+}
+```
+
+`sendRequest` 内部 `defer self.recvReply.Done()`，因此对 `httpError` 的赋值发生在 `Done()`
+**之后**，`Read` 里的 `recvReply.Wait()` 无法为该写入建立 happens-before。此外
+`Write` 完全不经过 `Wait` 就读取 `httpError`；`sendRequest` 结尾还会在后台 goroutine 里写
+`sentRequest`，与 `Read` 的读取并发。
+
+修复（三点，均保持原有语义）：
+
+1. `httpError` 由 `httpErrorMu` 保护，新增 `setHTTPError` / `getHTTPError`，覆盖 `Write`
+   这条不经过 `Wait` 的读路径；
+2. 把原 `sendRequest` 主体抽为 `doSendRequest`，新 `sendRequest` 在 `Done()` 之前完成
+   `setHTTPError`，使 `Wait()` 的返回方必然观察到错误与 `resp`；
+3. `sentRequest` 只由发起请求的 goroutine（`Read` 同步路径 / `sendRequestBackground`）写入，
+   后台 goroutine 不再写它。`Read` 在 `sendRequest` 成功后才置位，与修复前“仅成功时置位”一致。
+
+### 10.5 全量回归矩阵（vendor `939362a3c`，2026-08-31）
+
+测试共享 `./temp.gitconfig`，因此全部串行执行（`-p=1`），每轮前清理残留 lock。
+
+| # | 轨道 | 命令 | 结果 |
+| --- | --- | --- | --- |
+| 1 | 线程锁检查 | `go run script/check-MakeGitError-thread-lock.go` | PASS |
+| 2 | 依赖解析（`-mod=readonly`，无 Go vendor 树） | `go mod verify`、`go list all` | PASS（219 package，`go.mod`/`go.sum` 未被改写） |
+| 3 | vet（双 tag） | `go vet --tags "static libgit2_reftable"` / `--tags static` | PASS |
+| 4 | 编译（双 tag） | `go build --tags static` / `--tags "static libgit2_reftable"` | PASS |
+| 5 | 静态库重建 | `make build-libgit2-static` | PASS |
+| 6 | 动态库重建 | `make build-libgit2-dynamic` | PASS |
+| 7 | **静态全量** | `go test --tags "static libgit2_reftable" -count=1 -p=1 -v ./...` | **201 PASS / 0 FAIL / 0 SKIP** |
+| 8 | **动态全量** | `make TEST_ARGS='-count=1 -p=1 -v' test-dynamic` | **201 PASS / 0 FAIL / 0 SKIP** |
+| 9 | **无 tag 全量** | `go test --tags static -count=1 -p=1 -v ./...` | **191 PASS / 0 FAIL / 10 SKIP**（SKIP 全为 reftable 用例） |
+| 10 | **静态竞态全量** | `go test --tags "static libgit2_reftable" --race ...` | 修复 §10.4 前 199 PASS / 2 FAIL（2 DATA RACE）；修复后 **201 PASS / 0 FAIL / 0 DATA RACE** |
+| 11 | 无 tag 竞态全量 | `go test --tags static --race ...` | PASS |
+| 12 | 动态竞态全量 | `--tags libgit2_reftable --race`（带 rpath） | PASS |
+| 13 | `DEPRECATE_HARD=ON` 重建 + 全量 | `BUILD_DEPRECATED_HARD=ON ./script/build-libgit2-static.sh` → 静态全量 | 构建 PASS、**201 PASS / 0 FAIL / 0 SKIP** |
+| 14 | 恢复默认产物 | `./script/build-libgit2-static.sh`（`DEPRECATE_HARD=OFF`）+ 复测 | PASS |
+
+第 9 项的 10 个 SKIP：`TestIsReftableSupported`、`TestRefStorageFormatReftable`、
+`TestRepositoryRefdb`、`TestRefdbCompressReftable`、`TestNewRefdbBackendReftable`、
+`TestReftableBranchLifecycle`、`TestReftableReopenPersistence`、`TestReftableReflogLifecycle`、
+`TestReftableSymbolicReferenceLifecycle`、`TestInitRepositoryExtReftable`——
+191 + 10 = 201，与其余轨道用例总数一致，说明降级路径只裁掉 reftable 能力。
+
+#### 本地未覆盖的 CI 轨道
+
+以下三条属 CI 环境专有，本地未执行（需要外部授权动作）：
+
+| 轨道 | 未执行原因 |
+| --- | --- |
+| `reject-legacy-v1-9-4`（ABI 守卫负向测试） | 需 `git -C vendor/libgit2 fetch --tags` 并临时 checkout `v1.9.4` 重建，会改动 vendor 工作树与 `static-build/` |
+| `build-system-static` / `build-system-dynamic-main` | 需 `sudo ./script/build-libgit2.sh --system` 写入 `/usr` |
+| `check-generate` | 需联网 `go install golang.org/x/tools/cmd/stringer@v0.1.12`（本机未安装） |

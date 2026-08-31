@@ -296,6 +296,24 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 
 - `TestConfigLookups` 与 `TestConfigEntryBackendType` 均调用 `t.Parallel()` 且共享同一路径 `./temp.gitconfig`，并行写会产生 `temp.gitconfig.lock` 冲突。`-p 1` 只限制 package 并行，不能禁止同一 package 内的 `t.Parallel()`，因此并非可靠规避方式；正确修复是让两个测试分别使用 `t.TempDir()` 下的独立路径。此外若此前有测试进程崩溃（如上述 xdiff SIGBUS），会遗留 `temp.gitconfig.lock` 导致后续跑测试误报失败，需先清理残留 lock。
 
+### 3.8 分支收敛复验（2026-08-31，vendor `939362a3c`）
+
+在 `feat-reftable` 分支上以 pin 住的 main `939362a3c` 重新走完“重建 → 全量 → 定向 → 竞态”流程，
+确认 reftable 绑定本身无回归；本轮修掉的阻塞均与 reftable 逻辑无关：
+
+| 阻塞点 | 性质 | 处理 |
+| --- | --- | --- |
+| 自动 vendor 模式（`vendor/` 存在即触发） | 工程化（`vendor/` 仅放 C 子模块，无 Go vendor 树） | Makefile/CI 显式 `GOFLAGS=-mod=readonly` |
+| `NewRefdbBackendFromInterface` 未锁线程 | 真实缺陷（`MakeGitError` 读线程局部 last error） | 补 `runtime.LockOSThread` |
+| 测试回调用 `MakeGitError2` 造错误 | 语义误用（回调是错误产生方，不应读 libgit2 last error） | 改为直接构造 `GitError` |
+| macOS `test-dynamic` dyld 失败 | 平台差异（`@rpath` + dyld 忽略 `LD_LIBRARY_PATH`） | `Makefile` 注入 `-Wl,-rpath` |
+| managed HTTP 传输 2 处 `DATA RACE` | 上游既有缺陷（`httpError` 在 `recvReply.Done()` 之后赋值，`Write` 不经 `Wait` 读取） | 互斥量保护 + 把发布点移到 `Done()` 之前 |
+
+复验结果：static/dynamic/无 tag 三条全量各 201 用例（无 tag 为 191 PASS + 10 reftable SKIP）
+全部 0 FAIL；三条 `--race` 全量在修复 HTTP 竞态后 0 DATA RACE；`DEPRECATE_HARD=ON` 重建后全量
+201 PASS。SHA1/SHA256 × files/reftable 四组合均通过。完整命令与结果见
+[v36-pre-release-progress.md §10](./v36-pre-release-progress.md)。
+
 ---
 
 ## 4. API 差异对比表（上游 master vs 本项目绑定）
