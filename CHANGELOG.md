@@ -51,15 +51,27 @@ migration guide.
 ### Changed
 
 - Pinned vendored libgit2 to promoted-SHA256 main commit
-  `939362a3cb575de5f2aaebe1b1732c4ec8c1aebb`.
+  `0551dfd4ad989b6a3d5683c0d4cf326c6efef929`, which includes the
+  CVE-2026-5917 SSH path-escaping fix and the zlib truncated-stream fix.
 - Collapsed all experimental and legacy-overload C shims to libgit2's promoted
   typed/options/`_ext` API.
 - Build-time capability guards now reject incompatible libgit2 headers even
-  though the current upstream main version header still reports 1.9.0.
+  though the current upstream main version header still reports 1.9.0. They read
+  `LIBGIT2_VERSION_MAJOR`/`LIBGIT2_VERSION_MINOR` rather than the hard-deprecated
+  `LIBGIT2_VER_*` aliases, and fail loudly if neither macro is defined.
+- Replaced every remaining hard-deprecated libgit2 alias with its promoted name:
+  `git_credential_userpass_plaintext`, `git_credential_ssh_key`,
+  `git_indexer_progress`, `git_remote_completion_t`, `GIT_REFERENCE_DIRECT`,
+  `GIT_REFERENCE_SYMBOLIC` and `GIT_REVSPEC_*`.
+- `ConfigLevelProgramdata` no longer binds a C enum value. Upstream removed this
+  level from `git_config_level_t` and ignores it; the Go constant is retained for
+  source compatibility and marked deprecated.
 - Hardened bundled builds so in-tree libgit2 headers take priority over stale
   system headers for every CMake target.
 - CI now tests Go 1.18 and stable Go, uses current GitHub actions/runners, and
-  includes a macOS bundled-static job.
+  includes a macOS bundled-static job. The hard-deprecation job additionally
+  compiles with `CGO_CFLAGS=-DGIT_DEPRECATE_HARD`, proving git2go references no
+  deprecated declaration rather than merely not linking one.
 
 ### Security
 
@@ -71,6 +83,11 @@ migration guide.
 
 ### Fixed
 
+- `UpdateTipsCallback` never firing. git2go always installs libgit2's
+  `update_refs` callback, and libgit2 only falls back to the deprecated
+  `update_tips` slot when `update_refs` is unset, so the Go callback was
+  unreachable. It is now dispatched from `update_refs`, and
+  `UpdateRefsCallback` still takes precedence when both are set.
 - `git_apply` SIGBUS in self-built libgit2 caused by stale system libgit2 headers
   contaminating the bundled xdiff target.
 - Rebase tests that assumed the initial branch was named `master`.

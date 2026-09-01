@@ -247,7 +247,7 @@ static int sideband_progress_callback(const char *str, int len, void *payload)
 	return set_callback_error(error_message, ret);
 }
 
-static int completion_callback(git_remote_completion_type completion_type, void *data)
+static int completion_callback(git_remote_completion_t completion_type, void *data)
 {
 	char *error_message = NULL;
 	const int ret = completionCallback(&error_message, completion_type, data);
@@ -273,29 +273,24 @@ static int credentials_callback(
 	return set_callback_error(error_message, ret);
 }
 
-static int transfer_progress_callback(const git_transfer_progress *stats, void *data)
+static int transfer_progress_callback(const git_indexer_progress *stats, void *data)
 {
 	char *error_message = NULL;
 	const int ret = transferProgressCallback(
 			&error_message,
-			(git_transfer_progress *)stats,
+			(git_indexer_progress *)stats,
 			data
 	);
 	return set_callback_error(error_message, ret);
 }
 
-static int update_tips_callback(const char *refname, const git_oid *a, const git_oid *b, void *data)
-{
-	char *error_message = NULL;
-	const int ret = updateTipsCallback(
-			&error_message,
-			(char *)refname,
-			(git_oid *)a,
-			(git_oid *)b,
-			data
-	);
-	return set_callback_error(error_message, ret);
-}
+/*
+ * libgit2 hard-deprecated `git_remote_callbacks.update_tips` in favour of
+ * `update_refs`, and only ever invokes `update_tips` when `update_refs` is
+ * unset. Since we always install `update_refs`, the deprecated slot could never
+ * fire; the Go side now dispatches UpdateTipsCallback from update_refs instead.
+ */
+
 
 static int update_refs_callback(
 		const char *refname,
@@ -377,7 +372,6 @@ void _go_git_populate_remote_callbacks(git_remote_callbacks *callbacks)
 	callbacks->completion = completion_callback;
 	callbacks->credentials = credentials_callback;
 	callbacks->transfer_progress = transfer_progress_callback;
-	callbacks->update_tips = update_tips_callback;
 	callbacks->certificate_check = certificate_check_callback;
 	callbacks->pack_progress = pack_progress_callback;
 	callbacks->push_transfer_progress = push_transfer_progress_callback;
@@ -508,12 +502,12 @@ int _go_git_odb_writepack_append(
 		git_odb_writepack *writepack,
 		const void *data,
 		size_t size,
-		git_transfer_progress *stats)
+		git_indexer_progress *stats)
 {
 	return writepack->append(writepack, data, size, stats);
 }
 
-int _go_git_odb_writepack_commit(git_odb_writepack *writepack, git_transfer_progress *stats)
+int _go_git_odb_writepack_commit(git_odb_writepack *writepack, git_indexer_progress *stats)
 {
 	return writepack->commit(writepack, stats);
 }

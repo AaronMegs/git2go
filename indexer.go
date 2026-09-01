@@ -4,8 +4,8 @@ package git
 #include <git2.h>
 
 extern const char * git_indexer_name(const git_indexer *idx);
-extern int git_indexer_append(git_indexer *idx, const void *data, size_t size, git_transfer_progress *stats);
-extern int git_indexer_commit(git_indexer *idx, git_transfer_progress *stats);
+extern int git_indexer_append(git_indexer *idx, const void *data, size_t size, git_indexer_progress *stats);
+extern int git_indexer_commit(git_indexer *idx, git_indexer_progress *stats);
 extern int _go_git_indexer_new(git_indexer **out, const char *path, unsigned int mode, git_odb *odb, int oid_type, void *progress_cb_payload);
 extern void git_indexer_free(git_indexer *idx);
 */
@@ -21,7 +21,7 @@ import (
 type Indexer struct {
 	doNotCompare
 	ptr        *C.git_indexer
-	stats      C.git_transfer_progress
+	stats      C.git_indexer_progress
 	ccallbacks C.git_remote_callbacks
 }
 

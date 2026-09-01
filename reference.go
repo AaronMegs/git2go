@@ -12,8 +12,8 @@ import (
 type ReferenceType int
 
 const (
-	ReferenceSymbolic ReferenceType = C.GIT_REF_SYMBOLIC
-	ReferenceOid      ReferenceType = C.GIT_REF_OID
+	ReferenceSymbolic ReferenceType = C.GIT_REFERENCE_SYMBOLIC
+	ReferenceOid      ReferenceType = C.GIT_REFERENCE_DIRECT
 )
 
 type Reference struct {

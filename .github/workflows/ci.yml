@@ -95,6 +95,12 @@ jobs:
         DEPRECATE_HARD=ON make build-libgit2-static
     - name: Test
       run: make TEST_ARGS=-test.v test-static
+    # Building against a DEPRECATE_HARD=ON libgit2 only proves we do not *link*
+    # deprecated symbols; the headers still declare them. Defining
+    # GIT_DEPRECATE_HARD for cgo additionally proves we do not *reference* any
+    # hard-deprecated type, macro or struct field.
+    - name: Test with GIT_DEPRECATE_HARD defined for cgo
+      run: CGO_CFLAGS=-DGIT_DEPRECATE_HARD make TEST_ARGS=-test.v test-static
 
   build-system-dynamic:
     name: Go (system-wide, dynamic, promoted SHA256 baseline)

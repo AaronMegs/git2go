@@ -11,8 +11,8 @@ extern int _go_git_object_id_from_file(git_oid *out, const char *path, git_objec
 extern int _go_git_odb_foreach(git_odb *db, void *payload);
 extern void _go_git_odb_backend_free(git_odb_backend *backend);
 extern int _go_git_odb_write_pack(git_odb_writepack **out, git_odb *db, void *progress_payload);
-extern int _go_git_odb_writepack_append(git_odb_writepack *writepack, const void *, size_t, git_transfer_progress *);
-extern int _go_git_odb_writepack_commit(git_odb_writepack *writepack, git_transfer_progress *);
+extern int _go_git_odb_writepack_append(git_odb_writepack *writepack, const void *, size_t, git_indexer_progress *);
+extern int _go_git_odb_writepack_commit(git_odb_writepack *writepack, git_indexer_progress *);
 extern void _go_git_odb_writepack_free(git_odb_writepack *writepack);
 */
 import "C"
@@ -534,7 +534,7 @@ func (stream *OdbWriteStream) Free() {
 type OdbWritepack struct {
 	doNotCompare
 	ptr        *C.git_odb_writepack
-	stats      C.git_transfer_progress
+	stats      C.git_indexer_progress
 	ccallbacks C.git_remote_callbacks
 }
 

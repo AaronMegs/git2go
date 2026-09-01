@@ -6,7 +6,7 @@
 >
 > Go module 路径固定为 `github.com/libgit2/git2go/v36`（预发布阶段也不能使用 `/v36-pre`）。
 >
-> 基线：libgit2 `main` @ `939362a3cb575de5f2aaebe1b1732c4ec8c1aebb`。
+> 基线：libgit2 `main` @ `0551dfd4ad989b6a3d5683c0d4cf326c6efef929`。
 >
 > 重要兼容性结论：**libgit2 没有移除 SHA1。** SHA1 仍是 `GIT_OID_DEFAULT`，默认创建的
 > 仓库、`NewOidFromBytes`、`NewIndex`、`NewIndexer` 等仍使用 SHA1。此次变化是让 SHA1 与
@@ -45,6 +45,13 @@
   20 字节 Go 内存布局。C 侧必须使用同一版本 libgit2 的 `git_oid`。
 - 旧 libgit2 1.9.x experimental overload ABI 与 SHA1-only 默认 ABI 均不再被同一构建兼容；
   如需继续支持，应停留在上一版 git2go，而不是与新 typed ABI 混链。
+- `ConfigLevelProgramdata` 不再绑定 C 枚举值。上游已把 `GIT_CONFIG_LEVEL_PROGRAMDATA`
+  从 `git_config_level_t` 中移除，仅在 hard-deprecate 门控后保留为「被忽略」的宏。Go 常量
+  保留（值仍为 `1`）以免破坏编译，但已标注 Deprecated，传入 libgit2 不再有任何效果。
+- `UpdateTipsCallback` 的触发路径改为经由 libgit2 的 `update_refs` 回调分发。此前 git2go
+  无条件注册 `update_refs`，而 libgit2 只在 `update_refs` 未设置时才调用 `update_tips`，
+  导致该回调**实际从未被触发**。修复后它会正常触发；若同时设置了 `UpdateRefsCallback`，
+  则仅调用后者，与上游文档的优先级一致。
 
 ### Build and dependency compatibility
 

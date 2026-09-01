@@ -1,6 +1,6 @@
 # git2go SHA1 / SHA256 兼容性适配设计文档
 
-> **当前状态（基线：libgit2 `main` @ `939362a3`）：SHA256 已在上游转正，第一步代码/构建收敛已完成。**
+> **当前状态（基线：libgit2 `main` @ `0551dfd4`）：SHA256 已在上游转正，第一步代码/构建收敛已完成。**
 > `GIT_EXPERIMENTAL_SHA256` 宏、`EXPERIMENTAL_SHA256` cmake 选项与实验安装布局均已移除；
 > `git_oid` 无条件为 typed 结构，同一构建同时支持 SHA1 与 SHA256，且 SHA1 仍为默认。
 >

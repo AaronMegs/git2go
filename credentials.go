@@ -114,7 +114,7 @@ func (o *Credential) GetUserpassPlaintext() (username, password string, err erro
 		return
 	}
 
-	plaintextCredPtr := (*C.git_cred_userpass_plaintext)(unsafe.Pointer(o.ptr))
+	plaintextCredPtr := (*C.git_credential_userpass_plaintext)(unsafe.Pointer(o.ptr))
 	username = C.GoString(plaintextCredPtr.username)
 	password = C.GoString(plaintextCredPtr.password)
 	return
@@ -127,7 +127,7 @@ func (o *Credential) GetSSHKey() (username, publickey, privatekey, passphrase st
 		return
 	}
 
-	sshKeyCredPtr := (*C.git_cred_ssh_key)(unsafe.Pointer(o.ptr))
+	sshKeyCredPtr := (*C.git_credential_ssh_key)(unsafe.Pointer(o.ptr))
 	username = C.GoString(sshKeyCredPtr.username)
 	publickey = C.GoString(sshKeyCredPtr.publickey)
 	privatekey = C.GoString(sshKeyCredPtr.privatekey)

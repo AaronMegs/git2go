@@ -47,7 +47,7 @@ type TransferProgress struct {
 	ReceivedBytes   uint
 }
 
-func newTransferProgressFromC(c *C.git_transfer_progress) TransferProgress {
+func newTransferProgressFromC(c *C.git_indexer_progress) TransferProgress {
 	return TransferProgress{
 		TotalObjects:    uint(c.total_objects),
 		IndexedObjects:  uint(c.indexed_objects),
@@ -382,7 +382,7 @@ func sidebandProgressCallback(errorMessage **C.char, _str *C.char, _len C.int, h
 }
 
 //export completionCallback
-func completionCallback(errorMessage **C.char, completionType C.git_remote_completion_type, handle unsafe.Pointer) C.int {
+func completionCallback(errorMessage **C.char, completionType C.git_remote_completion_t, handle unsafe.Pointer) C.int {
 	data := pointerHandles.Get(handle).(*remoteCallbacksData)
 	if data.callbacks.CompletionCallback == nil {
 		return C.int(ErrorCodeOK)
@@ -430,37 +430,12 @@ func credentialsCallback(
 }
 
 //export transferProgressCallback
-func transferProgressCallback(errorMessage **C.char, stats *C.git_transfer_progress, handle unsafe.Pointer) C.int {
+func transferProgressCallback(errorMessage **C.char, stats *C.git_indexer_progress, handle unsafe.Pointer) C.int {
 	data := pointerHandles.Get(handle).(*remoteCallbacksData)
 	if data.callbacks.TransferProgressCallback == nil {
 		return C.int(ErrorCodeOK)
 	}
 	err := data.callbacks.TransferProgressCallback(newTransferProgressFromC(stats))
-	if err != nil {
-		if data.errorTarget != nil {
-			*data.errorTarget = err
-		}
-		return setCallbackError(errorMessage, err)
-	}
-	return C.int(ErrorCodeOK)
-}
-
-//export updateTipsCallback
-func updateTipsCallback(
-	errorMessage **C.char,
-	_refname *C.char,
-	_a *C.git_oid,
-	_b *C.git_oid,
-	handle unsafe.Pointer,
-) C.int {
-	data := pointerHandles.Get(handle).(*remoteCallbacksData)
-	if data.callbacks.UpdateTipsCallback == nil {
-		return C.int(ErrorCodeOK)
-	}
-	refname := C.GoString(_refname)
-	a := newOidFromC(_a)
-	b := newOidFromC(_b)
-	err := data.callbacks.UpdateTipsCallback(refname, a, b)
 	if err != nil {
 		if data.errorTarget != nil {
 			*data.errorTarget = err
@@ -480,17 +455,26 @@ func updateRefsCallback(
 	handle unsafe.Pointer,
 ) C.int {
 	data := pointerHandles.Get(handle).(*remoteCallbacksData)
-	if data.callbacks.UpdateRefsCallback == nil {
+	if data.callbacks.UpdateRefsCallback == nil && data.callbacks.UpdateTipsCallback == nil {
 		return C.int(ErrorCodeOK)
 	}
 	refname := C.GoString(_refname)
 	a := newOidFromC(_a)
 	b := newOidFromC(_b)
-	var spec *Refspec
-	if _spec != nil {
-		spec = newRefspecFromC(_spec)
+
+	var err error
+	if data.callbacks.UpdateRefsCallback != nil {
+		var spec *Refspec
+		if _spec != nil {
+			spec = newRefspecFromC(_spec)
+		}
+		err = data.callbacks.UpdateRefsCallback(refname, a, b, spec)
+	} else {
+		// libgit2 hard-deprecated the update_tips callback and never invokes it
+		// while update_refs is installed, so dispatch the legacy callback here.
+		// The refspec is not part of its signature and is therefore dropped.
+		err = data.callbacks.UpdateTipsCallback(refname, a, b)
 	}
-	err := data.callbacks.UpdateRefsCallback(refname, a, b, spec)
 	if err != nil {
 		if data.errorTarget != nil {
 			*data.errorTarget = err

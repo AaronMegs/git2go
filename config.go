@@ -12,8 +12,14 @@ import (
 type ConfigLevel int
 
 const (
-	// System-wide on Windows, for compatibility with portable git
-	ConfigLevelProgramdata ConfigLevel = C.GIT_CONFIG_LEVEL_PROGRAMDATA
+	// ConfigLevelProgramdata was system-wide configuration on Windows for
+	// compatibility with portable git. libgit2 removed this level from
+	// git_config_level_t and now ignores it; the constant is kept only so
+	// existing callers still compile, and its value is the literal that
+	// upstream retains solely in its deprecated header.
+	//
+	// Deprecated: this level is ignored by libgit2.
+	ConfigLevelProgramdata ConfigLevel = 1
 
 	// System-wide configuration file; /etc/gitconfig on Linux systems
 	ConfigLevelSystem ConfigLevel = C.GIT_CONFIG_LEVEL_SYSTEM

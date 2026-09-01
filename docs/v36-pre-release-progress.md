@@ -4,7 +4,7 @@
 >
 > 预发布标签：`v36.0.0-pre.N`
 >
-> libgit2 基线：promoted-SHA256 `main @ 939362a3cb575de5f2aaebe1b1732c4ec8c1aebb`
+> libgit2 基线：promoted-SHA256 `main @ 0551dfd4ad989b6a3d5683c0d4cf326c6efef929`
 
 本文件按执行顺序记录 v36-pre 发布准备工作、验证证据和仍受外部条件阻塞的事项。
 
@@ -21,6 +21,8 @@
 | 7 | 等待上游正式版本、更新守卫和跨平台正式包验证 | ⏸ 外部阻塞（最新正式版仍为 v1.9.6） |
 | 8 | 绑定 `git_object_id_from_file` 文件路径类型化 hash | ✅ 已完成 |
 | 9 | 修复 Go 1.14+ 自动 vendor 模式导致的 GitHub CI 全任务失败 | ✅ 已完成 |
+| 10 | 升级 libgit2 pin 至 `0551dfd4` 并清除全部 hard-deprecated 依赖 | ✅ 已完成 |
+| 11 | 修复本地默认（dynamic）配置无法解析 promoted libgit2 | ✅ 已完成 |
 
 ---
 
@@ -260,7 +262,7 @@ CI 升级到 Go 1.18/stable 后因此把 `vendor/` 视为 Go vendor tree，并�
 依赖升级应执行 `make vendor-go`，避免 `go mod vendor` 清空 C 子模块工作树。最终 vendor tree
 同时包含：
 
-- `vendor/libgit2`：C 子模块（pin `939362a3`）；
+- `vendor/libgit2`：C 子模块（pin 当时为 `939362a3`，第 10 节起为 `0551dfd4`）；
 - `vendor/github.com/google/shlex`；
 - `vendor/golang.org/x/crypto`、`x/sys`；
 - `vendor/modules.txt`：三个 Go module 均标记 `explicit`。
@@ -277,3 +279,145 @@ CI 升级到 Go 1.18/stable 后因此把 `vendor/` 视为 Go vendor tree，并�
 - `go list -mod=vendor all` → 215 个 package；
 - `go test -tags static --count=1 ./...` → 全量通过；
 - `go mod verify` → `all modules verified`。
+
+---
+
+## 10. libgit2 pin 升级与 hard-deprecated 依赖清零 — ✅ 已完成
+
+### 升级动因
+
+对照上游 `main` 最新提交发现 pin `939362a3` 落后 57 个 commit，缺少两个安全修复：
+
+- `5948ef3` **CVE-2026-5917**：`ssh_libssh2.c` 的 `gen_proto()` 未转义仓库路径，存在
+  SSH 命令注入。git2go 的 Go managed SSH 早已独立修复同类问题且更严格，因此 Go 侧不受影响；
+  但使用 libgit2 自带 SSH transport 的用户必须升级 pin 才能获得修复。
+- `5254f5dc` **zstream**：截断的 zlib 流会导致无限循环，可被恶意 loose object 触发 DoS。
+
+### API 影响评估
+
+`939362a3..0551dfd4` 的公共头文件变更仅两处，均不破坏现有绑定：
+
+- `include/git2/index.h`：新增 `git_index_extension_lookup/add/remove`（纯追加）；
+- `include/git2/sys/refdb_backend.h`：仅 `@param` 文档名修正。
+
+`oid.h` 与 `object.h` **零变更**，`GIT_OID_DEFAULT` 仍为 SHA1，SHA256 仍默认启用
+（`experimental.h` 已是空 stub，CMake 仅保留 `USE_SHA256` provider 选择）。因此 SHA256
+适配无需改动。pin 已更新为 `0551dfd4ad989b6a3d5683c0d4cf326c6efef929`。
+
+### 关键发现：此前的 hard-deprecated 审计不充分
+
+原审计只做 `DEPRECATE_HARD=ON` 构建 libgit2 再跑测试。该方式只能证明 git2go 未**链接**
+弃用符号——因为 `libgit2.pc` 的 `Cflags` 不含 `-DGIT_DEPRECATE_HARD`，头文件仍向 git2go
+暴露全部弃用声明。补充 `CGO_CFLAGS=-DGIT_DEPRECATE_HARD` 后暴露出 6 类真实依赖：
+
+| 位置 | 弃用别名 | 正式名 |
+| --- | --- | --- |
+| 三个 `Build_*.go` | `LIBGIT2_VER_MAJOR` / `LIBGIT2_VER_MINOR` | `LIBGIT2_VERSION_MAJOR` / `LIBGIT2_VERSION_MINOR` |
+| `credentials.go` | `git_cred_userpass_plaintext`、`git_cred_ssh_key` | `git_credential_userpass_plaintext`、`git_credential_ssh_key` |
+| `indexer.go`、`odb.go`、`remote.go`、`wrapper.c` | `git_transfer_progress` | `git_indexer_progress` |
+| `reference.go` | `GIT_REF_OID`、`GIT_REF_SYMBOLIC` | `GIT_REFERENCE_DIRECT`、`GIT_REFERENCE_SYMBOLIC` |
+| `revparse.go` | `GIT_REVPARSE_*` | `GIT_REVSPEC_*` |
+| `remote.go`、`wrapper.c` | `git_remote_completion_type` | `git_remote_completion_t` |
+
+版本守卫这一项尤其危险：`LIBGIT2_VER_*` 位于 `deprecated.h` 的 `#ifndef GIT_DEPRECATE_HARD`
+内，缺失时预处理器把它当 `0`，守卫会静默退化并误报版本不符。因此除改用正式宏外，还先用
+`#if !defined(...)` 显式检查宏是否存在，缺失时给出明确错误。
+
+### 连带修复：`UpdateTipsCallback` 从未触发
+
+`git_remote_callbacks.update_tips` 已被 hard-deprecate。查证 `remote.c` 确认 libgit2 的调用
+优先级是 `if (update_refs) ... else if (update_tips)`，而 git2go 在
+`_go_git_populate_remote_callbacks` 中**无条件**注册 `update_refs`，因此弃用槽位永远不会被
+调用——公开的 `UpdateTipsCallback` 实际是死代码。
+
+修复方式：移除 C 侧 `update_tips` 注册与其 shim，改由 Go 的 `updateRefsCallback` 在
+`UpdateRefsCallback` 为 nil 时回退分发 `UpdateTipsCallback`（其签名不含 refspec，故丢弃该参数）。
+这同时消除了硬弃用依赖并让该回调恢复可用。
+
+### `ConfigLevelProgramdata` 处理
+
+`GIT_CONFIG_LEVEL_PROGRAMDATA` 已被上游从 `git_config_level_t` 移除，仅作为「被忽略」的宏保留在
+`deprecated.h`，**没有正式替代**。为避免破坏下游编译，Go 常量保留并固定为字面量 `1`，同时标注
+Deprecated 并说明 libgit2 会忽略该级别。
+
+### CI 强化
+
+`build-static-deprecate-hard` job 在原有 `DEPRECATE_HARD=ON` 构建之后，新增一步
+`CGO_CFLAGS=-DGIT_DEPRECATE_HARD make test-static`，把审计从链接期提升到编译期，防止回归。
+
+### pin 升级验证
+
+- 新 pin 源码中确认存在 `git_str_puts_escaped(request, repo, ...)` 与 zstream 截断处理；
+- 版本头仍报告 1.9.0，现有能力宏守卫策略保持有效；
+- 默认（`DEPRECATE_HARD=OFF`）bundled-static 全量测试通过；
+- `DEPRECATE_HARD=ON` 构建 + 全量测试通过；
+- `CGO_CFLAGS=-DGIT_DEPRECATE_HARD` 编译期审计 + 全量测试通过；
+- SHA256/Oid/HashFile/SSH/Push 定向测试全部通过；
+- 新增 `remote_update_callbacks_test.go`：`TestUpdateTipsCallbackIsInvokedViaUpdateRefs`
+  证明回调可触发，`TestUpdateRefsCallbackTakesPrecedenceOverUpdateTips` 证明优先级语义；
+- `go run script/check-MakeGitError-thread-lock.go` 通过。
+
+---
+
+## 11. 本地开发环境：默认（dynamic）配置无法解析 — ✅ 已完成
+
+### 现象与根因
+
+编辑器与 `go list` 在**默认标签**（无 `static`）下会通过 `pkg-config libgit2` 找到本机系统库。本机是
+Homebrew **libgit2 1.9.7**（release），实测缺少 git2go 已强依赖的 `git_object_id_options`、
+`git_object_id_from_buffer`、`git_object_id_from_file`、`git_oid_from_prefix`，于是
+`Build_system_dynamic.go` 的能力守卫触发 `#error`，并连带使 `remote.go` 等文件出现数百条
+`undefined: C.*`。
+
+该现象是守卫**正确工作**的结果，不是源码缺陷：已用改动前的守卫原文对同一系统库预处理验证，
+同样触发，因此与本轮改动无关。
+
+### 处理方式
+
+在项目内独立前缀构建并安装 promoted libgit2，**不触碰 Homebrew 现有安装**：
+
+```sh
+SYSTEM_INSTALL_PREFIX="$PWD/system-build-promoted" \
+  ./script/build-libgit2.sh --dynamic --system
+```
+
+安装结果确认齐备：`GIT_OID_SHA256_SIZE`、`GIT_OBJECT_ID_OPTIONS_VERSION`、
+`GIT_INDEX_OPTIONS_VERSION`、`GIT_DIFF_PARSE_OPTIONS_VERSION`、`LIBGIT2_VERSION_MAJOR/MINOR`
+以及四个 promoted API 全部 present。
+
+### 为什么不替换 Homebrew 的 libgit2
+
+评估后放弃全局替换。本机 `bat` 与 `eza` 均链接 `libgit2.1.9.dylib`，而 promoted 版与 1.9.7 的
+`git_oid` ABI 不兼容（typed 结构 vs 旧 20 字节）。替换 Homebrew 链接会让这两个工具加载
+ABI 不匹配的库，存在崩溃风险，代价高于收益。
+
+### 编辑器配置
+
+编辑器配置属于个人偏好，**不纳入版本控制**：`.vscode/` 已加入 `.gitignore`。在本地创建
+`.vscode/settings.json`，让 Go 工具链使用与 `make test-static`、CI 相同的 bundled static
+配置，并为默认 dynamic 配置保留 promoted 前缀作为回退：
+
+```json
+{
+  "go.buildTags": "static",
+  "gopls": { "build.buildFlags": ["-tags=static"] },
+  "go.toolsEnvVars": {
+    "PKG_CONFIG_PATH": "${workspaceFolder}/system-build-promoted/lib/pkgconfig",
+    "CGO_LDFLAGS": "-Wl,-rpath,${workspaceFolder}/system-build-promoted/lib"
+  }
+}
+```
+
+两处路径均使用 `${workspaceFolder}`，可移植。JetBrains 系可在 Go 构建标签中填 `static`，
+等效。
+
+`system-build-promoted/` 同样已加入 `.gitignore`（并补上 `.idea`、`.codebuddy`、`.vscode/`，
+修复原文件缺失的行尾换行）。
+
+### 环境修复验证
+
+- `go vet -tags static ./...`：通过（仅剩 git2go 既有的 `unsafe.Pointer`/`SliceHeader` 告警）；
+- `PKG_CONFIG_PATH=<promoted> go build ./...`：默认标签编译通过；
+- `PKG_CONFIG_PATH=<promoted> CGO_LDFLAGS=-Wl,-rpath,<promoted>/lib go test ./...`：
+  默认 dynamic 链接模式全量测试通过（macOS SIP 会剥离 `DYLD_LIBRARY_PATH`，必须用 rpath）；
+- Homebrew libgit2 1.9.7 保持原状，`bat`/`eza` 不受影响。
