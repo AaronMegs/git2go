@@ -11,6 +11,7 @@
 > - **第一轮（06-30）**：vendor 升到 `32b564e63`（含 PR #7117），绑定 `git_repository_init_ext` + `RepositoryInitOptions`（含 `refdb_type`）+ `git_refdb_t` 枚举，产出本报告初版与 3 个 init 冒烟测试。
 > - **第二轮（07-29）**：vendor 升到当时的 main `ddf3b5c85`（含 reftable 更新 PR #7327），补齐 refdb/reftable 直接公开函数绑定并扩展测试。
 > - **整合轮（08-05）**：vendor `939362a3c`，完成 promoted typed OID、bridge v2、reflog/transaction、SHA1/SHA256 × files/reftable 四组合、static/dynamic/race/DEPRECATE_HARD 验证，并切换到 `/v36` + `v36.0.0-pre.N` 发布线。
+> - **升级轮（09-01）**：vendor 升到 main `0551dfd4a`（含 CVE-2026-5917 等三项安全修复）。reftable/refdb 公开 API 与 `git_oid` ABI 均无变化，全量回归用例数与升级前一致。
 
 ---
 
@@ -39,7 +40,8 @@
 | `v1.9.4`（最新发布） | **否** |
 | `main` `32b564e63`（第一轮 vendor） | 是（PR #7117） |
 | `main` `ddf3b5c85`（第二轮 vendor） | 是（PR #7117 + #7327 修复） |
-| `main` `939362a3c`（**当前 vendor**） | 是（含 SHA256 转正；v36 typed `Oid` 已适配并通过四组合） |
+| `main` `939362a3c`（整合轮 vendor） | 是（含 SHA256 转正；v36 typed `Oid` 已适配并通过四组合） |
+| `main` `0551dfd4a`（**当前 vendor**） | 是（reftable 实现与 `deps/reftable` 相对 `939362a3c` 零改动；含 CVE-2026-5917 等安全修复） |
 
 > **重要**：reftable 目前仅存在于未发布的 main 分支，所有 1.9.x 发布版均不含。任何依赖 reftable 的工程都必须自行构建 main，并接受其 API 与 ABI 的不稳定性。
 
@@ -354,7 +356,7 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 ### 5.1 已完成（截至第二轮 07-29）
 
 - ✅ 第二轮 vendor 升级到含 reftable 的 main `ddf3b5c85` 并完成当时的重建/回归。
-- ✅ 当前 vendor 已进一步升级到 `939362a3c`，v36 typed `Oid` 与 promoted ABI 守卫已完成，static/dynamic 和四组合验证通过。
+- ✅ vendor 已由 `939362a3c` 进一步升级到 `0551dfd4a`（当前），v36 typed `Oid` 与 promoted ABI 守卫已完成，static/dynamic 和四组合验证通过。
 - ✅ 完整 `RepositoryInitOptions` + `InitRepositoryExt`（含 `refdb_type`）。
 - ✅ refdb/reftable 直接公开函数及 17-callback backend bridge v2（含 iterator/transaction 生命周期）已完成。
 - ✅ 特性探测助手 `IsReftableSupported()`、后端识别 `RefStorageFormat()`。
@@ -363,7 +365,7 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 ### 5.2 短期（下一个 PR 周期）
 
 1. **构建脚本适配 main** ✅ 已完成
-   - `script/build-libgit2.sh` 已适配 main、支持 DEPRECATE_HARD 审计，并通过 vendored include 普通 `-I` 消除 xdiff 的系统头污染。当前 `939362a3c` static/dynamic 构建均通过。
+   - `script/build-libgit2.sh` 已适配 main、支持 DEPRECATE_HARD 审计，并通过 vendored include 普通 `-I` 消除 xdiff 的系统头污染。当前 `0551dfd4a` static/dynamic 构建均通过。
 
 2. **CI 矩阵** ✅ 已完成
    - `.github/workflows/ci.yml` 的 v36 轨道构建 bundled/system main，覆盖 reftable/refdb/transaction 与 race；真实 v1.9.4 用作 promoted ABI guard 的负向测试，v35 维护线负责旧 ABI。
@@ -414,11 +416,11 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
    - 无 build tag（reflog 在 v1.9.x 也存在），复用现有 `Signature.toC` / `newSignatureFromC` / `newOidFromC` / `Oid.toC` / `cbool`。
    - 测试：`reflog_test.go` 三个用例覆盖 read+entries、append+write+drop+持久化、rename+delete 完整生命周期。
 
-3. **完整反向探测能力**（`GIT_FEATURE_REFTABLE`）：⏸️ **已调研，上游仍未提供** —— 上游 main `939362a3c` 的 `git_feature_t` 最大值仍为 `GIT_FEATURE_HTTP`。现有三层探测（build tag + `IsReftableSupported()` + `RefStorageFormat()`）已是最优方案，无需改动。详见 [reftable-longterm-research.md §1](./reftable-longterm-research.md)。
+3. **完整反向探测能力**（`GIT_FEATURE_REFTABLE`）：⏸️ **已调研，上游仍未提供** —— 上游 main `0551dfd4a` 的 `git_feature_t` 最大值仍为 `GIT_FEATURE_HTTP`。现有三层探测（build tag + `IsReftableSupported()` + `RefStorageFormat()`）已是最优方案，无需改动。详见 [reftable-longterm-research.md §1](./reftable-longterm-research.md)。
 4. **per-worktree 引用语义**：⏸️ **已调研，仍为内部 API** —— `git_reference__is_per_worktree_ref` 位于 `src/libgit2/refs.h:108`（非公开），且上游正收紧符号可见性，不应绑定。可选替代：Go 侧按 git 约定自行实现。详见 [reftable-longterm-research.md §2](./reftable-longterm-research.md)。
 5. **SHA-256 与 reftable 组合**：✅ **上游已解锁**，但 ⚠️ **触发 git2go `Oid` ABI 破坏性变更** —— 上游 PR #7261 已将 SHA256 转正（`GIT_EXPERIMENTAL_SHA256` 从公开头文件移除），`git_oid` 由 20 字节变为 33 字节（新增 `type` 字段 + `id[32]`，`GIT_OID_MAX_SIZE` 由 20 变 32），而 git2go 的 `Oid [20]byte` 直接 `unsafe.Pointer` 强转为 `*C.git_oid` 会**越界破坏内存**。reftable 后端已原生支持 `REFTABLE_HASH_SHA256`。落地需分三阶段（编译期尺寸守卫 → `Oid` 重构 → 组合测试矩阵）。详见 [reftable-longterm-research.md §3](./reftable-longterm-research.md)。
 
-> ✅ **当前迁移状态（2026-08-05）**：vendor 已升级到 `939362a3c`；v36 已采用 33 字节 typed `Oid` 方案并统一 `OidType + RefdbType` 初始化。SHA1/SHA256 × files/reftable 四组合、static/dynamic、race 定向和 DEPRECATE_HARD=ON 验证均通过。
+> ✅ **当前迁移状态（2026-09-01）**：vendor 已升级到 `0551dfd4a`；v36 已采用 33 字节 typed `Oid` 方案并统一 `OidType + RefdbType` 初始化。SHA1/SHA256 × files/reftable 四组合、static/dynamic、race 和 DEPRECATE_HARD=ON 验证均通过。
 
 ---
 
@@ -426,7 +428,7 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 
 | 风险 | 缓解措施 |
 | --- | --- |
-| main 不稳定，API/ABI 可能再变 | vendor 现 pin 到 `939362a3c`，不随 main 自动滚动。PR #7327 证明 reftable 实现在演进；PR #7261 的 SHA256 转正更直接改变 `git_oid` ABI，当前已由尺寸守卫阻止不安全构建。 |
+| main 不稳定，API/ABI 可能再变 | vendor 现 pin 到 `0551dfd4a`，不随 main 自动滚动；每次升级前先 diff `include/` 与 `deps/reftable`。PR #7327 证明 reftable 实现在演进；PR #7261 的 SHA256 转正更直接改变 `git_oid` ABI，当前已由尺寸守卫阻止不安全构建。 |
 | 用户原先使用 v1.9.x 系统库 | `RepositoryInitOptions.RefdbType=0`（默认）行为与旧 `InitRepository` 等价；不主动启用 reftable。 |
 | 未启用 reftable 时的开销 | 零运行时开销：仅多了一个 init options 字段，C 端为 0 时走默认分支。 |
 | 文档/用户期望错配 | 在 GoDoc 与本文档明确：reftable 需 master 构建，发布版不可用。 |

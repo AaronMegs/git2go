@@ -60,7 +60,7 @@ migration guide.
 ### Changed
 
 - Pinned vendored libgit2 to promoted-SHA256 main commit
-  `939362a3cb575de5f2aaebe1b1732c4ec8c1aebb`.
+  `0551dfd4ad989b6a3d5683c0d4cf326c6efef929`.
 - Collapsed all experimental and legacy-overload C shims to libgit2's promoted
   typed/options/`_ext` API.
 - Build-time capability guards now reject incompatible libgit2 headers even
@@ -77,6 +77,9 @@ migration guide.
   and rejected if they contain control characters or option-like forms.
 - Added URL/SCP-like parsing and quoting tests for apostrophes, command
   substitution, shell metacharacters, percent encoding, IPv6 and control bytes.
+- Picked up upstream libgit2 fixes by advancing the vendored pin: CVE-2026-5917
+  (unescaped repository path in `gen_proto()`), an infinite loop on truncated
+  zlib streams, and a signed-integer overflow in `config_parse_int64`.
 
 ### Fixed
 

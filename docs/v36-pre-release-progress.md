@@ -4,7 +4,7 @@
 >
 > 预发布标签：`v36.0.0-pre.N`
 >
-> libgit2 基线：promoted-SHA256 `main @ 939362a3cb575de5f2aaebe1b1732c4ec8c1aebb`
+> libgit2 基线：promoted-SHA256 `main @ 0551dfd4ad989b6a3d5683c0d4cf326c6efef929`
 
 本文件按执行顺序记录 v36-pre 发布准备工作、验证证据和仍受外部条件阻塞的事项。
 
@@ -22,6 +22,7 @@
 | 8 | 绑定 `git_object_id_from_file` 文件路径类型化 hash | ✅ 已完成 |
 | 9 | 修复 Go 1.14+ 自动 vendor 模式导致的 GitHub CI 全任务失败 | ✅ 已完成 |
 | 10 | `feat-reftable` 分支收敛：自动 vendor 模式、线程锁检查、动态链接可移植性、managed HTTP 竞态 | ✅ 已完成 |
+| 11 | vendor 升级到 main `0551dfd4a`（含 CVE-2026-5917 等三项安全修复） | ✅ 已完成 |
 
 ---
 
@@ -357,10 +358,10 @@ dyld[...]: Library not loaded: @rpath/libgit2.1.9.dylib
 ```go
 // 修复前
 func (self *httpSmartSubtransportStream) sendRequestBackground() {
-	go func() {
-		self.httpError = self.sendRequest() // 赋值发生在 recvReply.Done() 之后
-	}()
-	self.sentRequest = true
+    go func() {
+        self.httpError = self.sendRequest() // 赋值发生在 recvReply.Done() 之后
+    }()
+    self.sentRequest = true
 }
 ```
 
@@ -414,3 +415,70 @@ func (self *httpSmartSubtransportStream) sendRequestBackground() {
 | `reject-legacy-v1-9-4`（ABI 守卫负向测试） | 需 `git -C vendor/libgit2 fetch --tags` 并临时 checkout `v1.9.4` 重建，会改动 vendor 工作树与 `static-build/` |
 | `build-system-static` / `build-system-dynamic-main` | 需 `sudo ./script/build-libgit2.sh --system` 写入 `/usr` |
 | `check-generate` | 需联网 `go install golang.org/x/tools/cmd/stringer@v0.1.12`（本机未安装） |
+
+---
+
+## 11. vendor 升级到 main `0551dfd4a` — ✅ 已完成
+
+```text
+939362a3c (2026-08-03)  →  0551dfd4a (2026-08-15)   落后 57 个提交
+```
+
+### 11.1 升级动因：三项安全/健壮性修复
+
+| 提交 | 问题 |
+| --- | --- |
+| `5948ef380` | **CVE-2026-5917**：`gen_proto()` 未转义仓库路径 |
+| `5254f5dc4` | 截断的 zlib 流导致 `zstream` **无限循环**（而非报错） |
+| `1e9bbdc06` | `config_parse_int64` 有符号整数溢出 |
+
+其中 zstream 无限循环对以 git2go 处理不可信仓库的服务端场景影响最直接。
+
+### 11.2 兼容性审查（升级前完成）
+
+先审查再切换，确认 57 个提交不触及本项目依赖的 ABI 与 API 面：
+
+| 检查项 | 结论 |
+| --- | --- |
+| `include/git2/oid.h` | **无变化** —— promoted typed `git_oid` ABI 稳定，`git2go_version_check.h` 的布局断言继续成立 |
+| `include/git2/version.h` | 无变化（仍 `1.9.0`），版本守卫无需调整 |
+| `include/git2/refdb.h`、`repository.h` | 无变化 |
+| `include/git2/sys/refdb_backend.h` | 仅 2 处 doc `@param` 名称修正，无签名变更 |
+| `deps/reftable`、`src/libgit2/refdb_reftable.c`、`refdb.c` | **零改动** —— 本轮 reftable 适配完全不受影响 |
+| `include/git2/merge.h` | 无变化。尽管有 40+ 个 octopus merge 提交，`git_merge()` 签名未变，现有 `Merge` 绑定无需改动 |
+| `include/git2/index.h` | **新增 3 个公开函数**（见 §11.4） |
+
+公开头文件的全部改动仅 2 个文件、44 行，其中 42 行是 `index.h` 新增。
+
+### 11.3 验证矩阵（vendor `0551dfd4a`）
+
+为避免旧头文件或对象残留导致误判，先 `rm -rf static-build dynamic-build` 再全新构建。
+
+| # | 轨道 | 结果 |
+| --- | --- | --- |
+| 1 | 静态库全新构建 | PASS |
+| 2 | 动态库全新构建 | PASS |
+| 3 | 线程锁检查 | PASS |
+| 4 | vet / build（双 tag） | PASS |
+| 5 | **静态全量** | **201 PASS / 0 FAIL / 0 SKIP** |
+| 6 | **动态全量** | **201 PASS / 0 FAIL / 0 SKIP** |
+| 7 | 无 tag 全量 | PASS |
+| 8 | **静态竞态全量** | PASS（0 DATA RACE） |
+| 9 | reftable/refdb/SHA256/格式矩阵定向 | 38 用例全 PASS（含 SHA1/SHA256 × files/reftable 四组合） |
+| 10 | `DEPRECATE_HARD=ON` 重建 + 全量 | 构建 PASS、**201 PASS / 0 FAIL** |
+| 11 | 恢复默认产物 + 复测 | PASS |
+
+用例总数与升级前完全一致（201），无新增跳过，说明本次升级对绑定行为无影响。
+
+### 11.4 待办：`git_index_extension_*` 尚未绑定
+
+上游 PR #7176 新增了任意 index extension 读写能力：
+
+```c
+GIT_EXTERN(int) git_index_extension_lookup(git_buf *out, git_index *index, const char *signature);
+GIT_EXTERN(int) git_index_extension_add(git_index *index, const char *signature, const char *data, size_t data_len);
+GIT_EXTERN(int) git_index_extension_remove(git_index *index, const char *signature);
+```
+
+这是**新增能力而非破坏性变更**，不阻塞本次升级，因此未与 vendor 提交混做。后续单独绑定时需注意
+`git_buf` 的释放约定（复用现有 `Buf`/`newBufFromC` 模式）与 4 字符 signature 的入参校验。
