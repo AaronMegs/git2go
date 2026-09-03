@@ -235,11 +235,15 @@ func (t RefdbType) String() string {
 }
 
 // RefStorageFormat reports which reference storage backend the repository is
-// using, by reading the `extensions.refStorage` configuration entry.
+// actually using.
 //
-// A repository without that extension set uses the traditional files backend,
-// so this returns RefdbFiles in that case. A value of "reftable" maps to
-// RefdbReftable.
+// The result mirrors how libgit2 itself decides, which is not simply "read
+// extensions.refStorage": that extension is only honoured when
+// core.repositoryformatversion is at least 1. For version 0 (also the value
+// used when the key is absent) libgit2 ignores the extension entirely and
+// forces the files backend, so a version-0 repository that declares
+// `extensions.refStorage = reftable` is still a files repository — and this
+// reports RefdbFiles for it.
 //
 // This is the recommended way to detect reftable repositories at runtime,
 // since libgit2 does not expose a GIT_FEATURE_REFTABLE feature flag.
@@ -249,6 +253,19 @@ func (v *Repository) RefStorageFormat() (RefdbType, error) {
 		return RefdbDefault, err
 	}
 	defer cfg.Free()
+
+	// Mirror libgit2's gate: extensions are only consulted for
+	// repositoryformatversion >= 1. A missing key means version 0.
+	version, err := cfg.LookupInt32("core.repositoryformatversion")
+	if err != nil {
+		if !IsErrorCode(err, ErrorCodeNotFound) {
+			return RefdbDefault, err
+		}
+		version = 0
+	}
+	if version < 1 {
+		return RefdbFiles, nil
+	}
 
 	val, err := cfg.LookupString("extensions.refStorage")
 	if err != nil {
@@ -265,8 +282,14 @@ func (v *Repository) RefStorageFormat() (RefdbType, error) {
 	case "files", "":
 		return RefdbFiles, nil
 	default:
-		// Unknown/future value: surface it to the caller as files-compatible
-		// default rather than guessing, but do not error.
-		return RefdbFiles, nil
+		// Unreachable in practice: with version >= 1 libgit2 rejects an unknown
+		// refStorage value in git_repository_open, so no Repository handle can
+		// exist for one. Report an error rather than guessing a backend, so a
+		// future format is never silently mistaken for files.
+		return RefdbDefault, &GitError{
+			Message: "unknown reference storage format '" + val + "'",
+			Class:   ErrorClassRepository,
+			Code:    ErrorCodeInvalid,
+		}
 	}
 }

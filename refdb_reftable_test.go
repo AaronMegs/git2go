@@ -68,6 +68,58 @@ func TestRefStorageFormatFiles(t *testing.T) {
 	}
 }
 
+// TestRefStorageFormatHonoursFormatVersion pins down that RefStorageFormat
+// reports the backend libgit2 actually uses, not whatever extensions.refStorage
+// happens to say.
+//
+// libgit2 only consults that extension when core.repositoryformatversion >= 1
+// (repository.c gates load_refstorage_format on it and otherwise hard-sets
+// GIT_REFDB_FILES). A version-0 repository declaring reftable is therefore
+// still a files repository; reporting RefdbReftable for it would send callers
+// down the wrong path — e.g. skipping transactions that in fact work fine.
+func TestRefStorageFormatHonoursFormatVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		version    string
+		refStorage string
+		want       RefdbType
+	}{
+		// version 0 => extension ignored, files forced by libgit2.
+		{"v0-declares-reftable", "0", "reftable", RefdbFiles},
+		{"v0-declares-files", "0", "files", RefdbFiles},
+		// version 1 => extension honoured.
+		{"v1-declares-files", "1", "files", RefdbFiles},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, err := ioutil.TempDir("", "git2go-refstorage-gate")
+			checkFatal(t, err)
+			defer os.RemoveAll(dir)
+
+			repoPath := filepath.Join(dir, "repo")
+			repo, err := InitRepository(repoPath, true)
+			checkFatal(t, err)
+
+			cfg, err := repo.Config()
+			checkFatal(t, err)
+			checkFatal(t, cfg.SetString("core.repositoryformatversion", tc.version))
+			checkFatal(t, cfg.SetString("extensions.refStorage", tc.refStorage))
+			cfg.Free()
+			repo.Free()
+
+			reopened, err := OpenRepository(repoPath)
+			checkFatal(t, err)
+			defer reopened.Free()
+
+			got, err := reopened.RefStorageFormat()
+			checkFatal(t, err)
+			if got != tc.want {
+				t.Fatalf("RefStorageFormat() = %v, want %v (version=%s, refStorage=%q)",
+					got, tc.want, tc.version, tc.refStorage)
+			}
+		})
+	}
+}
+
 // TestRefStorageFormatReftable verifies detection on a reftable repo.
 func TestRefStorageFormatReftable(t *testing.T) {
 	repo, dir := newReftableRepo(t)
