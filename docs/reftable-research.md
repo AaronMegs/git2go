@@ -433,6 +433,7 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 | 级别 | 问题 | 修复 |
 | --- | --- | --- |
 | P0 | **Transaction 在 reftable 上不可用，但文档声称"透明"** | 见 §5.5.1 |
+| P0 | **`RefStorageFormat()` 会误报后端** | 见 §5.5.2 |
 | P1 | `TestRepositoryRefdb` 的 files 覆盖被 reftable 跳过吞掉 | 拆为 `t.Run("files")` / `t.Run("reftable")` 子测试 |
 | P1 | `IsReftableSupported()` 每次调用都建删仓库 | `sync.Once` 缓存（链接库能力在进程内不可变） |
 | P2 | GoDoc 引用 3 处不存在的文件名 | `refdb_noreftable.go` ×2、`repository_reftable.go` / `repository_noreftable.go` → 实际 `reftable_on.go` / `reftable_off.go` |
@@ -465,19 +466,63 @@ unchanged — reftable is a transparent backend"，该表述对 Transaction 不�
    `TestFilesTransactionSupported`（确保前者不是因为 transaction 全局失效才通过）。
    一旦上游实现 reftable transaction API，前者会失败并提示更新文档，避免留下过期告警。
 
+##### 5.5.2 P0：`RefStorageFormat()` 会误报后端
+
+初次审计把这一项记为 P2「未知值静默降级为 files，且因 libgit2 会先拒绝而不可达」。
+**实测推翻了该判定**，并暴露出一个更严重的问题。
+
+libgit2 的真实逻辑（`repository.c:1058-1065`）是：
+
+```c
+if (version > 0) {
+        load_objectformat(...); load_refstorage_format(...);   /* 读 extensions.* */
+} else {
+        repo->oid_type = GIT_OID_DEFAULT;
+        repo->refdb_type = GIT_REFDB_FILES;                    /* 强制 files，忽略配置 */
+}
+```
+
+即 `extensions.refStorage` **仅在 `core.repositoryformatversion >= 1` 时才生效**
+（键缺失时 version 取 0，见 `check_repositoryformatversion`）。`check_extensions` 同样在
+`version < 1` 时直接返回 0，所以未知值在 version 0 下**根本不会被校验**。
+
+实测三组（vendor `0551dfd4a`）：
+
+| version | `extensions.refStorage` | `OpenRepository` | 修复前 `RefStorageFormat()` | 实际后端 |
+| --- | --- | --- | --- | --- |
+| 1 | `garbage` | ❌ `unknown refstorage format 'garbage'` | 不可达 | — |
+| 0 | `garbage` | ✅ 成功 | `files` | files |
+| 0 | **`reftable`** | ✅ 成功 | **`reftable`** ❌ | **files**（磁盘无 `reftable/` 目录） |
+
+第三行是真正的缺陷：仓库实际是 files，`RefStorageFormat()` 却报 reftable。这会误导调用方
+走错分支——例如依据它跳过本来完全可用的 transaction（见 §5.5.1）。原因是该函数只读 config，
+没有复刻 libgit2 的 formatversion 门控。
+
+修复：先读 `core.repositoryformatversion`，`< 1` 时直接返回 `RefdbFiles`（与 libgit2 的
+else 分支一致），仅 `>= 1` 才解析 `extensions.refStorage`。未知值分支同时由「静默返回 files」
+改为返回错误——该分支在 version ≥ 1 时确实不可达（libgit2 已先拒绝），但保留防御性错误，
+避免将来出现新格式时被误当作 files。
+
+新增 `TestRefStorageFormatHonoursFormatVersion` 钉住该门控语义（含 version 0 声称 reftable
+的关键用例）。
+
 #### 不属于缺口
 
 | 项 | 判定 |
 | --- | --- |
 | namespace | 上游 reftable 显式返回 `GIT_ENOTSUPPORTED`；且 git2go 未绑定 `git_repository_set_namespace`，Go 侧不可达 |
 | per-worktree 引用 | 上游 reftable **已支持**（`REFDB_REFTABLE_STACK_WORKTREE`），但 git2go 完全未绑定 `git_worktree`，无法验证 —— 属 worktree 绑定缺失，非 reftable 缺口 |
-| `RefStorageFormat()` 对未知值静默降级为 files | 影响有限：libgit2 在 `git_repository_open` 阶段即以 `GIT_EINVALID` 拒绝未知值，该分支基本不可达。保留观察 |
+
+> ⚠️ 初版审计曾把 `RefStorageFormat()` 的未知值处理列在此表（判定「不可达，保留观察」）。
+> 实测证明该判定错误，且真正的问题是误报而非降级，已移至 §5.5.2 并修复。**教训：
+> 「不可达」这类结论必须实测，不能只靠读代码推断** —— 漏看 `version > 0` 门控就足以得出相反答案。
 
 #### 验证
 
-静态全量 **203 PASS / 0 FAIL / 0 SKIP**（新增 2 个测试，201 → 203）；无 tag 轨道
-**193 PASS / 10 SKIP**（`TestRepositoryRefdb` 由整体 SKIP 变为 files PASS + reftable SKIP，
-恢复了此前丢失的覆盖）；static/no-tag 竞态与动态全量均 PASS。
+静态全量 **204 PASS / 0 FAIL / 0 SKIP**（新增 3 个测试，201 → 204）；无 tag 轨道
+`TestRepositoryRefdb` 由整体 SKIP 变为 files PASS + reftable SKIP，恢复了此前丢失的覆盖；
+static/no-tag 竞态与动态全量均 PASS。README 的 19 条 markdownlint 告警一并清零
+（统一 ATX 标题 + 围栏代码块，纯风格，无内容变更）。
 
 ---
 

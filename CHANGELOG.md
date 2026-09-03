@@ -112,6 +112,12 @@ migration guide.
   duplicate, nil and invalid-length inputs.
 - Refdb tests no longer discard files-backend coverage when reftable is
   unavailable; the two backends are separate subtests.
+- `RefStorageFormat` no longer misreports the backend. It now applies libgit2's
+  own gate: `extensions.refStorage` is only honoured when
+  `core.repositoryformatversion` is at least 1, so a version-0 repository that
+  declares `reftable` is correctly reported as `RefdbFiles` — which is the
+  backend libgit2 actually uses for it. An unknown storage format is reported as
+  an error instead of silently falling back to files.
 - Corrected documentation references to source files that no longer exist.
 - Release validation runs without write credentials; only the tag-only job gets
   `contents: write`, and GitHub Actions/stringer inputs are version-pinned.
