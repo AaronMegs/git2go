@@ -4,6 +4,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -81,29 +82,36 @@ func TestRefStorageFormatReftable(t *testing.T) {
 }
 
 // TestRepositoryRefdb exercises Repository.Refdb() on both backends.
+// TestRepositoryRefdb covers Repository.Refdb() on both backends.
+//
+// The two backends are separate subtests on purpose: newReftableRepo skips when
+// reftable is unavailable, and skipping the parent test would also discard the
+// files-backend result that had already passed.
 func TestRepositoryRefdb(t *testing.T) {
-	// files backend
-	filesRepo := createTestRepo(t)
-	defer cleanupTestRepo(t, filesRepo)
+	t.Run("files", func(t *testing.T) {
+		filesRepo := createTestRepo(t)
+		defer cleanupTestRepo(t, filesRepo)
 
-	refdb, err := filesRepo.Refdb()
-	checkFatal(t, err)
-	if refdb == nil {
-		t.Fatal("Refdb() returned nil on files repo")
-	}
-	refdb.Free()
+		refdb, err := filesRepo.Refdb()
+		checkFatal(t, err)
+		if refdb == nil {
+			t.Fatal("Refdb() returned nil on files repo")
+		}
+		refdb.Free()
+	})
 
-	// reftable backend
-	rtRepo, dir := newReftableRepo(t)
-	defer os.RemoveAll(dir)
-	defer rtRepo.Free()
+	t.Run("reftable", func(t *testing.T) {
+		rtRepo, dir := newReftableRepo(t)
+		defer os.RemoveAll(dir)
+		defer rtRepo.Free()
 
-	rtRefdb, err := rtRepo.Refdb()
-	checkFatal(t, err)
-	if rtRefdb == nil {
-		t.Fatal("Refdb() returned nil on reftable repo")
-	}
-	rtRefdb.Free()
+		rtRefdb, err := rtRepo.Refdb()
+		checkFatal(t, err)
+		if rtRefdb == nil {
+			t.Fatal("Refdb() returned nil on reftable repo")
+		}
+		rtRefdb.Free()
+	})
 }
 
 // TestOpenRefdb exercises Repository.OpenRefdb(), which returns a ready-to-use
@@ -310,6 +318,57 @@ func TestReftableSymbolicReferenceLifecycle(t *testing.T) {
 	renamed.Free()
 	if _, err := repo.References.Lookup("refs/test/renamed"); err == nil {
 		t.Fatal("expected deleted symbolic reference lookup to fail")
+	}
+}
+
+// TestReftableTransactionUnsupported pins down an upstream limitation: the
+// reftable backend implements no lock/unlock callbacks ("TODO: transaction API"
+// in libgit2's refdb_reftable.c), so reference transactions cannot be used on a
+// reftable repository.
+//
+// The failure deliberately surfaces at LockRef rather than NewTransaction,
+// which is why this is documented on Transaction and asserted here.
+//
+// If upstream implements the reftable transaction API, this test starts failing
+// and is the signal to relax the Transaction documentation instead of silently
+// keeping a stale caveat.
+func TestReftableTransactionUnsupported(t *testing.T) {
+	repo, dir := newReftableRepo(t)
+	defer os.RemoveAll(dir)
+	defer repo.Free()
+	seedCommit(t, repo)
+
+	tx, err := repo.NewTransaction()
+	if err != nil {
+		t.Fatalf("NewTransaction on a reftable repo should succeed, got %v", err)
+	}
+	defer tx.Free()
+
+	err = tx.LockRef("refs/heads/transactional")
+	if err == nil {
+		t.Fatal("LockRef unexpectedly succeeded on a reftable repository; " +
+			"upstream may have implemented the reftable transaction API — " +
+			"update the Transaction docs and README if so")
+	}
+	if !strings.Contains(err.Error(), "does not support locking") {
+		t.Fatalf("LockRef error = %v, want a backend-locking-unsupported error", err)
+	}
+}
+
+// TestFilesTransactionSupported is the positive counterpart: the same sequence
+// must work on the files backend, so the test above cannot pass merely because
+// the transaction API is broken everywhere.
+func TestFilesTransactionSupported(t *testing.T) {
+	repo := createTestRepo(t)
+	defer cleanupTestRepo(t, repo)
+	seedCommit(t, repo)
+
+	tx, err := repo.NewTransaction()
+	checkFatal(t, err)
+	defer tx.Free()
+
+	if err := tx.LockRef("refs/heads/transactional"); err != nil {
+		t.Fatalf("LockRef on a files repo failed: %v", err)
 	}
 }
 

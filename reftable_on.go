@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 )
 
 // applyRefdbType writes the requested reference-storage backend into the C
@@ -38,7 +39,7 @@ func applyRefdbType(copts *C.git_repository_init_options, t RefdbType) error {
 // This function is only available when git2go is built with the
 // `libgit2_reftable` build tag against a libgit2 that has reftable support
 // (PR #7117 or later on main). Without that tag, calling it returns an error
-// (see refdb_noreftable.go).
+// (see reftable_off.go).
 //
 // Example (attach an explicit reftable backend to a fresh refdb):
 //
@@ -75,9 +76,26 @@ func (v *Repository) NewRefdbBackendReftable() (backend *RefdbBackend, err error
 // backend in a temporary directory. The probe repository is always removed
 // before returning.
 //
+// The result is cached: it depends only on the linked library, which cannot
+// change during the process's lifetime. Without caching, every call would
+// create and delete a repository on disk, which is far too expensive for a
+// predicate that callers reasonably treat as a cheap capability check.
+//
 // In a build without the `libgit2_reftable` tag this always returns false
-// (see refdb_noreftable.go), because reftable cannot be requested at all.
+// (see reftable_off.go), because reftable cannot be requested at all.
 func IsReftableSupported() bool {
+	reftableSupportedOnce.Do(func() {
+		reftableSupported = probeReftableSupport()
+	})
+	return reftableSupported
+}
+
+var (
+	reftableSupportedOnce sync.Once
+	reftableSupported     bool
+)
+
+func probeReftableSupport() bool {
 	dir, err := ioutil.TempDir("", "git2go-reftable-probe")
 	if err != nil {
 		return false

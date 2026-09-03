@@ -14,6 +14,17 @@ import (
 // Transaction represents a group of reference updates. References must be
 // locked before they are updated. Free rolls back and unlocks any locks that
 // were not committed.
+//
+// Backend support: transactions require the refdb backend to implement
+// reference locking. The traditional `files` backend does; the reftable
+// backend currently does NOT, because upstream libgit2 has not implemented
+// the transaction API for it yet (see the "TODO: transaction API" note in
+// libgit2's refdb_reftable.c, and note that libgit2's own transaction tests
+// skip any repository whose ref format is not "files").
+//
+// On a reftable repository, NewTransaction still succeeds; the failure only
+// surfaces at LockRef. Use Repository.RefStorageFormat to decide up front
+// whether a transaction is usable.
 type Transaction struct {
 	doNotCompare
 	ptr  *C.git_transaction
@@ -21,6 +32,10 @@ type Transaction struct {
 }
 
 // NewTransaction creates an empty reference transaction for the repository.
+//
+// This succeeds regardless of the repository's reference storage format. On a
+// reftable repository the subsequent LockRef call fails, because that backend
+// provides no lock/unlock implementation — see the Transaction documentation.
 func (v *Repository) NewTransaction() (*Transaction, error) {
 	var ptr *C.git_transaction
 
@@ -53,6 +68,10 @@ func validateTransactionString(name, value string) error {
 }
 
 // LockRef locks refName for a subsequent update in this transaction.
+//
+// This is where an unsupported backend is reported: on a reftable repository
+// libgit2 fails here with "backend does not support locking", since the
+// reftable backend implements no lock/unlock callbacks.
 func (tx *Transaction) LockRef(refName string) error {
 	if err := tx.requireOpen(); err != nil {
 		return err
