@@ -124,16 +124,34 @@ if err != nil {
 }
 ```
 
-Once created, all the usual reference APIs (`CreateBranch`, `LookupBranch`,
-`References`, committing to `HEAD`, etc.) work unchanged — reftable is a
-transparent backend. You can also ask the backend to compact/optimize its
-storage:
+Once created, the everyday reference APIs (`CreateBranch`, `LookupBranch`,
+`References`, reflogs, committing to `HEAD`, etc.) work unchanged — reftable is
+a transparent backend for them. You can also ask the backend to
+compact/optimize its storage:
 
 ```go
 refdb, _ := repo.OpenRefdb()
 defer refdb.Free()
 _ = refdb.Compress() // files: pack refs; reftable: compact the reftable stack
 ```
+
+**Known limitation — reference transactions.** `Repository.NewTransaction`
+requires the backend to support reference locking. The `files` backend does;
+the reftable backend does not, because upstream libgit2 has not implemented the
+transaction API for it yet. `NewTransaction` still succeeds on a reftable
+repository, and the error only appears at `LockRef`:
+
+```go
+format, _ := repo.RefStorageFormat()
+if format == git.RefdbFiles {
+    tx, err := repo.NewTransaction() // safe to lock and commit
+    // ...
+}
+// On git.RefdbReftable, tx.LockRef fails with "backend does not support locking".
+```
+
+Namespaces (`extensions.refStorage = reftable` plus a configured namespace) are
+likewise rejected by upstream's reftable backend.
 
 Parallelism and network operations
 ----------------------------------

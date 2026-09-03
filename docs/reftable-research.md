@@ -422,6 +422,63 @@ go test -tags "static libgit2_reftable" -count=1 -p 1 \
 
 > ✅ **当前迁移状态（2026-09-01）**：vendor 已升级到 `0551dfd4a`；v36 已采用 33 字节 typed `Oid` 方案并统一 `OidType + RefdbType` 初始化。SHA1/SHA256 × files/reftable 四组合、static/dynamic、race 和 DEPRECATE_HARD=ON 验证均通过。
 
+### 5.5 缺口审计（2026-09-03，上游 `0551dfd4a`）
+
+对照上游 API 面逐项核查的结论：**绑定层面已无缺口** —— `refdb.h` 4 个公开函数、
+`sys/refdb_backend.h` 4 个公开函数、`git_refdb_backend` 17 个 callback 全部已绑定。
+但发现 5 项实质问题（2 项经实测确认），其中 4 项本轮已修复。
+
+#### 已修复
+
+| 级别 | 问题 | 修复 |
+| --- | --- | --- |
+| P0 | **Transaction 在 reftable 上不可用，但文档声称"透明"** | 见 §5.5.1 |
+| P1 | `TestRepositoryRefdb` 的 files 覆盖被 reftable 跳过吞掉 | 拆为 `t.Run("files")` / `t.Run("reftable")` 子测试 |
+| P1 | `IsReftableSupported()` 每次调用都建删仓库 | `sync.Once` 缓存（链接库能力在进程内不可变） |
+| P2 | GoDoc 引用 3 处不存在的文件名 | `refdb_noreftable.go` ×2、`repository_reftable.go` / `repository_noreftable.go` → 实际 `reftable_on.go` / `reftable_off.go` |
+
+##### 5.5.1 P0：Transaction 的 reftable 限制
+
+实测（vendor `0551dfd4a`）：
+
+```text
+NewTransaction  err=<nil>                             ← 成功，无任何警告
+LockRef         err=backend does not support locking  ← 到这一步才失败
+```
+
+根因在上游：`refdb_reftable.c:1862` 留有 `/* TODO: transaction API */`，
+`git_refdb_backend_reftable()` 从不赋值 `lock` / `unlock`；上游自身的
+`tests/libgit2/refs/transactions.c:11` 也是"非 files 格式直接 `cl_skip()`"。
+
+问题在 git2go 侧：`README.md` 曾写"**all** the usual reference APIs work
+unchanged — reftable is a transparent backend"，该表述对 Transaction 不成立；
+`transaction.go` 的 GoDoc 亦未提示，且无任何测试覆盖。用户会在 `NewTransaction()`
+成功后才于 `LockRef` 撞墙。
+
+修复三处：
+
+1. `Transaction` / `NewTransaction` / `LockRef` GoDoc 明确后端支持矩阵，并指出
+   失败点在 `LockRef` 而非构造时；
+2. README 改为"everyday reference APIs"并新增 Known limitation 小节，给出用
+   `RefStorageFormat()` 前置判定的示例；
+3. 新增 `TestReftableTransactionUnsupported` **钉住**该限制 + 正向对照
+   `TestFilesTransactionSupported`（确保前者不是因为 transaction 全局失效才通过）。
+   一旦上游实现 reftable transaction API，前者会失败并提示更新文档，避免留下过期告警。
+
+#### 不属于缺口
+
+| 项 | 判定 |
+| --- | --- |
+| namespace | 上游 reftable 显式返回 `GIT_ENOTSUPPORTED`；且 git2go 未绑定 `git_repository_set_namespace`，Go 侧不可达 |
+| per-worktree 引用 | 上游 reftable **已支持**（`REFDB_REFTABLE_STACK_WORKTREE`），但 git2go 完全未绑定 `git_worktree`，无法验证 —— 属 worktree 绑定缺失，非 reftable 缺口 |
+| `RefStorageFormat()` 对未知值静默降级为 files | 影响有限：libgit2 在 `git_repository_open` 阶段即以 `GIT_EINVALID` 拒绝未知值，该分支基本不可达。保留观察 |
+
+#### 验证
+
+静态全量 **203 PASS / 0 FAIL / 0 SKIP**（新增 2 个测试，201 → 203）；无 tag 轨道
+**193 PASS / 10 SKIP**（`TestRepositoryRefdb` 由整体 SKIP 变为 files PASS + reftable SKIP，
+恢复了此前丢失的覆盖）；static/no-tag 竞态与动态全量均 PASS。
+
 ---
 
 ## 6. 风险与权衡

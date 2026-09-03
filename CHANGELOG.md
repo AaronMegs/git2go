@@ -69,6 +69,13 @@ migration guide.
   system headers for every CMake target.
 - CI now tests Go 1.18 and stable Go, uses current GitHub actions/runners, and
   includes a macOS bundled-static job.
+- `IsReftableSupported` caches its result. The probe creates and removes a
+  throwaway repository, and the linked library's capability cannot change during
+  the process's lifetime.
+- Documented that reference transactions are unavailable on reftable
+  repositories: upstream's reftable backend implements no lock/unlock callbacks,
+  so `NewTransaction` succeeds but `LockRef` fails. Use
+  `Repository.RefStorageFormat` to decide beforehand.
 
 ### Security
 
@@ -103,6 +110,9 @@ migration guide.
   transfers to a refdb; refdb/backend wrappers are idempotently freed.
 - `ShortenOids` now supports all 64 SHA256 hex characters and rejects mixed,
   duplicate, nil and invalid-length inputs.
+- Refdb tests no longer discard files-backend coverage when reftable is
+  unavailable; the two backends are separate subtests.
+- Corrected documentation references to source files that no longer exist.
 - Release validation runs without write credentials; only the tag-only job gets
   `contents: write`, and GitHub Actions/stringer inputs are version-pinned.
 
