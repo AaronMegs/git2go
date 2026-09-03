@@ -7,6 +7,12 @@ on:
     - release-*
     - v*
 
+env:
+  # Pin the code generator. `@latest` makes check-generate fail whenever
+  # upstream changes stringer's output formatting, which is unrelated to this
+  # repository's code.
+  STRINGER_VERSION: v0.49.0
+
 jobs:
 
   build-static:
@@ -19,15 +25,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    # Check out before setting up Go so that setup-go can find go.sum and
+    # populate its module cache.
+    - name: Check out code into the Go module directory
+      uses: actions/checkout@v7
+      with:
+        submodules: recursive
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: ${{ matrix.go }}
       id: go
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
     - name: Build
       run: |
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
@@ -39,14 +47,14 @@ jobs:
     name: Go (bundled static, macOS)
     runs-on: macos-latest
     steps:
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: 'stable'
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         submodules: recursive
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: 'stable'
     - name: Build libgit2
       run: make build-libgit2-static
     - name: Test
@@ -60,15 +68,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Check out code into the Go module directory
+      uses: actions/checkout@v7
+      with:
+        submodules: recursive
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: 'stable'
       id: go
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
     - name: Build
       run: |
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
@@ -80,14 +88,14 @@ jobs:
     name: Go (bundled static, DEPRECATE_HARD=ON)
     runs-on: ubuntu-latest
     steps:
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: 'stable'
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         submodules: recursive
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: 'stable'
     - name: Build libgit2 with hard-deprecated APIs hidden
       run: |
         sudo apt-get update
@@ -108,13 +116,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Check out code into the Go module directory
+      uses: actions/checkout@v7
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: 'stable'
       id: go
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v4
     - name: Build pinned libgit2 baseline system-wide
       run: |
         git submodule update --init
@@ -131,13 +139,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Check out code into the Go module directory
+      uses: actions/checkout@v7
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: 'stable'
       id: go
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v4
     - name: Build libgit2
       run: |
         git submodule update --init
@@ -150,18 +158,18 @@ jobs:
     name: Check generated files were not modified
     runs-on: ubuntu-latest
     steps:
+    - name: Check out code into the Go module directory
+      uses: actions/checkout@v7
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: 'stable'
       id: go
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v4
     - name: Install libgit2 build dependencies
       run: |
         git submodule update --init
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
-        go install golang.org/x/tools/cmd/stringer@latest
+        go install golang.org/x/tools/cmd/stringer@${{ env.STRINGER_VERSION }}
     - name: Generate files
       run: |
         export PATH=$(go env GOPATH)/bin:$PATH

@@ -38,24 +38,29 @@ func _() {
 	_ = x[ErrorCodeMismatch - -33]
 	_ = x[ErrorCodeIndexDirty - -34]
 	_ = x[ErrorCodeApplyFail - -35]
+	_ = x[ErrorCodeOwner - -36]
+	_ = x[ErrorCodeTimeout - -37]
+	_ = x[ErrorCodeUnchanged - -38]
+	_ = x[ErrorCodeNotSupported - -39]
+	_ = x[ErrorCodeReadOnly - -40]
 }
 
 const (
-	_ErrorCode_name_0 = "ApplyFailIndexDirtyMismatchRetryIterOverPassthrough"
+	_ErrorCode_name_0 = "ReadOnlyNotSupportedUnchangedTimeoutOwnerApplyFailIndexDirtyMismatchRetryIterOverPassthrough"
 	_ErrorCode_name_1 = "MergeConflictDirectoryUncommittedInvalidEOFPeelAppliedCertificateAuthModifiedLockedConflictInvalidSpecNonFastForwardUnmergedUnbornBranchBareRepoUserBuffsAmbiguousExistsNotFound"
 	_ErrorCode_name_2 = "GenericOK"
 )
 
 var (
-	_ErrorCode_index_0 = [...]uint8{0, 9, 19, 27, 32, 40, 51}
+	_ErrorCode_index_0 = [...]uint8{0, 8, 20, 29, 36, 41, 50, 60, 68, 73, 81, 92}
 	_ErrorCode_index_1 = [...]uint8{0, 13, 22, 33, 40, 43, 47, 54, 65, 69, 77, 83, 91, 102, 116, 124, 136, 144, 148, 153, 162, 168, 176}
 	_ErrorCode_index_2 = [...]uint8{0, 7, 9}
 )
 
 func (i ErrorCode) String() string {
 	switch {
-	case -35 <= i && i <= -30:
-		i -= -35
+	case -40 <= i && i <= -30:
+		i -= -40
 		return _ErrorCode_name_0[_ErrorCode_index_0[i]:_ErrorCode_index_0[i+1]]
 	case -24 <= i && i <= -3:
 		i -= -24

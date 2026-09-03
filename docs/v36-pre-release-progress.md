@@ -23,6 +23,7 @@
 | 9 | 修复 Go 1.14+ 自动 vendor 模式导致的 GitHub CI 全任务失败 | ✅ 已完成 |
 | 10 | 升级 libgit2 pin 至 `0551dfd4` 并清除全部 hard-deprecated 依赖 | ✅ 已完成 |
 | 11 | 修复本地默认（dynamic）配置无法解析 promoted libgit2 | ✅ 已完成 |
+| 12 | 修复 GitHub CI `check-generate` 失败并现代化 workflow | ✅ 已完成 |
 
 ---
 
@@ -187,8 +188,12 @@ v36.0.0 发布时可根据上游正式包配置决定是否把默认值改为 ON
 
 ## 7. 上游正式版本与正式 v36.0.0 — ⏸ 外部阻塞
 
-2026-08-04 查询 libgit2 官方 GitHub Releases：最新正式版仍为 **v1.9.6**，发布说明未声明
+2026-08-04 查询 libgit2 官方 GitHub Releases：最新正式版为 **v1.9.6**，发布说明未声明
 SHA256 已转为正式/非实验能力；promoted typed oid 目前只存在于 pinned main commit。
+
+2026-09-03 复核：上游已发布 **v1.9.7**，阻塞仍未解除。逐个检查 v1.9.5 / v1.9.6 / v1.9.7 的
+`include/git2/oid.h`，**均不含** `git_object_id_options`，即 promoted typed object-id API 仍未
+进入任何正式发布。
 
 因此以下工作不能提前完成：
 
@@ -421,3 +426,54 @@ ABI 不匹配的库，存在崩溃风险，代价高于收益。
 - `PKG_CONFIG_PATH=<promoted> CGO_LDFLAGS=-Wl,-rpath,<promoted>/lib go test ./...`：
   默认 dynamic 链接模式全量测试通过（macOS SIP 会剥离 `DYLD_LIBRARY_PATH`，必须用 rpath）；
 - Homebrew libgit2 1.9.7 保持原状，`bat`/`eza` 不受影响。
+
+---
+
+## 12. GitHub CI `check-generate` 失败与 workflow 现代化 — ✅ 已完成
+
+### 现象
+
+第 9 项修复后仍需实际平台验证，`gh run list` 显示 run `30907959432` 整体 **failure**：7 个
+构建/测试 job 全绿，唯独 `Check generated files were not modified` 失败，报告
+`delta_string.go`、`errorclass_string.go`、`errorcode_string.go` 在 `make generate` 后发生变化。
+
+### 根因一：生成文件过期，且是真实缺陷
+
+`errorclass_string.go` 与 `errorcode_string.go` 停留在上游旧提交 `137c05e`，此后 `git.go` 新增的
+枚举值从未重新生成，导致 `String()` 对它们回退到数字形式（如 `"ErrorClass(32)"`）而非名称：
+
+| 文件 | 此前缺失的值 |
+| --- | --- |
+| `errorclass_string.go` | `Worktree`(32)、`SHA`(33)、`HTTP`(34)、`Internal`(35)、`Grafts`(36) |
+| `errorcode_string.go` | `Owner`(-36)、`Timeout`(-37)、`Unchanged`(-38)、`NotSupported`(-39)、`ReadOnly`(-40) |
+
+重新生成后这些值恢复正确名称，越界值仍回退到数字形式。
+
+### 根因二：代码生成器版本未固定
+
+`delta_string.go` 的差异与枚举无关，纯粹是新版 stringer 的输出风格变化
+（改为 `idx := int(i) - 0` 形式）。CI 使用 `stringer@latest`，上游任何格式调整都会让
+`check-generate` 无故变红。现固定为 `STRINGER_VERSION: v0.49.0`（workflow 级 env）。
+
+### workflow 现代化
+
+- `actions/checkout` v4 → **v7**，`actions/setup-go` v5 → **v7**，消除
+  「Node.js 20 is deprecated，被强制运行在 Node 24」告警；三个 workflow
+  （`ci.yml`、`tag.yml`、`backport.yml`）同步升级。
+- 修复 macOS job 的
+  `Restore cache failed: Dependencies file is not found ... Supported file pattern: go.sum`：
+  原先所有 job 都把 `setup-go` 排在 `checkout` 之前，缓存查找时仓库尚未检出，`go.sum` 自然
+  不存在。现统一改为**先 checkout 再 setup-go**，模块缓存恢复生效。
+
+### CI 修复验证
+
+- 本地复现失败：未装 stringer 时 `go generate` 直接报错，装上 v0.49.0 后精确复现 CI 报告的
+  三文件差异；
+- 重新生成后 `go build --tags static ./...` 通过；
+- 连续两次 `make generate` 输出一致（幂等），`check-generate` 的 `git diff --exit-code` 可满足；
+- 三个 workflow YAML 均通过语法解析，逐 job 确认 checkout 已排在 setup-go 之前。
+
+### 说明
+
+`reference.go` 补充了 `ReferenceInvalid` 与 `ReferenceAll` 两个常量，与本节 CI 修复无关，
+一并保留。
