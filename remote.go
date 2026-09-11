@@ -12,7 +12,6 @@ import "C"
 import (
 	"crypto/x509"
 	"errors"
-	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -366,7 +365,8 @@ func populateRemoteCallbacks(ptr *C.git_remote_callbacks, callbacks *RemoteCallb
 }
 
 //export sidebandProgressCallback
-func sidebandProgressCallback(errorMessage **C.char, _str *C.char, _len C.int, handle unsafe.Pointer) C.int {
+func sidebandProgressCallback(errorMessage **C.char, _str *C.char, _len C.int, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "sidebandProgressCallback")
 	data := pointerHandles.Get(handle).(*remoteCallbacksData)
 	if data.callbacks.SidebandProgressCallback == nil {
 		return C.int(ErrorCodeOK)
@@ -382,7 +382,8 @@ func sidebandProgressCallback(errorMessage **C.char, _str *C.char, _len C.int, h
 }
 
 //export completionCallback
-func completionCallback(errorMessage **C.char, completionType C.git_remote_completion_t, handle unsafe.Pointer) C.int {
+func completionCallback(errorMessage **C.char, completionType C.git_remote_completion_t, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "completionCallback")
 	data := pointerHandles.Get(handle).(*remoteCallbacksData)
 	if data.callbacks.CompletionCallback == nil {
 		return C.int(ErrorCodeOK)
@@ -405,7 +406,8 @@ func credentialsCallback(
 	_username_from_url *C.char,
 	allowed_types uint,
 	handle unsafe.Pointer,
-) C.int {
+) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "credentialsCallback")
 	data := pointerHandles.Get(handle).(*remoteCallbacksData)
 	if data.callbacks.CredentialsCallback == nil {
 		return C.int(ErrorCodePassthrough)
@@ -430,7 +432,8 @@ func credentialsCallback(
 }
 
 //export transferProgressCallback
-func transferProgressCallback(errorMessage **C.char, stats *C.git_indexer_progress, handle unsafe.Pointer) C.int {
+func transferProgressCallback(errorMessage **C.char, stats *C.git_indexer_progress, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "transferProgressCallback")
 	data := pointerHandles.Get(handle).(*remoteCallbacksData)
 	if data.callbacks.TransferProgressCallback == nil {
 		return C.int(ErrorCodeOK)
@@ -453,7 +456,8 @@ func updateRefsCallback(
 	_b *C.git_oid,
 	_spec *C.git_refspec,
 	handle unsafe.Pointer,
-) C.int {
+) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "updateRefsCallback")
 	data := pointerHandles.Get(handle).(*remoteCallbacksData)
 	if data.callbacks.UpdateRefsCallback == nil && data.callbacks.UpdateTipsCallback == nil {
 		return C.int(ErrorCodeOK)
@@ -491,7 +495,8 @@ func certificateCheckCallback(
 	_valid C.int,
 	_host *C.char,
 	handle unsafe.Pointer,
-) C.int {
+) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "certificateCheckCallback")
 	data := pointerHandles.Get(handle).(*remoteCallbacksData)
 	// if there's no callback set, we need to make sure we fail if the library didn't consider this cert valid
 	if data.callbacks.CertificateCheckCallback == nil {
@@ -562,7 +567,8 @@ func certificateCheckCallback(
 }
 
 //export packProgressCallback
-func packProgressCallback(errorMessage **C.char, stage C.int, current, total C.uint, handle unsafe.Pointer) C.int {
+func packProgressCallback(errorMessage **C.char, stage C.int, current, total C.uint, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "packProgressCallback")
 	data := pointerHandles.Get(handle).(*remoteCallbacksData)
 	if data.callbacks.PackProgressCallback == nil {
 		return C.int(ErrorCodeOK)
@@ -579,7 +585,8 @@ func packProgressCallback(errorMessage **C.char, stage C.int, current, total C.u
 }
 
 //export pushTransferProgressCallback
-func pushTransferProgressCallback(errorMessage **C.char, current, total C.uint, bytes C.size_t, handle unsafe.Pointer) C.int {
+func pushTransferProgressCallback(errorMessage **C.char, current, total C.uint, bytes C.size_t, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "pushTransferProgressCallback")
 	data := pointerHandles.Get(handle).(*remoteCallbacksData)
 	if data.callbacks.PushTransferProgressCallback == nil {
 		return C.int(ErrorCodeOK)
@@ -596,7 +603,8 @@ func pushTransferProgressCallback(errorMessage **C.char, current, total C.uint, 
 }
 
 //export pushUpdateReferenceCallback
-func pushUpdateReferenceCallback(errorMessage **C.char, refname, status *C.char, handle unsafe.Pointer) C.int {
+func pushUpdateReferenceCallback(errorMessage **C.char, refname, status *C.char, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "pushUpdateReferenceCallback")
 	data := pointerHandles.Get(handle).(*remoteCallbacksData)
 	if data.callbacks.PushUpdateReferenceCallback == nil {
 		return C.int(ErrorCodeOK)
@@ -655,9 +663,19 @@ func (r *Remote) free() {
 	r.repo = nil
 }
 
-// Free releases the resources of the Remote.
+// Free releases the resources of the Remote. It is safe to call more than
+// once, and safe on a Remote that has no owning repository (the one handed to
+// a SmartSubtransportCallback).
 func (r *Remote) Free() {
-	r.repo.Remotes.untrackRemote(r)
+	if r == nil || r.ptr == nil {
+		return
+	}
+	// A Remote produced for a smart subtransport has no owning repository, and
+	// free() clears repo, so neither the first nor a repeated call may
+	// dereference it unconditionally.
+	if r.repo != nil {
+		r.repo.Remotes.untrackRemote(r)
+	}
 	if r.weak {
 		return
 	}
@@ -920,42 +938,44 @@ func (c *RemoteCollection) AddFetch(remote, refspec string) error {
 	return nil
 }
 
-func sptr(p uintptr) *C.char {
-	return *(**C.char)(unsafe.Pointer(p))
-}
-
 func makeStringsFromCStrings(x **C.char, l int) []string {
+	if l == 0 || x == nil {
+		return nil
+	}
+	cStrings := unsafe.Slice(x, l)
 	s := make([]string, l)
-	i := 0
-	for p := uintptr(unsafe.Pointer(x)); i < l; p += unsafe.Sizeof(uintptr(0)) {
-		s[i] = C.GoString(sptr(p))
-		i++
+	for i := range cStrings {
+		s[i] = C.GoString(cStrings[i])
 	}
 	return s
 }
 
 func makeCStringsFromStrings(s []string) **C.char {
-	l := len(s)
-	x := (**C.char)(C.malloc(C.size_t(unsafe.Sizeof(unsafe.Pointer(nil)) * uintptr(l))))
-	i := 0
-	for p := uintptr(unsafe.Pointer(x)); i < l; p += unsafe.Sizeof(uintptr(0)) {
-		*(**C.char)(unsafe.Pointer(p)) = C.CString(s[i])
-		i++
+	if len(s) == 0 {
+		return nil
+	}
+	x := (**C.char)(C.calloc(C.size_t(len(s)), C.size_t(unsafe.Sizeof(unsafe.Pointer(nil)))))
+	if x == nil {
+		return nil
+	}
+	cStrings := unsafe.Slice(x, len(s))
+	for i := range s {
+		cStrings[i] = C.CString(s[i])
 	}
 	return x
 }
 
 func freeStrarray(arr *C.git_strarray) {
-	count := int(arr.count)
-	size := unsafe.Sizeof(unsafe.Pointer(nil))
-
-	i := 0
-	for p := uintptr(unsafe.Pointer(arr.strings)); i < count; p += size {
-		C.free(unsafe.Pointer(sptr(p)))
-		i++
+	if arr == nil || arr.strings == nil {
+		return
 	}
-
+	cStrings := unsafe.Slice(arr.strings, int(arr.count))
+	for i := range cStrings {
+		C.free(unsafe.Pointer(cStrings[i]))
+	}
 	C.free(unsafe.Pointer(arr.strings))
+	arr.strings = nil
+	arr.count = 0
 }
 
 func (o *Remote) FetchRefspecs() ([]string, error) {
@@ -1185,13 +1205,7 @@ func (o *Remote) Ls(filterRefs ...string) ([]RemoteHead, error) {
 		return make([]RemoteHead, 0), nil
 	}
 
-	hdr := reflect.SliceHeader{
-		Data: uintptr(unsafe.Pointer(refs)),
-		Len:  size,
-		Cap:  size,
-	}
-
-	goSlice := *(*[]*C.git_remote_head)(unsafe.Pointer(&hdr))
+	goSlice := unsafe.Slice(refs, size)
 
 	var heads []RemoteHead
 

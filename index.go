@@ -356,7 +356,8 @@ func (v *Index) RemoveAll(pathspecs []string, callback IndexMatchedPathCallback)
 }
 
 //export indexMatchedPathCallback
-func indexMatchedPathCallback(cPath, cMatchedPathspec *C.char, payload unsafe.Pointer) C.int {
+func indexMatchedPathCallback(cPath, cMatchedPathspec *C.char, payload unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	data, ok := pointerHandles.Get(payload).(*indexMatchedPathCallbackData)
 	if !ok {
 		panic("invalid matched path callback")
@@ -410,7 +411,7 @@ func (v *Index) WriteTreeTo(repo *Repository) (*Oid, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_index_write_tree_to(oid.toC(), v.ptr, repo.ptr)
+	ret := C.git_index_write_tree_to(oid.outC(), v.ptr, repo.ptr)
 	runtime.KeepAlive(v)
 	runtime.KeepAlive(repo)
 	if ret < 0 {
@@ -442,7 +443,7 @@ func (v *Index) WriteTree() (*Oid, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_index_write_tree(oid.toC(), v.ptr)
+	ret := C.git_index_write_tree(oid.outC(), v.ptr)
 	runtime.KeepAlive(v)
 	if ret < 0 {
 		return nil, MakeGitError(ret)
@@ -465,8 +466,13 @@ func (v *Index) Write() error {
 }
 
 func (v *Index) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
 	runtime.SetFinalizer(v, nil)
-	C.git_index_free(v.ptr)
+	C.git_index_free(ptr)
 }
 
 func (v *Index) EntryCount() uint {
@@ -652,8 +658,13 @@ func (v *IndexConflictIterator) Index() *Index {
 }
 
 func (v *IndexConflictIterator) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
 	runtime.SetFinalizer(v, nil)
-	C.git_index_conflict_iterator_free(v.ptr)
+	C.git_index_conflict_iterator_free(ptr)
 }
 
 func (v *Index) ConflictIterator() (*IndexConflictIterator, error) {

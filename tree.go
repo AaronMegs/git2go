@@ -128,7 +128,8 @@ type treeWalkCallbackData struct {
 }
 
 //export treeWalkCallback
-func treeWalkCallback(_root *C.char, entry *C.git_tree_entry, ptr unsafe.Pointer) C.int {
+func treeWalkCallback(_root *C.char, entry *C.git_tree_entry, ptr unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	data, ok := pointerHandles.Get(ptr).(*treeWalkCallbackData)
 	if !ok {
 		panic("invalid treewalk callback")
@@ -189,8 +190,13 @@ type TreeBuilder struct {
 }
 
 func (v *TreeBuilder) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
 	runtime.SetFinalizer(v, nil)
-	C.git_treebuilder_free(v.ptr)
+	C.git_treebuilder_free(ptr)
 }
 
 func (v *TreeBuilder) Insert(filename string, id *Oid, filemode Filemode) error {
@@ -232,7 +238,7 @@ func (v *TreeBuilder) Write() (*Oid, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	err := C.git_treebuilder_write(oid.toC(), v.ptr)
+	err := C.git_treebuilder_write(oid.outC(), v.ptr)
 	runtime.KeepAlive(v)
 	if err < 0 {
 		return nil, MakeGitError(err)

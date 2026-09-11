@@ -196,6 +196,27 @@ func TestMergeBases(t *testing.T) {
 	}
 }
 
+func TestMergeBaseManyRejectsInvalidInput(t *testing.T) {
+	repo := createTestRepo(t)
+	defer cleanupTestRepo(t, repo)
+	for name, ids := range map[string][]*Oid{
+		"empty": nil,
+		"nil":   {nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := repo.MergeBaseMany(ids); !IsErrorCode(err, ErrorCodeInvalid) {
+				t.Fatalf("MergeBaseMany error = %v, want ErrorCodeInvalid", err)
+			}
+			if _, err := repo.MergeBasesMany(ids); !IsErrorCode(err, ErrorCodeInvalid) {
+				t.Fatalf("MergeBasesMany error = %v, want ErrorCodeInvalid", err)
+			}
+			if _, err := repo.MergeBaseOctopus(ids); !IsErrorCode(err, ErrorCodeInvalid) {
+				t.Fatalf("MergeBaseOctopus error = %v, want ErrorCodeInvalid", err)
+			}
+		})
+	}
+}
+
 func TestMergeBaseMany(t *testing.T) {
 	t.Parallel()
 	repo := createTestRepo(t)

@@ -51,7 +51,7 @@ func (c *NoteCollection) Create(
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_note_create(
-		oid.toC(), c.repo.ptr, cref, authorSig,
+		oid.outC(), c.repo.ptr, cref, authorSig,
 		committerSig, id.toC(), cnote, cbool(force))
 	runtime.KeepAlive(c)
 	runtime.KeepAlive(id)
@@ -224,8 +224,13 @@ func (repo *Repository) NewNoteIterator(ref string) (*NoteIterator, error) {
 
 // Free frees the note interator
 func (v *NoteIterator) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
 	runtime.SetFinalizer(v, nil)
-	C.git_note_iterator_free(v.ptr)
+	C.git_note_iterator_free(ptr)
 }
 
 // Next returns the current item (note id & annotated id) and advances the
@@ -236,7 +241,7 @@ func (it *NoteIterator) Next() (noteId, annotatedId *Oid, err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_note_next(noteId.toC(), annotatedId.toC(), it.ptr)
+	ret := C.git_note_next(noteId.outC(), annotatedId.outC(), it.ptr)
 	runtime.KeepAlive(noteId)
 	runtime.KeepAlive(annotatedId)
 	runtime.KeepAlive(it)

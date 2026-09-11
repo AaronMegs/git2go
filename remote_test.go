@@ -48,6 +48,7 @@ func assertHostname(cert *Certificate, valid bool, hostname string, t *testing.T
 }
 
 func TestCertificateCheck(t *testing.T) {
+	requiresNetwork(t)
 	t.Parallel()
 	repo := createTestRepo(t)
 	defer cleanupTestRepo(t, repo)
@@ -69,6 +70,7 @@ func TestCertificateCheck(t *testing.T) {
 }
 
 func TestRemoteConnect(t *testing.T) {
+	requiresNetwork(t)
 	t.Parallel()
 	repo := createTestRepo(t)
 	defer cleanupTestRepo(t, repo)
@@ -82,6 +84,7 @@ func TestRemoteConnect(t *testing.T) {
 }
 
 func TestRemoteConnectOption(t *testing.T) {
+	requiresNetwork(t)
 	t.Parallel()
 	repo := createTestRepo(t)
 	defer cleanupTestRepo(t, repo)
@@ -105,6 +108,7 @@ func TestRemoteConnectOption(t *testing.T) {
 }
 
 func TestRemoteLs(t *testing.T) {
+	requiresNetwork(t)
 	t.Parallel()
 	repo := createTestRepo(t)
 	defer cleanupTestRepo(t, repo)
@@ -125,6 +129,7 @@ func TestRemoteLs(t *testing.T) {
 }
 
 func TestRemoteLsFiltering(t *testing.T) {
+	requiresNetwork(t)
 	t.Parallel()
 	repo := createTestRepo(t)
 	defer cleanupTestRepo(t, repo)
@@ -234,6 +239,7 @@ func TestRemotePrune(t *testing.T) {
 }
 
 func TestRemoteCredentialsCalled(t *testing.T) {
+	requiresNetwork(t)
 	t.Parallel()
 
 	repo := createTestRepo(t)
@@ -518,4 +524,34 @@ func TestRemoteSSH(t *testing.T) {
 	if len(heads) == 0 {
 		t.Error("Expected remote heads")
 	}
+}
+
+// TestRemoteFreeIsIdempotent pins down that releasing a Remote twice is safe.
+//
+// Free used to dereference r.repo unconditionally, but free() clears that
+// field, so a second call panicked with a nil pointer dereference. A Free
+// method must tolerate being called both explicitly and from a deferred
+// cleanup path.
+func TestRemoteFreeIsIdempotent(t *testing.T) {
+	repo := createTestRepo(t)
+	defer cleanupTestRepo(t, repo)
+
+	remote, err := repo.Remotes.Create("idempotent", "https://example.com/x.git")
+	checkFatal(t, err)
+
+	remote.Free()
+	remote.Free() // must not panic
+}
+
+// TestRemoteFreeWithoutOwningRepository covers the Remote handed to a
+// SmartSubtransportCallback, which is built without an owning repository.
+// Free must not assume repo is non-nil.
+func TestRemoteFreeWithoutOwningRepository(t *testing.T) {
+	remote := createNewEmptyRemote()
+	if remote.repo != nil {
+		t.Fatal("expected a remote with no owning repository")
+	}
+
+	remote.Free() // must not panic
+	remote.Free()
 }

@@ -131,8 +131,13 @@ func (stream *BlobWriteStream) Write(p []byte) (int, error) {
 }
 
 func (stream *BlobWriteStream) Free() {
+	if stream == nil || stream.ptr == nil {
+		return
+	}
+	ptr := stream.ptr
+	stream.ptr = nil
 	runtime.SetFinalizer(stream, nil)
-	C._go_git_writestream_free(stream.ptr)
+	C._go_git_writestream_free(ptr)
 }
 
 func (stream *BlobWriteStream) Commit() (*Oid, error) {

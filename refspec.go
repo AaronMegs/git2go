@@ -43,8 +43,13 @@ func ParseRefspec(input string, isFetch bool) (*Refspec, error) {
 
 // Free releases a refspec object which has been created by ParseRefspec
 func (s *Refspec) Free() {
+	if s == nil || s.ptr == nil {
+		return
+	}
+	ptr := s.ptr
+	s.ptr = nil
 	runtime.SetFinalizer(s, nil)
-	C.git_refspec_free(s.ptr)
+	C.git_refspec_free(ptr)
 }
 
 // Direction returns the refspec's direction

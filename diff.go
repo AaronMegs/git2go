@@ -354,7 +354,8 @@ func (diff *Diff) ForEach(cbFile DiffForEachFileCallback, detail DiffDetail) err
 }
 
 //export diffForEachFileCallback
-func diffForEachFileCallback(delta *C.git_diff_delta, progress C.float, handle unsafe.Pointer) C.int {
+func diffForEachFileCallback(delta *C.git_diff_delta, progress C.float, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	payload := pointerHandles.Get(handle)
 	data, ok := payload.(*diffForEachCallbackData)
 	if !ok {
@@ -377,7 +378,8 @@ func diffForEachFileCallback(delta *C.git_diff_delta, progress C.float, handle u
 type DiffForEachHunkCallback func(DiffHunk) (DiffForEachLineCallback, error)
 
 //export diffForEachHunkCallback
-func diffForEachHunkCallback(delta *C.git_diff_delta, hunk *C.git_diff_hunk, handle unsafe.Pointer) C.int {
+func diffForEachHunkCallback(delta *C.git_diff_delta, hunk *C.git_diff_hunk, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	payload := pointerHandles.Get(handle)
 	data, ok := payload.(*diffForEachCallbackData)
 	if !ok {
@@ -400,7 +402,8 @@ func diffForEachHunkCallback(delta *C.git_diff_delta, hunk *C.git_diff_hunk, han
 type DiffForEachLineCallback func(DiffLine) error
 
 //export diffForEachLineCallback
-func diffForEachLineCallback(delta *C.git_diff_delta, hunk *C.git_diff_hunk, line *C.git_diff_line, handle unsafe.Pointer) C.int {
+func diffForEachLineCallback(delta *C.git_diff_delta, hunk *C.git_diff_hunk, line *C.git_diff_line, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	payload := pointerHandles.Get(handle)
 	data, ok := payload.(*diffForEachCallbackData)
 	if !ok {
@@ -607,7 +610,8 @@ type diffNotifyCallbackData struct {
 }
 
 //export diffNotifyCallback
-func diffNotifyCallback(_diff_so_far unsafe.Pointer, delta_to_add *C.git_diff_delta, matched_pathspec *C.char, handle unsafe.Pointer) C.int {
+func diffNotifyCallback(_diff_so_far unsafe.Pointer, delta_to_add *C.git_diff_delta, matched_pathspec *C.char, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	diff_so_far := (*C.git_diff)(_diff_so_far)
 
 	payload := pointerHandles.Get(handle)
@@ -912,7 +916,8 @@ type applyCallbackData struct {
 }
 
 //export hunkApplyCallback
-func hunkApplyCallback(_hunk *C.git_diff_hunk, _payload unsafe.Pointer) C.int {
+func hunkApplyCallback(_hunk *C.git_diff_hunk, _payload unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	data, ok := pointerHandles.Get(_payload).(*applyCallbackData)
 	if !ok {
 		panic("invalid apply options payload")
@@ -937,7 +942,8 @@ func hunkApplyCallback(_hunk *C.git_diff_hunk, _payload unsafe.Pointer) C.int {
 }
 
 //export deltaApplyCallback
-func deltaApplyCallback(_delta *C.git_diff_delta, _payload unsafe.Pointer) C.int {
+func deltaApplyCallback(_delta *C.git_diff_delta, _payload unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	data, ok := pointerHandles.Get(_payload).(*applyCallbackData)
 	if !ok {
 		panic("invalid apply options payload")

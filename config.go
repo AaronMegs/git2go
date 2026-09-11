@@ -250,8 +250,13 @@ func (c *Config) SetString(name, value string) (err error) {
 }
 
 func (c *Config) Free() {
+	if c == nil || c.ptr == nil {
+		return
+	}
+	ptr := c.ptr
+	c.ptr = nil
 	runtime.SetFinalizer(c, nil)
-	C.git_config_free(c.ptr)
+	C.git_config_free(ptr)
 }
 
 func (c *Config) SetInt32(name string, value int32) (err error) {
@@ -399,8 +404,13 @@ func (iter *ConfigIterator) Next() (*ConfigEntry, error) {
 }
 
 func (iter *ConfigIterator) Free() {
+	if iter == nil || iter.ptr == nil {
+		return
+	}
+	ptr := iter.ptr
+	iter.ptr = nil
 	runtime.SetFinalizer(iter, nil)
-	C.git_config_iterator_free(iter.ptr)
+	C.git_config_iterator_free(ptr)
 }
 
 func ConfigFindGlobal() (string, error) {

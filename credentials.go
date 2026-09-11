@@ -102,9 +102,13 @@ func (o *Credential) Type() CredentialType {
 }
 
 func (o *Credential) Free() {
-	C.git_credential_free(o.ptr)
-	runtime.SetFinalizer(o, nil)
+	if o == nil || o.ptr == nil {
+		return
+	}
+	ptr := o.ptr
 	o.ptr = nil
+	runtime.SetFinalizer(o, nil)
+	C.git_credential_free(ptr)
 }
 
 // GetUserpassPlaintext returns the plaintext username/password combination stored in the Cred.
@@ -233,6 +237,7 @@ type credentialSSHCustomData struct {
 
 //export credentialSSHCustomFree
 func credentialSSHCustomFree(cred *C.git_credential_ssh_custom) {
+	defer recoverVoidCallback()
 	if cred == nil {
 		return
 	}
@@ -251,7 +256,8 @@ func credentialSSHSignCallback(
 	data *C.uchar,
 	data_len C.size_t,
 	handle unsafe.Pointer,
-) C.int {
+) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "credentialSSHSignCallback")
 	signer := pointerHandles.Get(handle).(*credentialSSHCustomData).signer
 	signature, err := signer.Sign(rand.Reader, C.GoBytes(unsafe.Pointer(data), C.int(data_len)))
 	if err != nil {

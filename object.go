@@ -196,8 +196,13 @@ func (o *Object) AsTag() (*Tag, error) {
 }
 
 func (o *Object) Free() {
+	if o == nil || o.ptr == nil {
+		return
+	}
+	ptr := o.ptr
+	o.ptr = nil
 	runtime.SetFinalizer(o, nil)
-	C.git_object_free(o.ptr)
+	C.git_object_free(ptr)
 }
 
 // Peel recursively peels an object until an object of the specified type is met.

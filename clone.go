@@ -59,6 +59,7 @@ func remoteCreateCallback(
 	cname, curl *C.char,
 	handle unsafe.Pointer,
 ) C.int {
+	defer recoverVoidCallback()
 	name := C.GoString(cname)
 	url := C.GoString(curl)
 	repo := newRepositoryFromC(crepo)

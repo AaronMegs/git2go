@@ -167,7 +167,7 @@ func (v *RevWalk) Next(id *Oid) (err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_revwalk_next(id.toC(), v.ptr)
+	ret := C.git_revwalk_next(id.outC(), v.ptr)
 	runtime.KeepAlive(v)
 	switch {
 	case ret < 0:
@@ -215,6 +215,11 @@ func (v *RevWalk) Sorting(sm SortType) {
 }
 
 func (v *RevWalk) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
 	runtime.SetFinalizer(v, nil)
-	C.git_revwalk_free(v.ptr)
+	C.git_revwalk_free(ptr)
 }

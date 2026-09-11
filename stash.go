@@ -66,7 +66,7 @@ func (c *StashCollection) Save(
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_stash_save(
-		oid.toC(), c.repo.ptr,
+		oid.outC(), c.repo.ptr,
 		stasherC, messageC, C.uint32_t(flags))
 	runtime.KeepAlive(c)
 	if ret < 0 {
@@ -119,7 +119,7 @@ func (c *StashCollection) SaveWithOptions(opts *StashSaveOptions) (*Oid, error) 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_stash_save_with_opts(oid.toC(), c.repo.ptr, &copts)
+	ret := C.git_stash_save_with_opts(oid.outC(), c.repo.ptr, &copts)
 	runtime.KeepAlive(c)
 	if ret < 0 {
 		return nil, MakeGitError(ret)
@@ -176,7 +176,8 @@ type stashApplyProgressCallbackData struct {
 }
 
 //export stashApplyProgressCallback
-func stashApplyProgressCallback(progress C.git_stash_apply_progress_t, handle unsafe.Pointer) C.int {
+func stashApplyProgressCallback(progress C.git_stash_apply_progress_t, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	payload := pointerHandles.Get(handle)
 	data, ok := payload.(*stashApplyProgressCallbackData)
 	if !ok {
@@ -302,7 +303,8 @@ type stashCallbackData struct {
 }
 
 //export stashForeachCallback
-func stashForeachCallback(index C.size_t, message *C.char, id *C.git_oid, handle unsafe.Pointer) C.int {
+func stashForeachCallback(index C.size_t, message *C.char, id *C.git_oid, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	payload := pointerHandles.Get(handle)
 	data, ok := payload.(*stashCallbackData)
 	if !ok {

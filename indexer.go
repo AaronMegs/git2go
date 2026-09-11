@@ -105,7 +105,12 @@ func (indexer *Indexer) Commit() (*Oid, error) {
 
 // Free frees the indexer and its resources.
 func (indexer *Indexer) Free() {
+	if indexer == nil || indexer.ptr == nil {
+		return
+	}
+	ptr := indexer.ptr
+	indexer.ptr = nil
 	untrackCallbacksPayload(&indexer.ccallbacks)
 	runtime.SetFinalizer(indexer, nil)
-	C.git_indexer_free(indexer.ptr)
+	C.git_indexer_free(ptr)
 }

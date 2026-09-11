@@ -32,8 +32,13 @@ func newSubmoduleFromC(ptr *C.git_submodule, r *Repository) *Submodule {
 }
 
 func (sub *Submodule) Free() {
+	if sub == nil || sub.ptr == nil {
+		return
+	}
+	ptr := sub.ptr
+	sub.ptr = nil
 	runtime.SetFinalizer(sub, nil)
-	C.git_submodule_free(sub.ptr)
+	C.git_submodule_free(ptr)
 }
 
 type SubmoduleUpdate int
@@ -117,7 +122,8 @@ type submoduleCallbackData struct {
 }
 
 //export submoduleCallback
-func submoduleCallback(csub unsafe.Pointer, name *C.char, handle unsafe.Pointer) C.int {
+func submoduleCallback(csub unsafe.Pointer, name *C.char, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	sub := &Submodule{ptr: (*C.git_submodule)(csub)}
 
 	data, ok := pointerHandles.Get(handle).(submoduleCallbackData)

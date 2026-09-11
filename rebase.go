@@ -9,7 +9,6 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"runtime"
 	"unsafe"
 )
@@ -82,7 +81,8 @@ func commitCreateCallback(
 	_parent_count C.size_t,
 	_parents **C.git_commit,
 	handle unsafe.Pointer,
-) C.int {
+) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "commitCreateCallback")
 	data, ok := pointerHandles.Get(handle).(*rebaseOptionsData)
 	if !ok {
 		panic("invalid sign payload")
@@ -106,12 +106,7 @@ func commitCreateCallback(
 
 	var goParents []*C.git_commit
 	if _parent_count > 0 {
-		hdr := reflect.SliceHeader{
-			Data: uintptr(unsafe.Pointer(_parents)),
-			Len:  int(_parent_count),
-			Cap:  int(_parent_count),
-		}
-		goParents = *(*[]*C.git_commit)(unsafe.Pointer(&hdr))
+		goParents = unsafe.Slice(_parents, int(_parent_count))
 	}
 
 	parents := make([]*Commit, int(_parent_count))
@@ -434,7 +429,7 @@ func (rebase *Rebase) Commit(ID *Oid, author, committer *Signature, message stri
 	cmsg := C.CString(message)
 	defer C.free(unsafe.Pointer(cmsg))
 
-	cerr := C.git_rebase_commit(ID.toC(), rebase.ptr, authorSig, committerSig, nil, cmsg)
+	cerr := C.git_rebase_commit(ID.outC(), rebase.ptr, authorSig, committerSig, nil, cmsg)
 	runtime.KeepAlive(ID)
 	runtime.KeepAlive(rebase)
 	if cerr < 0 {
@@ -473,13 +468,20 @@ func (rebase *Rebase) Abort() error {
 
 // Free frees the Rebase object.
 func (r *Rebase) Free() {
+	if r == nil || r.ptr == nil {
+		return
+	}
+	ptr := r.ptr
+	r.ptr = nil
+	opts := r.options
+	r.options = nil
 	runtime.SetFinalizer(r, nil)
-	C.git_rebase_free(r.ptr)
-	freeRebaseOptions(r.options)
+	C.git_rebase_free(ptr)
+	freeRebaseOptions(opts)
 }
 
 func newRebaseFromC(ptr *C.git_rebase, repo *Repository, opts *C.git_rebase_options) *Rebase {
-    rebase := &Rebase{ptr: ptr, r: repo, options: opts}
+	rebase := &Rebase{ptr: ptr, r: repo, options: opts}
 	runtime.SetFinalizer(rebase, (*Rebase).Free)
 	return rebase
 }

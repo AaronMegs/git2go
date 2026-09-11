@@ -99,6 +99,7 @@ func checkoutNotifyCallback(
 	cpath *C.char,
 	cbaseline, ctarget, cworkdir, handle unsafe.Pointer,
 ) C.int {
+	defer recoverVoidCallback()
 	if handle == nil {
 		return C.int(ErrorCodeOK)
 	}
@@ -131,6 +132,7 @@ func checkoutProgressCallback(
 	completed_steps, total_steps C.size_t,
 	handle unsafe.Pointer,
 ) {
+	defer recoverVoidCallback()
 	data := pointerHandles.Get(handle).(*checkoutCallbackData)
 	if data.options.ProgressCallback == nil {
 		return

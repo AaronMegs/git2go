@@ -220,7 +220,11 @@ func (result *DescribeResult) Format(opts *DescribeFormatOptions) (string, error
 
 // Free cleans up the C reference.
 func (result *DescribeResult) Free() {
-	runtime.SetFinalizer(result, nil)
-	C.git_describe_result_free(result.ptr)
+	if result == nil || result.ptr == nil {
+		return
+	}
+	ptr := result.ptr
 	result.ptr = nil
+	runtime.SetFinalizer(result, nil)
+	C.git_describe_result_free(ptr)
 }

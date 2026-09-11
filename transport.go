@@ -277,8 +277,13 @@ func newRegisteredSmartTransport(
 }
 
 // Free releases all resources used by the RegisteredSmartTransport and
-// unregisters the custom transport definition referenced by it.
+// unregisters the custom transport definition referenced by it. It is safe to
+// call more than once.
 func (t *RegisteredSmartTransport) Free() error {
+	if t == nil || t.handle == nil {
+		return nil
+	}
+
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -301,7 +306,8 @@ func smartTransportCallback(
 	out **C.git_transport,
 	owner *C.git_remote,
 	handle unsafe.Pointer,
-) C.int {
+) (cbret C.int) {
+	defer recoverCallback(errorMessage, &cbret, "smartTransportCallback")
 	registeredSmartTransport := pointerHandles.Get(handle).(*RegisteredSmartTransport)
 	remote, ok := remotePointers.get(owner)
 	if !ok {
@@ -335,7 +341,8 @@ func smartTransportSubtransportCallback(
 	errorMessage **C.char,
 	wrapperPtr *C._go_managed_smart_subtransport,
 	owner *C.git_transport,
-) C.int {
+) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "smartTransportSubtransportCallback")
 	subtransport := pointerHandles.Get(wrapperPtr.handle).(*managedSmartSubtransport)
 
 	underlyingSmartSubtransport, err := subtransport.callback(subtransport.remote, &Transport{ptr: owner})
@@ -368,7 +375,8 @@ func smartSubtransportActionCallback(
 	t *C.git_smart_subtransport,
 	url *C.char,
 	action C.git_smart_service_t,
-) C.int {
+) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "smartSubtransportActionCallback")
 	subtransport := getSmartSubtransportInterface(t)
 
 	underlyingStream, err := subtransport.underlying.Action(C.GoString(url), SmartServiceAction(action))
@@ -400,7 +408,8 @@ func smartSubtransportActionCallback(
 }
 
 //export smartSubtransportCloseCallback
-func smartSubtransportCloseCallback(errorMessage **C.char, t *C.git_smart_subtransport) C.int {
+func smartSubtransportCloseCallback(errorMessage **C.char, t *C.git_smart_subtransport) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "smartSubtransportCloseCallback")
 	subtransport := getSmartSubtransportInterface(t)
 
 	subtransport.currentManagedStream = nil
@@ -417,6 +426,7 @@ func smartSubtransportCloseCallback(errorMessage **C.char, t *C.git_smart_subtra
 
 //export smartSubtransportFreeCallback
 func smartSubtransportFreeCallback(t *C.git_smart_subtransport) {
+	defer recoverVoidCallback()
 	subtransport := getSmartSubtransportInterface(t)
 
 	if subtransport.underlying != nil {
@@ -448,7 +458,8 @@ func smartSubtransportStreamReadCallback(
 	buffer *C.char,
 	bufSize C.size_t,
 	bytesRead *C.size_t,
-) C.int {
+) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "smartSubtransportStreamReadCallback")
 	stream := getSmartSubtransportStreamInterface(s)
 
 	var p []byte
@@ -476,7 +487,8 @@ func smartSubtransportStreamWriteCallback(
 	s *C.git_smart_subtransport_stream,
 	buffer *C.char,
 	bufLen C.size_t,
-) C.int {
+) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "smartSubtransportStreamWriteCallback")
 	stream := getSmartSubtransportStreamInterface(s)
 
 	var p []byte
@@ -494,6 +506,7 @@ func smartSubtransportStreamWriteCallback(
 
 //export smartSubtransportStreamFreeCallback
 func smartSubtransportStreamFreeCallback(s *C.git_smart_subtransport_stream) {
+	defer recoverVoidCallback()
 	stream := getSmartSubtransportStreamInterface(s)
 
 	stream.underlying.Free()

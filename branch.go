@@ -61,8 +61,13 @@ func (i *BranchIterator) Next() (*Branch, BranchType, error) {
 }
 
 func (i *BranchIterator) Free() {
+	if i == nil || i.ptr == nil {
+		return
+	}
+	ptr := i.ptr
+	i.ptr = nil
 	runtime.SetFinalizer(i, nil)
-	C.git_branch_iterator_free(i.ptr)
+	C.git_branch_iterator_free(ptr)
 }
 
 func (i *BranchIterator) ForEach(f BranchIteratorFunc) error {
