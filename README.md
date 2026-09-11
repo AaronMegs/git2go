@@ -193,6 +193,17 @@ and how compile-time ABI assertions and runtime capability probes divide the
 work of version compatibility. It ends with a checklist to run through when
 adding a new binding.
 
+`docs/capability-boundaries.md` records what this binding can and cannot do,
+and why. It separates upstream limitations (reference transactions are
+unavailable on reftable; no released libgit2 carries the promoted typed object
+ids yet) from deliberate non-bindings (the `oid` comparison and formatting
+helpers are implemented in Go) and from genuine gaps, and lists the outstanding
+work split by whether it is breaking. Per-module coverage of the libgit2 public
+API can be reproduced with:
+
+    python3 script/audit-binding-coverage.py            # all modules
+    python3 script/audit-binding-coverage.py oid odb    # unbound symbols
+
 Parallelism and network operations
 ----------------------------------
 
