@@ -6,8 +6,7 @@ package git
 import "C"
 import (
 	"bytes"
-	"runtime"
-	"unsafe"
+	"sort"
 )
 
 // ObjectIdType identifies the hash algorithm used to compute a Git object id.
@@ -15,6 +14,11 @@ import (
 type ObjectIdType uint8
 
 const (
+	// ObjectIdTypeDefault lets libgit2 choose its default object id type
+	// (currently SHA1). It matches the `0` that libgit2 treats as "unset" in
+	// its options structs.
+	ObjectIdTypeDefault ObjectIdType = 0
+
 	// ObjectIdSHA1 is the SHA1 object id type (20-byte / 40-hex). It is always
 	// available.
 	ObjectIdSHA1 ObjectIdType = 1
@@ -22,6 +26,47 @@ const (
 	// ObjectIdSHA256 is the SHA256 object id type (32-byte / 64-hex).
 	ObjectIdSHA256 ObjectIdType = 2
 )
+
+// validateObjectIdType rejects object id types that libgit2 does not know
+// about, so that a bogus value is reported as a Go error instead of being
+// forwarded to C where it would be interpreted as an unrelated enum value.
+func validateObjectIdType(t ObjectIdType) error {
+	switch t {
+	case ObjectIdTypeDefault, ObjectIdSHA1, ObjectIdSHA256:
+		return nil
+	default:
+		return &GitError{Message: "invalid object id type", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+}
+
+// String returns the canonical `extensions.objectFormat` token for the type.
+func (t ObjectIdType) String() string {
+	switch t {
+	case ObjectIdTypeDefault, ObjectIdSHA1:
+		return "sha1"
+	case ObjectIdSHA256:
+		return "sha256"
+	default:
+		return "unknown"
+	}
+}
+
+// Size returns the raw object id length in bytes, or zero for an unknown type.
+func (t ObjectIdType) Size() int {
+	switch t {
+	case ObjectIdTypeDefault, ObjectIdSHA1:
+		return int(C.GIT_OID_SHA1_SIZE)
+	case ObjectIdSHA256:
+		return int(C.GIT_OID_SHA256_SIZE)
+	default:
+		return 0
+	}
+}
+
+// HexSize returns the hexadecimal object id length, or zero for an unknown type.
+func (t ObjectIdType) HexSize() int {
+	return t.Size() * 2
+}
 
 // Cmp compares oid to oid2, ordering first by object id type and then by raw
 // bytes. The return value follows the bytes.Compare convention (-1, 0 or +1)
@@ -83,29 +128,71 @@ func (oid *Oid) NCmp(oid2 *Oid, n uint) int {
 
 // ShortenOids returns the minimum length of the given object ids' hex
 // representations that uniquely identifies all of them (clamped to at least
-// minlen).
+// minlen). All ids must share the same object id type.
+//
+// This is implemented in Go rather than through libgit2's git_oid_shorten
+// because that API only examines GIT_OID_SHA1_HEXSIZE (40) characters and
+// therefore cannot distinguish SHA256 ids that first differ after the 40th hex
+// character.
 func ShortenOids(ids []*Oid, minlen int) (int, error) {
-	shorten := C.git_oid_shorten_new(C.size_t(minlen))
-	if shorten == nil {
-		panic("Out of memory")
+	if minlen < 0 {
+		return 0, &GitError{Message: "minimum oid prefix length is negative", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
 	}
-	defer C.git_oid_shorten_free(shorten)
+	if len(ids) == 0 {
+		return minlen, nil
+	}
 
-	var ret C.int
+	if ids[0] == nil {
+		return 0, &GitError{Message: "cannot shorten a nil oid", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+	typ := ids[0].Type()
+	hexSize := typ.HexSize()
+	if hexSize == 0 || minlen > hexSize {
+		return 0, &GitError{Message: "invalid minimum oid prefix length", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
 
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	for _, id := range ids {
-		hexLen := id.hexLen()
-		buf := make([]byte, hexLen+1)
-		C.git_oid_fmt((*C.char)(unsafe.Pointer(&buf[0])), id.toC())
-		buf[hexLen] = 0
-		ret = C.git_oid_shorten_add(shorten, (*C.char)(unsafe.Pointer(&buf[0])))
-		if ret < 0 {
-			return int(ret), MakeGitError(ret)
+	values := make([]string, len(ids))
+	for i, id := range ids {
+		if id == nil {
+			return 0, &GitError{Message: "cannot shorten a nil oid", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+		}
+		if id.Type() != typ {
+			return 0, &GitError{Message: "cannot shorten mixed object id types", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+		}
+		values[i] = id.String()
+	}
+	sort.Strings(values)
+	for i := 1; i < len(values); i++ {
+		if values[i] == values[i-1] {
+			return 0, &GitError{Message: "cannot shorten duplicate object ids", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
 		}
 	}
-	runtime.KeepAlive(ids)
-	return int(ret), nil
+
+	result := minlen
+	if result < 1 {
+		result = 1
+	}
+	for i := 1; i < len(values); i++ {
+		common := commonHexPrefix(values[i-1], values[i]) + 1
+		if common > result {
+			result = common
+		}
+	}
+	if result > hexSize {
+		result = hexSize
+	}
+	return result, nil
+}
+
+func commonHexPrefix(a, b string) int {
+	limit := len(a)
+	if len(b) < limit {
+		limit = len(b)
+	}
+	for i := 0; i < limit; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return limit
 }

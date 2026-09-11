@@ -3,7 +3,6 @@ package git
 /*
 #include <git2.h>
 
-extern int _go_git_repository_init(git_repository **out, const char *path, unsigned is_bare, int oid_type);
 extern int _go_git_odb_hash(git_oid *out, const void *data, size_t len, git_object_t obj_type, int oid_type);
 extern int _go_git_repository_oid_type(git_repository *repo);
 */
@@ -30,22 +29,27 @@ func (v *Repository) OidType() ObjectIdType {
 	return ObjectIdType(t)
 }
 
+// IsSha256Supported reports whether the linked libgit2 exposes SHA256 object id
+// support.
+//
+// Unlike a version comparison this is a genuine capability probe: libgit2 can be
+// compiled without a SHA256 provider even when the headers declare the typed
+// object id API.
+func IsSha256Supported() bool {
+	return Features()&FeatureSHA256 != 0
+}
+
 // InitRepositoryWithOidType creates a new repository that stores objects using
 // the given object id type (ObjectIdSHA1 or ObjectIdSHA256).
+//
+// It is a convenience wrapper around InitRepositoryExt so that object-format
+// and reference-format initialization share a single code path.
 func InitRepositoryWithOidType(path string, isBare bool, oidType ObjectIdType) (*Repository, error) {
-	cpath := C.CString(path)
-	defer C.free(unsafe.Pointer(cpath))
-
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	var ptr *C.git_repository
-	ret := C._go_git_repository_init(&ptr, cpath, ucbool(isBare), C.int(oidType))
-	if ret < 0 {
-		return nil, MakeGitError(ret)
+	flags := RepositoryInitFlag(0)
+	if isBare {
+		flags |= RepositoryInitBare
 	}
-
-	return newRepositoryFromC(ptr), nil
+	return InitRepositoryExt(path, &RepositoryInitOptions{Flags: flags, OidType: oidType})
 }
 
 // NewOdbWithOidType creates a standalone object database with no backends using
@@ -69,6 +73,9 @@ func NewOdbBackendLooseWithOidType(objectsDir string, compressionLevel int, doFs
 // HashWithType determines the object id of a data buffer using the given object
 // id type (ObjectIdSHA1 or ObjectIdSHA256).
 func (v *Odb) HashWithType(data []byte, otype ObjectType, oidType ObjectIdType) (*Oid, error) {
+	if err := validateObjectIdType(oidType); err != nil {
+		return nil, err
+	}
 	oid := new(Oid)
 
 	runtime.LockOSThread()
@@ -82,7 +89,7 @@ func (v *Odb) HashWithType(data []byte, otype ObjectType, oidType ObjectIdType) 
 		size = C.size_t(0)
 	}
 
-	ret := C._go_git_odb_hash(oid.toC(), unsafe.Pointer(&data[0]), size, C.git_object_t(otype), C.int(oidType))
+	ret := C._go_git_odb_hash(oid.outC(), unsafe.Pointer(&data[0]), size, C.git_object_t(otype), C.int(oidType))
 	runtime.KeepAlive(data)
 	runtime.KeepAlive(v)
 	if ret < 0 {
@@ -96,12 +103,18 @@ func (v *Odb) HashWithType(data []byte, otype ObjectType, oidType ObjectIdType) 
 // example line-ending conversion); use repository-aware hashing when filters
 // must be applied.
 func (v *Odb) HashFileWithType(path string, otype ObjectType, oidType ObjectIdType) (*Oid, error) {
+	if err := validateObjectIdType(oidType); err != nil {
+		return nil, err
+	}
 	return v.hashFileWithOidType(path, otype, oidType)
 }
 
 // NewIndexerForOidType creates a new indexer instance for a packfile of the
 // given object id type (ObjectIdSHA1 or ObjectIdSHA256).
 func NewIndexerForOidType(packfilePath string, odb *Odb, oidType ObjectIdType, callback TransferProgressCallback) (*Indexer, error) {
+	if err := validateObjectIdType(oidType); err != nil {
+		return nil, err
+	}
 	return newIndexerWithOidType(packfilePath, odb, C.int(oidType), callback)
 }
 
@@ -109,6 +122,9 @@ func NewIndexerForOidType(packfilePath string, odb *Odb, oidType ObjectIdType, c
 // given type. It won't be associated with any file on the filesystem or
 // repository.
 func NewIndexWithOidType(oidType ObjectIdType) (*Index, error) {
+	if err := validateObjectIdType(oidType); err != nil {
+		return nil, err
+	}
 	return newIndexWithOidType(C.int(oidType))
 }
 
@@ -116,11 +132,17 @@ func NewIndexWithOidType(oidType ObjectIdType) (*Index, error) {
 // of the given type. If the file does not exist it will be created when Write()
 // is called.
 func OpenIndexWithOidType(path string, oidType ObjectIdType) (*Index, error) {
+	if err := validateObjectIdType(oidType); err != nil {
+		return nil, err
+	}
 	return openIndexWithOidType(path, C.int(oidType))
 }
 
 // DiffFromBufferWithOidType reads the contents of a git patch file that uses the
 // given object id type into a Diff object.
 func DiffFromBufferWithOidType(buffer []byte, repo *Repository, oidType ObjectIdType) (*Diff, error) {
+	if err := validateObjectIdType(oidType); err != nil {
+		return nil, err
+	}
 	return diffFromBufferWithOidType(buffer, repo, C.int(oidType))
 }

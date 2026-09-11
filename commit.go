@@ -221,7 +221,7 @@ func (c *Commit) Amend(refname string, author, committer *Signature, message str
 
 	oid := new(Oid)
 
-	cerr := C.git_commit_amend(oid.toC(), c.cast_ptr, cref, authorSig, committerSig, nil, cmsg, tree.cast_ptr)
+	cerr := C.git_commit_amend(oid.outC(), c.cast_ptr, cref, authorSig, committerSig, nil, cmsg, tree.cast_ptr)
 	runtime.KeepAlive(oid)
 	runtime.KeepAlive(c)
 	runtime.KeepAlive(tree)
@@ -287,7 +287,7 @@ func (v *Repository) CreateCommitFromStage(message string, opts *CommitCreateOpt
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_commit_create_from_stage(oid.toC(), v.ptr, cmsg, &copts)
+	ret := C.git_commit_create_from_stage(oid.outC(), v.ptr, cmsg, &copts)
 	runtime.KeepAlive(v)
 	if ret < 0 {
 		return nil, MakeGitError(ret)

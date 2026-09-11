@@ -13,6 +13,7 @@ static git_commit *_go_git_commitarray_get(git_commitarray *array, size_t idx) {
 import "C"
 import (
 	"runtime"
+	"strings"
 	"unsafe"
 )
 
@@ -142,6 +143,199 @@ func InitRepository(path string, isbare bool) (*Repository, error) {
 	return newRepositoryFromC(ptr), nil
 }
 
+// RepositoryInitFlag is a bitmask of options for InitRepositoryExt.
+// Mirrors `git_repository_init_flag_t` from include/git2/repository.h.
+type RepositoryInitFlag uint32
+
+const (
+	// RepositoryInitBare creates a bare repository (no working directory).
+	RepositoryInitBare RepositoryInitFlag = C.GIT_REPOSITORY_INIT_BARE
+	// RepositoryInitNoReinit returns GIT_EEXISTS if the path already looks
+	// like a git repository, instead of re-initializing it.
+	RepositoryInitNoReinit RepositoryInitFlag = C.GIT_REPOSITORY_INIT_NO_REINIT
+	// RepositoryInitMkdir creates the trailing component of the repo / workdir
+	// paths if missing.
+	RepositoryInitMkdir RepositoryInitFlag = C.GIT_REPOSITORY_INIT_MKDIR
+	// RepositoryInitMkpath recursively creates all components of the repo /
+	// workdir paths.
+	RepositoryInitMkpath RepositoryInitFlag = C.GIT_REPOSITORY_INIT_MKPATH
+	// RepositoryInitExternalTemplate uses an external template directory,
+	// taken from TemplatePath or `init.templatedir` config.
+	RepositoryInitExternalTemplate RepositoryInitFlag = C.GIT_REPOSITORY_INIT_EXTERNAL_TEMPLATE
+	// RepositoryInitRelativeGitlink uses relative paths for the gitdir and
+	// core.worktree when an alternate workdir is specified.
+	RepositoryInitRelativeGitlink RepositoryInitFlag = C.GIT_REPOSITORY_INIT_RELATIVE_GITLINK
+)
+
+// RepositoryInitMode controls the file permissions of the new repository.
+// Mirrors `git_repository_init_mode_t`. Custom octal values may also be used.
+type RepositoryInitMode uint32
+
+const (
+	// RepositoryInitSharedUmask uses the permissions configured by umask (default).
+	RepositoryInitSharedUmask RepositoryInitMode = C.GIT_REPOSITORY_INIT_SHARED_UMASK
+	// RepositoryInitSharedGroup mirrors `--shared=group`: group-writable + g+sx.
+	RepositoryInitSharedGroup RepositoryInitMode = C.GIT_REPOSITORY_INIT_SHARED_GROUP
+	// RepositoryInitSharedAll mirrors `--shared=all`: adds world readability.
+	RepositoryInitSharedAll RepositoryInitMode = C.GIT_REPOSITORY_INIT_SHARED_ALL
+)
+
+// RepositoryInitOptions is the Go-side counterpart of
+// `git_repository_init_options` used by `git_repository_init_ext`.
+//
+// All fields are optional; the zero value is equivalent to passing
+// `GIT_REPOSITORY_INIT_OPTIONS_INIT` in C and produces the same default
+// behaviour as the simpler `InitRepository(path, false)`.
+type RepositoryInitOptions struct {
+	// Flags is a bitmask of RepositoryInitFlag values.
+	Flags RepositoryInitFlag
+	// Mode controls the file permissions of the new repository.
+	// May be one of the RepositoryInitMode constants or a custom octal value.
+	Mode RepositoryInitMode
+	// WorkdirPath overrides the working directory location.
+	// If relative, it is evaluated relative to the repository path.
+	WorkdirPath string
+	// Description overrides the content of the `description` file.
+	Description string
+	// TemplatePath is the template directory used when
+	// RepositoryInitExternalTemplate is set in Flags.
+	TemplatePath string
+	// InitialHead is the name of HEAD's initial branch (e.g. "main").
+	// If empty, libgit2 falls back to "master" or the configured
+	// `init.defaultBranch`.
+	InitialHead string
+	// OriginURL, if set, adds an "origin" remote pointing to this URL
+	// after initialization.
+	OriginURL string
+	// OidType selects the object-id hash algorithm. The zero value lets
+	// libgit2 use its default (SHA1).
+	OidType ObjectIdType
+	// RefdbType selects the on-disk reference storage backend.
+	//
+	// Mapped to the `refdb_type` field of `git_repository_init_options`
+	// that was added by upstream PR #7117. Use RefdbReftable to request
+	// the reftable backend; the zero value (RefdbDefault) keeps libgit2's
+	// default ("files").
+	//
+	// NOTE: reftable is only available on libgit2 master builds that
+	// include PR #7117. Released v1.9.3 / v1.9.4 will reject this field.
+	RefdbType RefdbType
+}
+
+// InitRepositoryExt initializes a repository using the extended options API
+// (`git_repository_init_ext`). Compared to InitRepository, this exposes the
+// full surface of init flags, working-directory and template overrides, the
+// initial HEAD branch, an optional origin URL, and (on libgit2 master) the
+// reference database backend selection (`refdb_type`).
+//
+// Passing a nil opts is equivalent to passing a zero-value RepositoryInitOptions,
+// which behaves like `InitRepository(path, false)`.
+//
+// Example (bare repository with an explicit initial branch):
+//
+//	repo, err := git.InitRepositoryExt("/path/to/repo", &git.RepositoryInitOptions{
+//		Flags:       git.RepositoryInitMkpath | git.RepositoryInitBare,
+//		InitialHead: "main",
+//	})
+//
+// Example (reftable backend; requires a libgit2 build with reftable support,
+// see IsReftableSupported):
+//
+//	repo, err := git.InitRepositoryExt("/path/to/repo", &git.RepositoryInitOptions{
+//		Flags:     git.RepositoryInitMkpath | git.RepositoryInitBare,
+//		RefdbType: git.RefdbReftable,
+//	})
+func InitRepositoryExt(path string, opts *RepositoryInitOptions) (*Repository, error) {
+	if opts != nil {
+		if err := validateObjectIdType(opts.OidType); err != nil {
+			return nil, err
+		}
+		switch opts.RefdbType {
+		case RefdbDefault, RefdbFiles, RefdbReftable:
+		default:
+			return nil, &GitError{Message: "invalid repository reference storage type", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+		}
+		for name, value := range map[string]string{
+			"repository path": path,
+			"workdir path":    opts.WorkdirPath,
+			"description":     opts.Description,
+			"template path":   opts.TemplatePath,
+			"initial head":    opts.InitialHead,
+			"origin URL":      opts.OriginURL,
+		} {
+			if strings.IndexByte(value, 0) >= 0 {
+				return nil, &GitError{Message: name + " contains a NUL byte", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+			}
+		}
+	} else if strings.IndexByte(path, 0) >= 0 {
+		return nil, &GitError{Message: "repository path contains a NUL byte", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+
+	var copts C.git_repository_init_options
+	if ret := C.git_repository_init_options_init(&copts, C.GIT_REPOSITORY_INIT_OPTIONS_VERSION); ret < 0 {
+		return nil, MakeGitError(ret)
+	}
+
+	if opts != nil {
+		copts.flags = C.uint32_t(opts.Flags)
+		copts.mode = C.uint32_t(opts.Mode)
+
+		if opts.WorkdirPath != "" {
+			cwd := C.CString(opts.WorkdirPath)
+			defer C.free(unsafe.Pointer(cwd))
+			copts.workdir_path = cwd
+		}
+		if opts.Description != "" {
+			cdesc := C.CString(opts.Description)
+			defer C.free(unsafe.Pointer(cdesc))
+			copts.description = cdesc
+		}
+		if opts.TemplatePath != "" {
+			ctmpl := C.CString(opts.TemplatePath)
+			defer C.free(unsafe.Pointer(ctmpl))
+			copts.template_path = ctmpl
+		}
+		if opts.InitialHead != "" {
+			chead := C.CString(opts.InitialHead)
+			defer C.free(unsafe.Pointer(chead))
+			copts.initial_head = chead
+		}
+		if opts.OriginURL != "" {
+			curl := C.CString(opts.OriginURL)
+			defer C.free(unsafe.Pointer(curl))
+			copts.origin_url = curl
+		}
+		if opts.OidType != ObjectIdTypeDefault {
+			copts.oid_type = C.git_oid_t(opts.OidType)
+		}
+		// The reference-storage backend (refdb_type) is only present on
+		// libgit2 main. applyRefdbType is a no-op unless git2go is built
+		// with the `libgit2_reftable` build tag; this keeps InitRepositoryExt
+		// compilable against released libgit2 (v1.9.x) that lacks the field.
+		// See reftable_on.go / reftable_off.go.
+		if err := applyRefdbType(&copts, opts.RefdbType); err != nil {
+			return nil, err
+		}
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	var ptr *C.git_repository
+	ret := C.git_repository_init_ext(&ptr, cpath, &copts)
+	if ret < 0 {
+		if ptr != nil {
+			C.git_repository_free(ptr)
+		}
+		return nil, MakeGitError(ret)
+	}
+
+	return newRepositoryFromC(ptr), nil
+}
+
 func NewRepositoryWrapOdb(odb *Odb) (repo *Repository, err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -156,12 +350,31 @@ func NewRepositoryWrapOdb(odb *Odb) (repo *Repository, err error) {
 	return newRepositoryFromC(ptr), nil
 }
 
-func (v *Repository) SetRefdb(refdb *Refdb) {
-	C.git_repository_set_refdb(v.ptr, refdb.ptr)
+// SetRefdb replaces the repository's reference database with refdb.
+//
+// The repository takes a reference on refdb, so the caller may still Free its
+// own handle afterwards.
+func (v *Repository) SetRefdb(refdb *Refdb) error {
+	if refdb == nil || refdb.ptr == nil {
+		return &GitError{Message: "refdb is nil or already freed", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	ret := C.git_repository_set_refdb(v.ptr, refdb.ptr)
 	runtime.KeepAlive(v)
+	runtime.KeepAlive(refdb)
+	if ret < 0 {
+		return MakeGitError(ret)
+	}
+	return nil
 }
 
 func (v *Repository) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
 	ptr := v.ptr
 	v.ptr = nil
 	runtime.SetFinalizer(v, nil)
@@ -494,7 +707,7 @@ func (v *Repository) CreateCommit(
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_commit_create(
-		oid.toC(), v.ptr, cref,
+		oid.outC(), v.ptr, cref,
 		authorSig, committerSig,
 		nil, cmsg, tree.cast_ptr, C.size_t(nparents), parentsarg)
 
@@ -530,7 +743,7 @@ func (v *Repository) CreateCommitWithSignature(
 	defer runtime.UnlockOSThread()
 
 	oid := new(Oid)
-	ret := C.git_commit_create_with_signature(oid.toC(), v.ptr, cCommitContent, cSignature, cSignatureField)
+	ret := C.git_commit_create_with_signature(oid.outC(), v.ptr, cCommitContent, cSignature, cSignatureField)
 
 	runtime.KeepAlive(v)
 	runtime.KeepAlive(oid)
@@ -625,19 +838,23 @@ func (v *Repository) CreateCommitFromIds(
 
 	nparents := len(parents)
 	if nparents > 0 {
-		// All this awful pointer arithmetic is needed to avoid passing a Go
-		// pointer to Go pointer into C. Other methods (like CreateCommits) are
-		// fine without this workaround because they are just passing Go pointers
-		// to C pointers, but arrays-of-pointers-to-git_oid are a bit special since
-		// both the array and the objects are allocated from Go.
-		var emptyOidPtr *C.git_oid
-		sizeofOidPtr := unsafe.Sizeof(emptyOidPtr)
-		parentsarg = (**C.git_oid)(C.calloc(C.size_t(uintptr(nparents)), C.size_t(sizeofOidPtr)))
+		// The array of pointers must live in C memory: passing a Go pointer that
+		// itself contains Go pointers across the cgo boundary is forbidden by the
+		// pointer-passing rules. Other methods (like CreateCommits) do not need
+		// this because they pass a Go pointer to C pointers.
+		for _, parent := range parents {
+			if parent == nil {
+				return nil, &GitError{Message: "commit parent oid is nil", Class: ErrorClassInvalid, Code: ErrorCodeInvalid}
+			}
+		}
+		parentsarg = (**C.git_oid)(C.calloc(C.size_t(nparents), C.size_t(unsafe.Sizeof((*C.git_oid)(nil)))))
+		if parentsarg == nil {
+			return nil, &GitError{Message: "failed to allocate commit parent array", Class: ErrorClassNoMemory, Code: ErrorCodeGeneric}
+		}
 		defer C.free(unsafe.Pointer(parentsarg))
-		parentsptr := uintptr(unsafe.Pointer(parentsarg))
-		for _, v := range parents {
-			*(**C.git_oid)(unsafe.Pointer(parentsptr)) = v.toC()
-			parentsptr += sizeofOidPtr
+		cParents := unsafe.Slice(parentsarg, nparents)
+		for i := range parents {
+			cParents[i] = parents[i].toC()
 		}
 	}
 
@@ -657,7 +874,7 @@ func (v *Repository) CreateCommitFromIds(
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_commit_create_from_ids(
-		oid.toC(), v.ptr, cref,
+		oid.outC(), v.ptr, cref,
 		authorSig, committerSig,
 		nil, cmsg, tree.toC(), C.size_t(nparents), parentsarg)
 
@@ -673,13 +890,28 @@ func (v *Repository) CreateCommitFromIds(
 }
 
 func (v *Odb) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
 	runtime.SetFinalizer(v, nil)
-	C.git_odb_free(v.ptr)
+	C.git_odb_free(ptr)
 }
 
+// Free releases the reference database handle. It is safe to call more than
+// once.
 func (v *Refdb) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
+	owner := v.r
+	v.r = nil
 	runtime.SetFinalizer(v, nil)
-	C.git_refdb_free(v.ptr)
+	C.git_refdb_free(ptr)
+	runtime.KeepAlive(owner)
 }
 
 func (v *Repository) Odb() (odb *Odb, err error) {

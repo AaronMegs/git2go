@@ -49,7 +49,12 @@ func newOidFromC(coid *C.git_oid) *Oid {
 
 // NewOidFromBytes creates a SHA1 Oid from raw (binary) bytes. To build a SHA256
 // Oid use NewOidFromBytesWithType.
+//
+// It returns nil when b holds fewer than GIT_OID_SHA1_SIZE bytes.
 func NewOidFromBytes(b []byte) *Oid {
+	if len(b) < int(C.GIT_OID_SHA1_SIZE) {
+		return nil
+	}
 	oid := new(Oid)
 	oid.kind = uint8(ObjectIdSHA1)
 	copy(oid.id[:C.GIT_OID_SHA1_SIZE], b[:C.GIT_OID_SHA1_SIZE])
@@ -81,7 +86,33 @@ func NewOidFromBytesWithType(b []byte, t ObjectIdType) (*Oid, error) {
 	return oid, nil
 }
 
+// toC converts an Oid for use as a read-only C input parameter, without
+// mutating the receiver.
+//
+// A Go zero-valued Oid has no type byte set. libgit2 rejects an oid whose type
+// is 0, so the zero value is converted through a normalized SHA1 copy. Copying
+// (instead of fixing up the receiver in place) matters because Oid is
+// comparable and routinely used as a map key or shared across goroutines: a
+// silent in-place mutation would change the key of an already-inserted entry.
 func (oid *Oid) toC() *C.git_oid {
+	if oid == nil {
+		return nil
+	}
+	if oid.kind == 0 {
+		normalized := *oid
+		normalized.kind = uint8(ObjectIdSHA1)
+		return (*C.git_oid)(unsafe.Pointer(&normalized))
+	}
+	return (*C.git_oid)(unsafe.Pointer(oid))
+}
+
+// outC returns writable storage for a libgit2 output parameter. Unlike toC it
+// never copies, because the C call is expected to fill in both the type byte
+// and the raw id. Callers must keep the Oid alive until the C call returns.
+func (oid *Oid) outC() *C.git_oid {
+	if oid == nil {
+		return nil
+	}
 	return (*C.git_oid)(unsafe.Pointer(oid))
 }
 

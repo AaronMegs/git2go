@@ -7,6 +7,7 @@ package git
 import "C"
 import (
 	"errors"
+	"fmt"
 	"runtime"
 	"strings"
 	"unsafe"
@@ -284,6 +285,55 @@ func setCallbackError(errorMessage **C.char, err error) C.int {
 		return C.int(ErrorCodeUser)
 	}
 	return C.int(ErrorCodeOK)
+}
+
+// recoverCallback converts a panic raised inside a Go callback into a libgit2
+// error, and must be deferred as the first statement of every //export'ed
+// callback that returns an error code.
+//
+// A panic that unwinds across the cgo boundary is undefined behaviour: the C
+// frames in between (libgit2's own call stack) have no unwind information, so
+// the process typically dies without a usable trace and libgit2 is left
+// holding half-updated state. Converting it here keeps the failure inside
+// libgit2's normal error path, which unwinds its own frames correctly.
+//
+// It requires a named return value so that the deferred call can overwrite it:
+//
+//	//export someCallback
+//	func someCallback(errorMessage **C.char, ...) (ret C.int) {
+//		defer recoverCallback(errorMessage, &ret, "some callback")
+//		...
+//	}
+func recoverCallback(errorMessage **C.char, ret *C.int, what string) {
+	if r := recover(); r != nil {
+		*ret = setCallbackError(errorMessage, &GitError{
+			Message: fmt.Sprintf("panic in %s: %v", what, r),
+			Class:   ErrorClassCallback,
+			Code:    ErrorCodeUser,
+		})
+	}
+}
+
+// recoverVoidCallback is the counterpart of recoverCallback for //export'ed
+// callbacks that return nothing, where there is no error channel back into
+// libgit2 and the only correct action is to contain the panic.
+func recoverVoidCallback() {
+	_ = recover()
+}
+
+// recoverCallbackCode contains a panic in an //export'ed callback that reports
+// failure through its return code alone, without an errorMessage out-param
+// (these callbacks carry the original error in an errorTarget field instead).
+//
+// It returns GIT_EUSER so libgit2 aborts the enclosing operation. Returning
+// the zero value would mean "success", which would let libgit2 continue on top
+// of a callback that never completed — strictly worse than crashing.
+//
+// Like recoverCallback it requires a named return value.
+func recoverCallbackCode(ret *C.int) {
+	if recover() != nil {
+		*ret = C.int(ErrorCodeUser)
+	}
 }
 
 func Discover(start string, across_fs bool, ceiling_dirs []string) (string, error) {
