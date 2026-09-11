@@ -24,6 +24,8 @@
 | 10 | 升级 libgit2 pin 至 `0551dfd4` 并清除全部 hard-deprecated 依赖 | ✅ 已完成 |
 | 11 | 修复本地默认（dynamic）配置无法解析 promoted libgit2 | ✅ 已完成 |
 | 12 | 修复 GitHub CI `check-generate` 失败并现代化 workflow | ✅ 已完成 |
+| 13 | 整合 `feat-reftable`，使本线同时具备 SHA256 与 reftable 完整能力 | ✅ 已完成 |
+| 14 | 以上游 main 最新提交为准复核适配；调研 reftable 事务方案 | ✅ 已完成 |
 
 ---
 
@@ -477,3 +479,198 @@ ABI 不匹配的库，存在崩溃风险，代价高于收益。
 
 `reference.go` 补充了 `ReferenceInvalid` 与 `ReferenceAll` 两个常量，与本节 CI 修复无关，
 一并保留。
+
+---
+
+## 13. reftable 整合 — ✅ 已完成
+
+### 背景
+
+`feat-sha256`（本线）与 `feat-reftable` 自共同基线 `1f7dbc4`（libgit2 v1.9.4）后独立演进：
+本线 18 个独有提交，reftable 线 46 个。两侧在 `wrapper.c`、`repository.go`、`oid*.go`、
+`remote.go`、`Build_*.go`、CI、Makefile 上存在**语义冲突**（同一处两侧都改且改法不同），
+因此采用按功能域手工整合，逐文件判定采信方，而非 merge 后择一侧。
+
+完整决策记录见 `docs/sha256-reftable-integration-report.md`。
+
+### 新增能力
+
+- reftable 引用存储：`RefdbType`、`NewRefdbBackendReftable`、`RefStorageFormat`、
+  `IsReftableSupported`；
+- 统一初始化收口：`InitRepositoryExt` + `RepositoryInitOptions`，同时承载 `OidType`
+  与 `RefdbType`，`InitRepositoryWithOidType` 降为其薄封装；
+- Go 自定义 refdb 后端桥接（19 回调）、reflog API、引用事务 API；
+- 运行时版本报告 `Version` / `Prerelease` / `VersionString`。
+
+### 构建标签极性反转（与 reftable 线的有意分歧）
+
+reftable 线用 `libgit2_reftable` 选择性**开启**；本线改为**默认编入**，用
+`libgit2_no_reftable` 选择性关闭。理由：pin 的基线始终含 reftable，默认开启更贴合实际，
+且退化路径仍完整保留并有 CI job 守护。
+
+同时移除 `GIT2GO_HAS_REFDB_BACKEND_INIT` 条件编译（基线始终提供该回调）。
+
+### 整合中修复的既有缺陷
+
+交叉审查发现两侧各自遗留的 10 个真实缺陷，其中：
+
+| 缺陷 | 位置 | 影响 |
+| --- | --- | --- |
+| `SetBackend` 双重释放 | `refdb.go` | 成功/失败两条路径均可能 double free |
+| `git_oidarray` 未释放 | `merge.go` | 每次调用泄漏一个 oid 数组 |
+| `httpError` 无同步 | `http.go` | 数据竞争 |
+| `SetRefdb` 吞掉返回码 | `repository.go` | 替换失败被当作成功 |
+| `toC()` 变异 map key | `oid_typed.go` | 零值 `Oid` 作键时被 C 侧改写 |
+| `ShortenOids` SHA256 不正确 | `oid.go` | 返回无法区分的前缀长度 |
+| CMake 选项名失效 | `script/build-libgit2.sh` | 线程/正则/认证配置静默未生效 |
+| macOS `@rpath` 加载失败 | `Makefile` | `make test-dynamic` 在 macOS 完全无法运行 |
+
+后两项为本轮实测复现：CMake 报 `unused-cli` 警告列出 `THREADSAFE`；dyld 报
+`Library not loaded: @rpath/libgit2.1.9.dylib ... no LC_RPATH's found`。
+
+### 发布流程安全回退修复
+
+整合初期误判 diff 方向，漏取了 reftable 线 `tag.yml` 的加固设计，已补回：
+
+- 顶层 `permissions: contents: read`，仅 tag job 提权为 write；
+- **job 分离**：validate 跑测试代码但无写权，tag 持写权但不执行仓库代码。修复前单 job
+  在执行测试的同时持有 write 凭据，被污染的测试用例可直接推送任意内容；
+- `persist-credentials: false`；
+- 只允许对 `origin/main` 的祖先提交打 tag；
+- 拒绝前导零编号；tag 前校验 `HEAD == validated SHA`（防 TOCTOU）。
+
+同时修正该文件自身的三处问题：`BUILD_DEPRECATED_HARD` → `DEPRECATE_HARD`（构建脚本读的是
+后者，原 job 静默失效）、移除已反转的 `libgit2_reftable` 标签、去掉与 Go vendor 树矛盾的
+`GOFLAGS` 注释。
+
+### 验证矩阵
+
+| 轨道 | 结果 |
+| --- | --- |
+| 静态（reftable 默认开启） | ok — 209 顶层 + 40 子测试，0 失败 0 跳过 |
+| 静态 + 竞态检测 | ok |
+| 静态 + `libgit2_no_reftable` | ok — reftable 相关用例正确降级为 SKIP |
+| 动态链接 | ok（修复 macOS `@rpath` 后） |
+| `DEPRECATE_HARD=ON` + cgo `-DGIT_DEPRECATE_HARD` | ok |
+| `gofmt` + `go vet` | clean（原有 5 处 unsafe 误用已消除） |
+
+核心验收项 SHA1/SHA256 × files/reftable 四组合**全部实际执行**，非跳过：
+
+```text
+--- PASS: TestRepositoryFormatMatrix/sha1-files
+--- PASS: TestRepositoryFormatMatrix/sha1-reftable
+--- PASS: TestRepositoryFormatMatrix/sha256-files
+--- PASS: TestRepositoryFormatMatrix/sha256-reftable
+```
+
+### 测试可靠性
+
+7 个测试依赖访问 `github.com`，此前在离线环境以 TLS 超时失败，且失败信息与本仓库代码无关。
+现由 `requiresNetwork(t)` 统一门控，`go test -short` 或 `GIT2GO_SKIP_NETWORK_TESTS=1`
+时跳过，并提供 `make test-static-offline`。
+
+### 面向 libgit2 v2
+
+- 零硬废弃依赖（库级 + cgo 级双重验证），v2 移除废弃 API 时不会断裂；
+- ABI 守卫集中于 `git2go_version_check.h`，v2 若调整 `git_oid` 布局会在编译期报错而非
+  运行期静默损坏；
+- 能力探测优先于版本比较（libgit2 main 仍自报 1.9.0，版本号本就不可信）；
+- CMake 选项已对齐上游当前命名；`go vet` 无 `reflect.SliceHeader` 等会被新 Go 收紧的用法。
+
+---
+
+## 14. 上游 main 复核与 reftable 事务调研 — ✅ 已完成
+
+### 14.1 pin 与上游 main tip 一致
+
+2026-09-07 复核（`git ls-remote` 直查远端，避免过期本地引用）：
+
+```text
+上游 main tip     0551dfd4ad989b6a3d5683c0d4cf326c6efef929
+本仓库 pin        0551dfd4ad989b6a3d5683c0d4cf326c6efef929
+落后提交数        0
+```
+
+网页侧交叉核对：该提交为 2026-08-15 合入的 PR #7346（zstream 死循环修复），
+其后上游 main **无新提交**。因此当前适配即针对 main 最新状态，无需追平。
+
+同时复核了 main 上与本线相关的近期动向：
+
+- `605f34a` / `c0d2d4a`：SHA256 转正，移除 experimental 构建；
+- `1e6aef7`：CI **移除 SHA256 构建、改为 nightly 跑 reftable 构建**；
+- `42ba2b8`：新增 `CLAR_REF_FORMAT` 变量以按引用格式跑测试套件；
+- `9b1ca87` / `3db3d5f`：reftable 修复与 SHA256 测试资源。
+
+上游 CI 从「SHA256 专项」转向「reftable 专项」，与本线把 reftable 绑定改为**默认编入**
+的判断一致。
+
+### 14.2 正式发布阻塞：已取得硬证据
+
+此前依据发布说明推断 v1.9.x 不含 promoted typed OID，本轮改为直接检查 tag 内容。
+最新 release 为 **v1.9.7**（`49e408b3`）：
+
+```text
+v1.9.7:include/git2/oid.h
+  git_object_id_options  -> 0 处   （promoted typed OID 的标志性类型，缺失）
+  git_oid_from_prefix    -> 0 处
+```
+
+且 SHA256 仍在实验开关之后：
+
+```c
+#ifdef GIT_EXPERIMENTAL_SHA256
+	GIT_OID_SHA1 = 1, GIT_OID_SHA256 = 2
+#else
+	GIT_OID_SHA1 = 1        /* 默认构建只有 SHA1 */
+#endif
+
+#ifdef GIT_EXPERIMENTAL_SHA256
+# define GIT_OID_MAX_SIZE  GIT_OID_SHA256_SIZE   /* 32 */
+#else
+# define GIT_OID_MAX_SIZE  GIT_OID_SHA1_SIZE     /* 20 */
+#endif
+```
+
+**结论：阻塞成立且已被一手证据确认。** 本线的 ABI 守卫要求
+`GIT_OID_MAX_SIZE == 32`，因此对 v1.9.7 会正确地编译期拒绝（CI 的
+`reject-legacy-v1-9-4` job 覆盖同类场景）。稳定 `v36.0.0` 仍须等待上游转正。
+
+### 14.3 reftable 事务：根因是架构失配，非工时问题
+
+完整调研见 `docs/reftable-transaction-research.md`。要点：
+
+| 维度 | files 后端 | reftable 后端 |
+| --- | --- | --- |
+| 锁粒度 | 单引用（`x.lock`） | **整个引用数据库**（`tables.list`） |
+| 可同时持有多把锁 | 是 | **否** |
+| 原子性单位 | 每次 unlock 独立落盘 | 一个 addition 全量提交 |
+
+libgit2 的 refdb vtable 是 per-ref `lock`/`unlock`，为 files 的 `.lock` 模型定制；
+reftable 无法在不改该 vtable 的前提下正确实现。实测证据（C 探针直连静态库）：
+
+```text
+1st new_addition (ref A)  -> 0 ok
+2nd new_addition (ref B)  -> -5  REFTABLE_LOCK_ERROR（库级锁已被持有）
+```
+
+即朴素映射恰好在事务最有价值的多引用场景下失败。对照 git 自身的
+`ref_storage_be` 使用 `transaction_prepare/finish/abort` 三个**事务级**钩子，与
+reftable 的 addition 生命周期天然同构——这解释了上游为何留 TODO 而非补一个函数。
+
+**决策**：git2go 侧保持快速失败 + 可发现性（`RefStorageFormat` 事前判定），
+不实现绕过。已评估并否决两条绕过路径：
+
+- git2go 侧模拟批量提交：无法可靠判定「最后一次 unlock」，且会产出「看似原子实则不原子」
+  的假象；
+- git2go 直连 reftable 原语：实测头文件未公开安装，且**共享库中 `reftable_*` 符号全部被
+  visibility 隐藏（可见数 0）**，动态链接不可行。
+
+长期路径是向上游贡献 vtable 扩展（`GIT_REFDB_BACKEND_VERSION` 1→2），已纳入
+libgit2 v2 适配观察项。
+
+### 14.4 本轮代码改动
+
+- `transaction.go`：文档从「上游尚未实现」改为说明架构失配与根因；
+- `refdb_reftable_test.go`：新增 `TestFilesTransactionMultipleRefsAtomic`，固化
+  「多引用同时加锁 + 统一提交」这一被 reftable 破坏的前提（经变异验证：移除 `Commit`
+  后测试确实失败）。

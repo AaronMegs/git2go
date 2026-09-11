@@ -114,6 +114,85 @@ explicitly; both hash raw file contents without repository filters. See
 `docs/sha256-compat-design.md` for implementation details and
 `docs/sha256-breaking-changes.md` for migration guidance.
 
+### Reference storage: files and reftable
+
+The same baseline also provides the reftable reference-storage backend. The
+bindings for it are compiled in by default; `files` remains the default backend
+for new repositories.
+
+Create a reftable repository, optionally combined with SHA256:
+
+    repo, err := git.InitRepositoryExt(path, &git.RepositoryInitOptions{
+        Flags:     git.RepositoryInitMkpath,
+        OidType:   git.ObjectIdSHA256, // optional; SHA1 is the default
+        RefdbType: git.RefdbReftable,  // optional; files is the default
+    })
+
+`InitRepositoryExt` is the single entry point for both the object format and the
+reference format, and also exposes the init flags, mode, workdir and template
+overrides, the initial HEAD branch, and an origin URL.
+
+Because libgit2 exposes no `GIT_FEATURE_REFTABLE` flag, support is detected by
+probe rather than by version comparison:
+
+    if git.IsReftableSupported() { /* ... */ }
+
+To find out which backend an existing repository uses:
+
+    format, err := repo.RefStorageFormat() // git.RefdbFiles or git.RefdbReftable
+
+This mirrors libgit2's own rule: `extensions.refStorage` is only honoured when
+`core.repositoryformatversion` is at least 1, so a version-0 repository that
+declares `reftable` is still reported as `files`.
+
+Related APIs: `Repository.Refdb`, `Repository.OpenRefdb`, `Refdb.Compress`,
+`Repository.NewRefdbBackendFs`, `Repository.NewRefdbBackendReftable`, the
+`Reflog` API, and `Repository.NewTransaction` for reference transactions.
+
+Reference transactions are only available on the `files` backend. This is an
+architectural mismatch rather than a missing upstream feature: libgit2's refdb
+API locks one reference at a time, whereas reftable's atomicity unit is a single
+"addition" that locks the entire reference database, so a per-reference mapping
+breaks on the second reference of a transaction. `NewTransaction` still succeeds
+on a reftable repository; `Transaction.LockRef` is where it reports the error.
+See `docs/reftable-transaction-research.md` for the full analysis.
+
+A single reference write is atomic on both backends, so grouping is only needed
+when several references must change together. Branch on the backend up front:
+
+    format, err := repo.RefStorageFormat()
+    if err != nil {
+        return err
+    }
+    if format == git.RefdbReftable {
+        _, err = repo.References.Create(name, target, true, msg)
+        return err
+    }
+    tx, err := repo.NewTransaction()
+    // ... LockRef / SetTarget / Commit ...
+
+Go programs can also supply their own reference database by implementing
+`RefdbBackendInterface` and passing it to `NewRefdbBackendFromInterface`.
+
+When linking against a libgit2 that predates reftable, build with the
+`libgit2_no_reftable` tag to compile the files-only subset:
+
+    go test --tags "static,libgit2_no_reftable" ./...
+
+See `docs/sha256-reftable-integration-report.md` for the integration and
+verification record.
+
+### Contributing to the bindings
+
+`docs/binding-design-guidelines.md` derives the conventions this binding layer
+follows from git's and libgit2's own implementation choices: how C ownership
+rules map onto Go lifetimes, why every cgo call is wrapped in
+`runtime.LockOSThread` (libgit2 keeps its last error in thread-local storage),
+how callback errors are round-tripped without losing the original Go `error`,
+and how compile-time ABI assertions and runtime capability probes divide the
+work of version compatibility. It ends with a checklist to run through when
+adding a new binding.
+
 Parallelism and network operations
 ----------------------------------
 
@@ -130,6 +209,23 @@ Alternatively, you can build the library manually first and then run the tests
 
     make install-static
     go test -v -tags static ./...
+
+The supported test matrix also includes the race detector (the refdb backend
+bridge and the managed HTTP transport both hand memory between libgit2 threads
+and Go), the files-only degradation build, and the dynamic link:
+
+    make test-static-race
+    make test-static-no-reftable
+    make test-dynamic
+
+`make lint` runs `gofmt` and `go vet`, both of which must stay clean.
+
+A few tests clone and negotiate against `github.com` and therefore need network
+access. They are skipped under `go test -short` or when
+`GIT2GO_SKIP_NETWORK_TESTS` is set, so an offline or firewalled host can run the
+rest of the suite deterministically:
+
+    make test-static-offline
 
 License
 -------

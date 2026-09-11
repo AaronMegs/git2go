@@ -156,6 +156,105 @@ go test -tags "static git_experimental_sha256 libgit2_next" ./...
 go test -tags static ./...
 ```
 
+## reftable 整合带来的额外破坏性变更
+
+以下变更由 SHA256 与 reftable 分支整合引入，完整背景见
+`docs/sha256-reftable-integration-report.md`。
+
+### `Repository.SetRefdb` 增加 error 返回值
+
+原实现丢弃了 libgit2 的返回码，替换失败时表现为成功。这是编译期断裂。
+
+```go
+// 旧
+repo.SetRefdb(refdb)
+
+// 新
+if err := repo.SetRefdb(refdb); err != nil {
+    return err
+}
+```
+
+### `Refdb.SetBackend` 所有权语义修正
+
+原实现在失败时 `backend.Free()`（libgit2 并未接管，属于释放非自有内存），
+成功时又保留 Go finalizer（libgit2 已接管，finalizer 会二次释放）。两条路径
+都可能双重释放。
+
+现在：失败**不**释放，调用方可重试或自行释放；成功清空包装器并解除 finalizer。
+
+```go
+// 旧：失败分支自行兜底释放
+if err := refdb.SetBackend(backend); err != nil {
+    backend.Free() // 删掉这行
+    return err
+}
+
+// 新
+if err := refdb.SetBackend(backend); err != nil {
+    return err // backend 仍归调用方所有，可重试
+}
+```
+
+### `ShortenOids` 改为纯 Go 实现并收紧校验
+
+libgit2 的 `git_oid_shorten` 只检查前 40 个十六进制字符，对第 40 位之后才
+分叉的 SHA256 id 会返回**不足以区分**的前缀长度。
+
+现在对以下输入返回 `ErrorCodeInvalid`：nil oid、混合对象 id 类型、重复 id、
+负数或超过该类型 hex 长度的 `minlen`。
+
+### `NewOidFromBytes` 短输入返回 nil
+
+原先对不足 20 字节的输入直接切片 panic，现在返回 `nil`。
+
+```go
+oid := git.NewOidFromBytes(raw)
+if oid == nil {
+    return errors.New("raw oid too short")
+}
+```
+
+### typed 构造函数校验对象 id 类型
+
+`NewOdbWithOidType`、`NewIndexWithOidType`、`OpenIndexWithOidType`、
+`DiffFromBufferWithOidType`、`NewIndexerForOidType`、`Odb.HashWithType`、
+`Odb.HashFileWithType`、`NewOdbBackendLooseWithOidType`、
+`NewOdbBackendOnePackWithOidType` 传入未知类型时返回 `ErrorCodeInvalid`，
+不再把原始值透传给 C。
+
+### 构建层
+
+- 三个 `Build_*.go` 改为 `#include "git2go_version_check.h"`。若下游复制过这些
+  文件，需一并取得该头文件。
+- `script/build-libgit2.sh` 改用 libgit2 当前的 CMake 选项名
+  (`USE_THREADS` / `USE_REGEX` / `USE_AUTH_NTLM` / `USE_AUTH_NEGOTIATE`)。
+  旧名 `THREADSAFE` / `REGEX_BACKEND` / `USE_NTLMCLIENT` / `USE_GSSAPI`
+  已不被 libgit2 读取，此前是静默失效的。
+- reftable 绑定**默认编入**。链接不含 reftable 的 libgit2 时，使用
+  `libgit2_no_reftable` 标签退化为 files-only：
+
+  ```sh
+  go test --tags "static,libgit2_no_reftable" ./...
+  ```
+
+### 新增能力入口（非破坏性，供迁移参考）
+
+```go
+// 统一初始化：对象格式与引用格式在同一个入口
+repo, err := git.InitRepositoryExt(path, &git.RepositoryInitOptions{
+    Flags:     git.RepositoryInitMkpath | git.RepositoryInitBare,
+    OidType:   git.ObjectIdSHA256,
+    RefdbType: git.RefdbReftable,
+})
+
+// 能力探测优先于版本比较
+if git.IsSha256Supported() && git.IsReftableSupported() { /* ... */ }
+
+// 运行时探测既有仓库的引用存储格式
+format, err := repo.RefStorageFormat() // RefdbFiles / RefdbReftable
+```
+
 ## 版本策略（已确定）
 
 - git2go 下一主版本确定为 **v36**，module 路径为 `github.com/libgit2/git2go/v36`。

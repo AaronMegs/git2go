@@ -15,6 +15,26 @@ env:
 
 jobs:
 
+  lint:
+    name: gofmt, go vet and binding invariants
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        submodules: recursive
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: 'stable'
+    - name: Build libgit2
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libssh2-1-dev
+        make build-libgit2-static
+    - name: Lint
+      run: make lint
+
   build-static:
     strategy:
       fail-fast: false
@@ -28,16 +48,17 @@ jobs:
     # Check out before setting up Go so that setup-go can find go.sum and
     # populate its module cache.
     - name: Check out code into the Go module directory
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         submodules: recursive
     - name: Set up Go
-      uses: actions/setup-go@v7
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: ${{ matrix.go }}
       id: go
     - name: Build
       run: |
+        sudo apt-get update
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
         make build-libgit2-static
     - name: Test
@@ -48,11 +69,11 @@ jobs:
     runs-on: macos-latest
     steps:
     - name: Check out code
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         submodules: recursive
     - name: Set up Go
-      uses: actions/setup-go@v7
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: 'stable'
     - name: Build libgit2
@@ -69,31 +90,115 @@ jobs:
 
     steps:
     - name: Check out code into the Go module directory
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         submodules: recursive
     - name: Set up Go
-      uses: actions/setup-go@v7
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: 'stable'
       id: go
     - name: Build
       run: |
+        sudo apt-get update
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
         make build-libgit2-dynamic
     - name: Test
       run: make TEST_ARGS=-test.v test-dynamic
+
+  # Reference-storage track: exercises the reftable backend itself plus the
+  # Go-defined refdb backend bridge, whose per-iterator handles and transaction
+  # lock payloads cross the cgo boundary and therefore need the race detector.
+  build-reftable:
+    name: Reftable and refdb bridge
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        submodules: recursive
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: 'stable'
+    - name: Build libgit2
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libssh2-1-dev
+        make build-libgit2-static
+    - name: Run the reftable / refdb / reflog suite
+      run: |
+        go test --count=1 --tags static -v \
+          -run 'Reftable|Refdb|Reflog|RefStorage|InitRepositoryExt|FormatMatrix|Transaction' ./...
+    # Network-dependent tests add no race coverage (their concurrency is inside
+    # libgit2's transport, exercised by the managed-transport tests against local
+    # servers) but do add flakiness, so this job runs the deterministic subset.
+    # The network tests themselves are covered by the other jobs.
+    - name: Run the full suite under the race detector
+      run: GIT2GO_SKIP_NETWORK_TESTS=1 make TEST_ARGS=--count=1 test-static-race
+
+  # The reftable bindings are compiled in by default. This proves the documented
+  # `libgit2_no_reftable` opt-out still builds and that every reftable-dependent
+  # test degrades to a skip instead of a failure.
+  build-static-no-reftable:
+    name: Go (bundled static, libgit2_no_reftable)
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        submodules: recursive
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: 'stable'
+    - name: Build libgit2
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libssh2-1-dev
+        make build-libgit2-static
+    - name: Test
+      run: make TEST_ARGS=-test.v test-static-no-reftable
+
+  # v36 intentionally requires libgit2's promoted typed object ids. Released
+  # v1.9.4 has the legacy 20-byte git_oid and belongs to the v35 maintenance
+  # line, so this is a negative test asserting the ABI guard rejects it with a
+  # clear diagnostic rather than miscompiling or corrupting ids at runtime.
+  reject-legacy-v1-9-4:
+    name: Reject legacy libgit2 v1.9.4 ABI
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        submodules: recursive
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: 'stable'
+    - name: Build libgit2 v1.9.4
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libssh2-1-dev
+        BUILD_LIBGIT_REF=v1.9.4 make build-libgit2-static
+    - name: Verify the ABI guard rejects the legacy git_oid layout
+      run: |
+        if go build --tags static ./... > /tmp/legacy-build.log 2>&1; then
+          echo "expected the v36 build against libgit2 v1.9.4 to fail"
+          exit 1
+        fi
+        grep -q "promoted typed object ids" /tmp/legacy-build.log
 
   build-static-deprecate-hard:
     name: Go (bundled static, DEPRECATE_HARD=ON)
     runs-on: ubuntu-latest
     steps:
     - name: Check out code
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         submodules: recursive
     - name: Set up Go
-      uses: actions/setup-go@v7
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: 'stable'
     - name: Build libgit2 with hard-deprecated APIs hidden
@@ -117,15 +222,16 @@ jobs:
 
     steps:
     - name: Check out code into the Go module directory
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - name: Set up Go
-      uses: actions/setup-go@v7
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: 'stable'
       id: go
     - name: Build pinned libgit2 baseline system-wide
       run: |
         git submodule update --init
+        sudo apt-get update
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
         sudo ./script/build-libgit2.sh --dynamic --system
     - name: Test
@@ -140,15 +246,16 @@ jobs:
 
     steps:
     - name: Check out code into the Go module directory
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - name: Set up Go
-      uses: actions/setup-go@v7
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: 'stable'
       id: go
     - name: Build libgit2
       run: |
         git submodule update --init
+        sudo apt-get update
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
         sudo ./script/build-libgit2.sh --static --system
     - name: Test
@@ -159,15 +266,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Check out code into the Go module directory
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - name: Set up Go
-      uses: actions/setup-go@v7
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: 'stable'
       id: go
     - name: Install libgit2 build dependencies
       run: |
         git submodule update --init
+        sudo apt-get update
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
         go install golang.org/x/tools/cmd/stringer@${{ env.STRINGER_VERSION }}
     - name: Generate files

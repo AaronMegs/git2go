@@ -75,6 +75,7 @@ func TestCloneWithCallback(t *testing.T) {
 
 // TestCloneWithExternalHTTPUrl
 func TestCloneWithExternalHTTPUrl(t *testing.T) {
+	requiresNetwork(t)
 
 	path, err := ioutil.TempDir("", "git2go")
 	defer os.RemoveAll(path)

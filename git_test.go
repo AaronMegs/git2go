@@ -46,6 +46,24 @@ func TestMain(m *testing.M) {
 	os.Exit(ret)
 }
 
+// requiresNetwork marks a test as depending on reachable external Git hosting
+// (currently github.com). Such tests are not hermetic: on an offline or
+// firewalled host they fail with a connection or TLS handshake timeout that
+// says nothing about this repository's code.
+//
+// They are skipped under `go test -short` or when GIT2GO_SKIP_NETWORK_TESTS is
+// set to a non-empty value, so an offline environment has a deterministic way
+// to run the rest of the suite.
+func requiresNetwork(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping network-dependent test in short mode")
+	}
+	if os.Getenv("GIT2GO_SKIP_NETWORK_TESTS") != "" {
+		t.Skip("skipping network-dependent test: GIT2GO_SKIP_NETWORK_TESTS is set")
+	}
+}
+
 func cleanupTestRepo(t *testing.T, r *Repository) {
 	var err error
 	if r.IsBare() {

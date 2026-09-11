@@ -8,51 +8,60 @@ on:
         required: true
         type: string
       target_ref:
-        description: Branch or commit to tag
+        description: Main-branch commit to tag
         required: true
         default: main
         type: string
 
+# Default to read-only. Only the `tag` job below opts into write, and that job
+# deliberately does not execute any repository code.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: v36-prerelease-tag
   cancel-in-progress: false
 
 jobs:
-  tag-v36-prerelease:
-    name: Validate and tag v36.0.0-pre.${{ inputs.prerelease_number }}
+  # This job builds and runs repository code, so it must never hold a write
+  # credential: a malicious change to the test suite would otherwise be able to
+  # push to the repository.
+  validate:
+    name: Validate v36.0.0-pre.${{ inputs.prerelease_number }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      target_sha: ${{ steps.release.outputs.target_sha }}
     steps:
     - name: Validate prerelease number
       env:
         PRE_NUMBER: ${{ inputs.prerelease_number }}
       run: |
         case "$PRE_NUMBER" in
-          ''|*[!0-9]*)
-            echo "::error::prerelease_number must contain digits only"
-            exit 1
-            ;;
-          0)
-            echo "::error::prerelease_number must be greater than zero"
+          [1-9]|[1-9][0-9]*) ;;
+          *)
+            echo "::error::prerelease_number must be a positive integer without leading zeroes"
             exit 1
             ;;
         esac
 
-    - name: Check out target
-      uses: actions/checkout@v7
+    - name: Check out target without persisted credentials
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         ref: ${{ inputs.target_ref }}
         fetch-depth: 0
         submodules: recursive
+        persist-credentials: false
 
     - name: Set up Go
-      uses: actions/setup-go@v7
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: 'stable'
 
-    - name: Verify v36 module and tag availability
+    - name: Verify module, target and tag availability
+      id: release
       env:
         PRE_NUMBER: ${{ inputs.prerelease_number }}
       run: |
@@ -60,25 +69,52 @@ jobs:
           echo "::error::go.mod is not the v36 module"
           exit 1
         }
-        tag="v36.0.0-pre.${PRE_NUMBER}"
-        if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
-          echo "::error::tag ${tag} already exists locally"
+        # Only commits that are already on main may be tagged as a release.
+        git fetch origin main
+        target_sha=$(git rev-parse HEAD)
+        git merge-base --is-ancestor "$target_sha" origin/main || {
+          echo "::error::target_ref must resolve to a commit on origin/main"
           exit 1
-        fi
+        }
+        tag="v36.0.0-pre.${PRE_NUMBER}"
         if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
           echo "::error::tag ${tag} already exists on origin"
           exit 1
         fi
-        echo "RELEASE_TAG=${tag}" >> "$GITHUB_ENV"
+        echo "release_tag=${tag}" >> "$GITHUB_OUTPUT"
+        echo "target_sha=${target_sha}" >> "$GITHUB_OUTPUT"
 
-    - name: Build pinned libgit2 and run full test suite
+    - name: Build pinned libgit2 and run the release gate
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
-        make build-libgit2-static
+        DEPRECATE_HARD=ON make build-libgit2-static
         make TEST_ARGS=-test.v test-static
+        go test --count=1 --race --tags static \
+          -run 'TestRepositoryFormatMatrix|TestRefdbBackendConcurrentIterators|TestRefdbBackendTransaction' ./...
 
+  tag:
+    name: Push ${{ needs.validate.outputs.release_tag }}
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Check out validated commit
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ needs.validate.outputs.target_sha }}
+        fetch-depth: 1
+
+    # This job does not execute repository code; it only creates the validated
+    # lightweight tag. The write credential exists only in this job.
     - name: Create and push lightweight prerelease tag
+      env:
+        RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        TARGET_SHA: ${{ needs.validate.outputs.target_sha }}
       run: |
-        git tag "$RELEASE_TAG"
+        # Guard against the checkout resolving to anything other than the commit
+        # that was actually validated above.
+        test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+        git tag "$RELEASE_TAG" "$TARGET_SHA"
         git push origin "refs/tags/$RELEASE_TAG"
