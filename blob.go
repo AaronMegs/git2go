@@ -9,7 +9,6 @@ void _go_git_writestream_free(git_writestream *stream);
 */
 import "C"
 import (
-	"reflect"
 	"runtime"
 	"unsafe"
 )
@@ -114,9 +113,11 @@ func newBlobWriteStreamFromC(ptr *C.git_writestream, repo *Repository) *BlobWrit
 
 // Implement io.Writer
 func (stream *BlobWriteStream) Write(p []byte) (int, error) {
-	header := (*reflect.SliceHeader)(unsafe.Pointer(&p))
-	ptr := (*C.char)(unsafe.Pointer(header.Data))
-	size := C.size_t(header.Len)
+	if len(p) == 0 {
+		return 0, nil
+	}
+	ptr := (*C.char)(unsafe.Pointer(&p[0]))
+	size := C.size_t(len(p))
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()

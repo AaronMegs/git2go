@@ -58,6 +58,15 @@ func NewOdbWithOidType(oidType ObjectIdType) (*Odb, error) {
 	return newOdbWithOidType(oidType)
 }
 
+// NewOdbBackendPackWithOidType creates a backend for a directory of packfiles
+// using the specified object id type.
+//
+// objectsDir is the repository's objects directory, which is expected to
+// contain a `pack/` subdirectory.
+func NewOdbBackendPackWithOidType(objectsDir string, oidType ObjectIdType) (*OdbBackend, error) {
+	return newOdbBackendPackWithOidType(objectsDir, oidType)
+}
+
 // NewOdbBackendOnePackWithOidType creates a backend for one packfile using the
 // specified object id type.
 func NewOdbBackendOnePackWithOidType(packfileIndexPath string, oidType ObjectIdType) (*OdbBackend, error) {

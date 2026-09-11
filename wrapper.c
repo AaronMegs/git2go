@@ -609,6 +609,13 @@ int _go_git_diff_from_buffer(git_diff **out, const char *content, size_t content
 	return git_diff_from_buffer_ext(out, content, content_len, &opts);
 }
 
+int _go_git_odb_backend_pack(git_odb_backend **out, const char *objects_dir, int oid_type)
+{
+	git_odb_backend_pack_options opts = GIT_ODB_BACKEND_PACK_OPTIONS_INIT;
+	opts.oid_type = oid_type ? (git_oid_t)oid_type : GIT_OID_DEFAULT;
+	return git_odb_backend_pack(out, objects_dir, &opts);
+}
+
 int _go_git_odb_backend_one_pack(git_odb_backend **out, const char *index_file, int oid_type)
 {
 	git_odb_backend_pack_options opts = GIT_ODB_BACKEND_PACK_OPTIONS_INIT;

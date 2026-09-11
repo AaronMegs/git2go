@@ -24,7 +24,6 @@ import "C"
 import (
 	"fmt"
 	"io"
-	"reflect"
 	"runtime"
 	"sync"
 	"unsafe"
@@ -462,11 +461,7 @@ func smartSubtransportStreamReadCallback(
 	defer recoverCallback(errorMessage, &ret, "smartSubtransportStreamReadCallback")
 	stream := getSmartSubtransportStreamInterface(s)
 
-	var p []byte
-	header := (*reflect.SliceHeader)(unsafe.Pointer(&p))
-	header.Cap = int(bufSize)
-	header.Len = int(bufSize)
-	header.Data = uintptr(unsafe.Pointer(buffer))
+	p := unsafe.Slice((*byte)(unsafe.Pointer(buffer)), int(bufSize))
 
 	n, err := stream.underlying.Read(p)
 	*bytesRead = C.size_t(n)
@@ -491,11 +486,7 @@ func smartSubtransportStreamWriteCallback(
 	defer recoverCallback(errorMessage, &ret, "smartSubtransportStreamWriteCallback")
 	stream := getSmartSubtransportStreamInterface(s)
 
-	var p []byte
-	header := (*reflect.SliceHeader)(unsafe.Pointer(&p))
-	header.Cap = int(bufLen)
-	header.Len = int(bufLen)
-	header.Data = uintptr(unsafe.Pointer(buffer))
+	p := unsafe.Slice((*byte)(unsafe.Pointer(buffer)), int(bufLen))
 
 	if _, err := stream.underlying.Write(p); err != nil {
 		return setCallbackError(errorMessage, err)

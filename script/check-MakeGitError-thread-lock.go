@@ -60,10 +60,28 @@ func checkPkg(pkg *ast.Package) error {
 			}
 			src := b.String()
 
-			if strings.Contains(src, "MakeGitError") && !strings.Contains(src, "runtime.LockOSThread()") && !strings.Contains(src, "defer runtime.UnlockOSThread()") && !ignoreViolationsInFunc[node.Name.Name] {
-				pos := fset.Position(node.Pos())
-				violations = append(violations, fmt.Sprintf("%s at %s:%d", node.Name.Name, pos.Filename, pos.Line))
+			if !strings.Contains(src, "MakeGitError") || ignoreViolationsInFunc[node.Name.Name] {
+				return true
 			}
+
+			// Both halves are required. Locking without the deferred unlock
+			// pins the goroutine to its OS thread for good, which is a leak
+			// rather than a fix, so a function with only one of the two is
+			// still reported.
+			hasLock := strings.Contains(src, "runtime.LockOSThread()")
+			hasUnlock := strings.Contains(src, "defer runtime.UnlockOSThread()")
+			if hasLock && hasUnlock {
+				return true
+			}
+
+			pos := fset.Position(node.Pos())
+			detail := "missing both LockOSThread and the deferred UnlockOSThread"
+			if hasLock {
+				detail = "locks the OS thread but never defers UnlockOSThread"
+			} else if hasUnlock {
+				detail = "defers UnlockOSThread but never calls LockOSThread"
+			}
+			violations = append(violations, fmt.Sprintf("%s at %s:%d (%s)", node.Name.Name, pos.Filename, pos.Line, detail))
 		}
 		return true
 	})

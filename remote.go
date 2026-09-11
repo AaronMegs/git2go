@@ -868,7 +868,11 @@ func (o *Remote) PushUrl() string {
 
 func (c *RemoteCollection) Rename(remote, newname string) ([]string, error) {
 	cproblems := C.git_strarray{}
-	defer freeStrarray(&cproblems)
+	// libgit2 allocates this array, so it has to be released through libgit2's
+	// own disposer rather than freeStrarray, which is for arrays git2go built.
+	// The two happen to be interchangeable today, but that is an implementation
+	// detail and not part of the API contract.
+	defer C.git_strarray_dispose(&cproblems)
 	cnewname := C.CString(newname)
 	defer C.free(unsafe.Pointer(cnewname))
 	cremote := C.CString(remote)
@@ -1253,7 +1257,9 @@ func (o *Remote) Push(refspecs []string, opts *PushOptions) error {
 }
 
 func (o *Remote) PruneRefs() bool {
-	return C.git_remote_prune_refs(o.ptr) > 0
+	ret := C.git_remote_prune_refs(o.ptr) > 0
+	runtime.KeepAlive(o)
+	return ret
 }
 
 func (o *Remote) Prune(callbacks *RemoteCallbacks) error {

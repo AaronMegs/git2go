@@ -171,37 +171,40 @@ git2go 正确使用了 `git_indexer_name`。
 
 ### 2.4 真实缺口
 
-#### 2.4.1 `git_odb_backend_pack` 未绑定（唯一与 SHA256 相关者）
+#### 2.4.1 `git_odb_backend_pack` —— 已于 2026-09-11 绑定
 
-git2go 绑定了 loose 与 one-pack 两种 ODB 后端，**未绑定 pack 目录后端**：
+此前 git2go 只绑定了 loose 与 one-pack 两种 ODB 后端，缺少 pack 目录后端，而
+`git_odb_backend_pack_options` 含 `oid_type`，因此在 SHA256 语境下是有意义的缺口。
 
-| libgit2 | git2go |
-| --- | --- |
-| `git_odb_backend_loose` | `NewOdbBackendLoose` / `NewOdbBackendLooseWithOidType` |
-| `git_odb_backend_one_pack` | `NewOdbBackendOnePack` / `NewOdbBackendOnePackWithOidType` |
-| `git_odb_backend_pack` | **无** |
+现已补齐 `NewOdbBackendPack` / `NewOdbBackendPackWithOidType`，与另两个后端对齐。
+`odb_backend` 模块覆盖率由 2/5 升至 3/5。
 
-`git_odb_backend_pack_options` 含 `oid_type` 字段，因此这在 SHA256 语境下是有意义的缺口
-——无法为一个含多个 packfile 的 objects 目录构造 SHA256 后端。
+> 审计过程中的一个教训：`wrapper.c` 里出现的 `git_odb_backend_pack_options` 是 `one_pack`
+> 复用了同一个 options 类型（上游两个后端共用），**不代表 `git_odb_backend_pack` 函数
+> 已被绑定**。纯文本的覆盖率扫描会把这类复用计为「已引用」，结论必须逐项复核。
+> 审计脚本已改为只匹配函数调用形态。
 
-> 注意：`wrapper.c:614` 出现的 `git_odb_backend_pack_options` 是 `one_pack` 复用了同一个
-> options 类型（上游两个后端共用），**不代表 `git_odb_backend_pack` 函数已被绑定**。
-> 这也说明纯文本的覆盖率扫描会把这类复用计为「已引用」，结论必须逐项复核。
+#### 2.4.2 options 版本校验 —— 已于 2026-09-11 以启动时集中检查覆盖
 
-**判定为历史既有**：该 API 在 v1.9.7 中已存在（6 处引用），git2go 从未绑定，
-非本次适配遗漏。
+`git_*_options_init` 会拒绝它不认识的版本号，而 git2go 传入的版本是**编译期常量**。
+动态链接时头文件可能比运行库新，此时 init 返回 -1，而结构体仍保留栈上的残留数据——
+把它交给 libgit2 是未定义行为。
 
-**影响有限**：常规路径（`Repository.Odb()`）由 libgit2 自动装配 loose + pack 后端并继承
-仓库对象格式；只有手工组装独立 ODB 的高级场景受影响。
+上游的失败条件已核实（`src/libgit2/common.h` 的 `git_error__check_version`）：
+当传入版本超出运行库支持范围时返回 -1。
 
-**建议**：补绑 `NewOdbBackendPack` / `NewOdbBackendPackWithOidType`，与现有两个后端对齐。
-非破坏性。
+由于版本偏斜是**全局静态属性**（不随调用变化），采用启动时一次性校验 22 个 options
+结构，而非在约 30 个调用点分别检查：
 
-#### 2.4.2 其余 options_init 缺口
+- 报错时机更早——在任何仓库被操作之前，而不是从某个无关操作里冒出来；
+- 无需改动 14 个 `populate*` 辅助函数的签名（它们返回 `*C.git_xxx_options`，
+  加 error 会波及全部调用方）。
 
-`git_odb_backend_loose_options_init`、`git_odb_backend_pack_options_init`、
-`git_indexer_options_init` 未绑定。C 胶水层使用对应的 `*_OPTIONS_INIT` 宏，语义等价，
-但与 §4.1 的「options 走官方 init 函数」纪律不完全一致。低优先级。
+实现见 `options_version.go`，由 `initLibGit2` 调用并在失败时 panic，与既有的线程支持
+检查（`git.go`）和 `git_oid` 布局检查（`oid_typed.go`）保持一致。
+
+仍未绑定的 `git_odb_backend_loose_options_init` / `git_odb_backend_pack_options_init`
+是这一策略的结果：C 胶水层使用等价的 `*_OPTIONS_INIT` 宏，版本正确性由启动校验保证。
 
 ### 2.5 复现方式
 
@@ -220,18 +223,18 @@ python3 script/audit-binding-coverage.py oid odb      # 指定模块的未绑定
 
 按可行性而非严重性排序。
 
-### 3.1 可立即进行（非破坏性）
+### 3.1 可立即进行（非破坏性）—— 已全部完成 2026-09-11
 
 | # | 项 | 依据 |
 | --- | --- | --- |
-| 1 | 绑定 `git_odb_backend_pack`（含 oid_type 变体） | §2.4.1 |
-| 2 | `IsErrorCode` 改用 `errors.As`，兼容 `%w` 包装 | 设计准则 §2.5 |
-| 3 | `PruneRefs`、`OdbObject.Data` 补 `runtime.KeepAlive` | 设计准则 §1.4 |
-| 4 | `ReflogEntry` 改为深拷贝，消除悬垂窗口 | 设计准则 §1.2 |
-| 5 | 线程锁门禁改为要求 Lock 与 defer Unlock **同时**存在 | 设计准则 §2.2 |
-| 6 | 迁移剩余 4 文件的 `reflect.SliceHeader` | 设计准则 §4.3 |
-| 7 | `remote.go:851` 改用 `git_strarray_dispose` | 设计准则 §4.2 |
-| 8 | 23 处 options init 补返回值检查 | 设计准则 §4.1 |
+| ~~1~~ | ~~绑定 `git_odb_backend_pack`~~ | **已完成** 2026-09-11 |
+| ~~2~~ | ~~`IsErrorCode` 改用 `errors.As`~~ | **已完成**（`IsErrorClass` 一并） |
+| ~~3~~ | ~~`PruneRefs`、`OdbObject.Data` 补 `KeepAlive`~~ | **已完成**（另含 3 处 writer） |
+| ~~4~~ | ~~`ReflogEntry` 改为深拷贝~~ | **已完成**，变异验证有效 |
+| ~~5~~ | ~~收紧线程锁门禁~~ | **已完成**，并给出区分性诊断 |
+| ~~6~~ | ~~迁移剩余 `reflect.SliceHeader`~~ | **已完成**，全仓库归零 |
+| ~~7~~ | ~~strarray 释放函数混用~~ | **已完成** |
+| ~~8~~ | ~~options init 返回值未检查~~ | **已完成**，改为启动时集中校验 |
 
 ### 3.2 破坏性，建议与 libgit2 v2 适配合并
 

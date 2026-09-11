@@ -3,6 +3,7 @@ package git
 /*
 #include <git2.h>
 
+extern int _go_git_odb_backend_pack(git_odb_backend **out, const char *objects_dir, int oid_type);
 extern int _go_git_odb_backend_one_pack(git_odb_backend **out, const char *index_file, int oid_type);
 extern int _go_git_odb_backend_loose(git_odb_backend **out, const char *objects_dir, int compression_level, int do_fsync, unsigned int dir_mode, unsigned int file_mode, int oid_type);
 extern int _go_git_odb_new(git_odb **out, int oid_type);
@@ -19,7 +20,6 @@ import "C"
 import (
 	"io"
 	"os"
-	"reflect"
 	"runtime"
 	"strings"
 	"unsafe"
@@ -92,6 +92,33 @@ func (v *Odb) AddBackend(backend *OdbBackend, priority int) (err error) {
 		return MakeGitError(ret)
 	}
 	return nil
+}
+
+// NewOdbBackendPack creates a SHA1 backend for a directory of packfiles.
+//
+// objectsDir is the repository's objects directory, which is expected to
+// contain a `pack/` subdirectory. Use NewOdbBackendOnePack instead to read a
+// single packfile by its index path.
+func NewOdbBackendPack(objectsDir string) (*OdbBackend, error) {
+	return newOdbBackendPackWithOidType(objectsDir, ObjectIdSHA1)
+}
+
+func newOdbBackendPackWithOidType(objectsDir string, oidType ObjectIdType) (backend *OdbBackend, err error) {
+	if err := validateObjectIdType(oidType); err != nil {
+		return nil, err
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	cstr := C.CString(objectsDir)
+	defer C.free(unsafe.Pointer(cstr))
+
+	var odbPack *C.git_odb_backend
+	ret := C._go_git_odb_backend_pack(&odbPack, cstr, C.int(oidType))
+	if ret < 0 {
+		return nil, MakeGitError(ret)
+	}
+	return NewOdbBackendFromC(unsafe.Pointer(odbPack)), nil
 }
 
 // NewOdbBackendOnePack creates a SHA1 backend for a single packfile.
@@ -460,17 +487,14 @@ func (object *OdbObject) Type() ObjectType {
 // Data returns a slice pointing to the unmanaged object memory. You must make
 // sure the object is referenced for at least as long as the slice is used.
 func (object *OdbObject) Data() (data []byte) {
-	var c_blob unsafe.Pointer = C.git_odb_object_data(object.ptr)
-	var blob []byte
+	cblob := C.git_odb_object_data(object.ptr)
+	size := int(C.git_odb_object_size(object.ptr))
+	runtime.KeepAlive(object)
 
-	len := int(C.git_odb_object_size(object.ptr))
-
-	sliceHeader := (*reflect.SliceHeader)((unsafe.Pointer(&blob)))
-	sliceHeader.Cap = len
-	sliceHeader.Len = len
-	sliceHeader.Data = uintptr(c_blob)
-
-	return blob
+	if cblob == nil || size == 0 {
+		return nil
+	}
+	return unsafe.Slice((*byte)(cblob), size)
 }
 
 type OdbReadStream struct {
@@ -482,15 +506,23 @@ type OdbReadStream struct {
 
 // Read reads from the stream
 func (stream *OdbReadStream) Read(data []byte) (int, error) {
-	header := (*reflect.SliceHeader)(unsafe.Pointer(&data))
-	ptr := (*C.char)(unsafe.Pointer(header.Data))
-	size := C.size_t(header.Cap)
+	// Read into the slice's full capacity, which is what this method has always
+	// done, and report the count instead of rewriting the slice header. The
+	// header rewrite only ever affected this function's own copy of the slice,
+	// so `return len(data)` was already equivalent to returning the count.
+	buf := data[:cap(data)]
+	if len(buf) == 0 {
+		return 0, nil
+	}
+	ptr := (*C.char)(unsafe.Pointer(&buf[0]))
+	size := C.size_t(len(buf))
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_odb_stream_read(stream.ptr, ptr, size)
 	runtime.KeepAlive(stream)
+	runtime.KeepAlive(data)
 	if ret < 0 {
 		return 0, MakeGitError(ret)
 	}
@@ -498,9 +530,7 @@ func (stream *OdbReadStream) Read(data []byte) (int, error) {
 		return 0, io.EOF
 	}
 
-	header.Len = int(ret)
-
-	return len(data), nil
+	return int(ret), nil
 }
 
 // Close is a dummy function in order to implement the Closer and
@@ -527,15 +557,18 @@ type OdbWriteStream struct {
 
 // Write writes to the stream
 func (stream *OdbWriteStream) Write(data []byte) (int, error) {
-	header := (*reflect.SliceHeader)(unsafe.Pointer(&data))
-	ptr := (*C.char)(unsafe.Pointer(header.Data))
-	size := C.size_t(header.Len)
+	if len(data) == 0 {
+		return 0, nil
+	}
+	ptr := (*C.char)(unsafe.Pointer(&data[0]))
+	size := C.size_t(len(data))
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_odb_stream_write(stream.ptr, ptr, size)
 	runtime.KeepAlive(stream)
+	runtime.KeepAlive(data)
 	if ret < 0 {
 		return 0, MakeGitError(ret)
 	}
@@ -577,15 +610,18 @@ type OdbWritepack struct {
 }
 
 func (writepack *OdbWritepack) Write(data []byte) (int, error) {
-	header := (*reflect.SliceHeader)(unsafe.Pointer(&data))
-	ptr := unsafe.Pointer(header.Data)
-	size := C.size_t(header.Len)
+	if len(data) == 0 {
+		return 0, nil
+	}
+	ptr := unsafe.Pointer(&data[0])
+	size := C.size_t(len(data))
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	ret := C._go_git_odb_writepack_append(writepack.ptr, ptr, size, &writepack.stats)
 	runtime.KeepAlive(writepack)
+	runtime.KeepAlive(data)
 	if ret < 0 {
 		return 0, MakeGitError(ret)
 	}

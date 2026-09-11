@@ -11,7 +11,6 @@ extern void git_indexer_free(git_indexer *idx);
 */
 import "C"
 import (
-	"reflect"
 	"runtime"
 	"unsafe"
 )
@@ -63,9 +62,11 @@ func newIndexerWithOidType(packfilePath string, odb *Odb, oidType C.int, callbac
 
 // Write adds data to the indexer.
 func (indexer *Indexer) Write(data []byte) (int, error) {
-	header := (*reflect.SliceHeader)(unsafe.Pointer(&data))
-	ptr := unsafe.Pointer(header.Data)
-	size := C.size_t(header.Len)
+	if len(data) == 0 {
+		return 0, nil
+	}
+	ptr := unsafe.Pointer(&data[0])
+	size := C.size_t(len(data))
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()

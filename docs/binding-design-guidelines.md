@@ -74,7 +74,8 @@ libgit2 用**头文件注释**而非类型系统表达所有权，绑定层必�
 不保留 C 指针）、`IndexEntry`（`index.go:66-91`）、`DiffDelta`（`diff.go:151-159`）、
 `Signature`（`signature.go:19-31`）。
 
-**唯一偏离：`ReflogEntry`** 保留裸指针（`reflog.go:41-55`）：
+**此前唯一的偏离是 `ReflogEntry`**，它保留裸指针；2026-09-11 已改为深拷贝。
+原实现如下：
 
 ```go
 type ReflogEntry struct {
@@ -223,7 +224,9 @@ if ret < 0 {
 
 该门禁有四个已知边界，使用者应知情：
 
-1. **布尔逻辑是两个否定的合取**（已复核 `:63`）：
+1. ~~布尔逻辑是两个否定的合取~~ —— **已于 2026-09-11 收紧**为要求两者同时存在，
+   并按缺失情况给出区分性诊断（「有 lock 无 unlock」/「有 unlock 无 lock」）。
+   原逻辑为：
    ```go
    strings.Contains(src, "MakeGitError") &&
        !strings.Contains(src, "runtime.LockOSThread()") &&
@@ -504,8 +507,9 @@ if ret := C.git_repository_init_options_init(&copts, C.GIT_REPOSITORY_INIT_OPTIO
 }
 ```
 
-**建议**：其余 23 处也应检查——init 失败意味着版本协商失败，静默忽略等于带着未初始化的
-结构继续走。
+**已解决**（2026-09-11）：其余调用点未逐个检查，而是改为在 `initLibGit2` 中一次性校验
+22 个 options 结构的版本（`options_version.go`）。版本偏斜是全局静态属性，不随调用变化，
+因此集中校验既能更早报错，又避免改动 14 个 `populate*` 的签名。
 
 **一处偏离**：`diff.go:200-208` `FindSimilar` 用复合字面量手写
 `version: C.GIT_DIFF_FIND_OPTIONS_VERSION`，绕过 `git_diff_find_options_init`，应统一。
@@ -543,14 +547,12 @@ arr.count = 0
 报告违规。本次整合已把 8 处转换迁移到 `unsafe.Slice`（`merge.go`、`remote.go`、
 `message.go`、`rebase.go`、`repository.go`），`go vet` 由此转清。
 
-**仍有 4 个文件残留**（已复核）：`transport.go`、`odb.go`、`indexer.go`、`blob.go`。
-这些不是「数组转换」而是「把 C 缓冲区当 Go slice 用」，其中最难迁移的是 `odb.go:469-485`
-——它**写回 `header.Len = int(ret)`** 以原地改长度，`unsafe.Slice` 无法直接表达。
-等价改法是先按容量建 slice 再切片：
+**已全部迁移**（2026-09-11），全仓库 `reflect.SliceHeader` 归零。
 
-```go
-buf := unsafe.Slice((*byte)(unsafe.Pointer(cbuf)), cap)[:n]
-```
+最后迁移的 `OdbReadStream.Read` 值得一提：它原先 `header.Len = int(ret)` 再
+`return len(data)`。由于 slice 是值传递，改写只作用于函数自己的副本，
+**等价于直接返回 `int(ret)`** ——因此不需要任何「原地改长度」的替代写法，
+去掉 SliceHeader 后语义不变。
 
 ### 4.4 值类型的特殊责任：`Oid` 案例
 
@@ -731,19 +733,19 @@ func Shutdown() {
 | ~~1~~ | ~~`Remote.Free()` 二次调用 nil panic~~ | `remote.go` | **已修复** 2026-09-11，`TestRemoteFreeIsIdempotent` 固化 | — |
 | ~~2~~ | ~~38/56 回调无 panic 边界~~ | 全部 | **已修复** 2026-09-11，56/56 并入门禁 | — |
 | ~~3~~ | ~~`Free()` 普遍非幂等（28 处）~~ | 见 §1.3 | **已修复** 2026-09-11，并入门禁 | — |
-| 4 | `PruneRefs`、`OdbObject.Data` 缺 `KeepAlive` | `remote.go:1236`、`odb.go:444` | finalizer 竞争 | 无 |
-| 5 | `IsErrorCode` 不兼容 `%w` 包装 | `git.go:231` | 判定静默失效 | 无（纯增强） |
-| 6 | `ReflogEntry` 持裸借用指针 | `reflog.go:41-55` | 悬垂窗口 | 无 |
-| 7 | 门禁脚本布尔逻辑过宽 | `check-…:63` | 漏检半边锁定 | 无 |
-| 8 | `reflect.SliceHeader` 残留 4 文件 | `odb.go` 等 | deprecated + checkptr | 无 |
-| 9 | `git_strarray_dispose` 混用 1 处 | `remote.go:851` | 依赖实现细节 | 无 |
-| 10 | 23/24 处不检查 options init 返回值 | 见 §4.1 | 版本协商失败被忽略 | 无 |
+| ~~4~~ | ~~缺 `KeepAlive`~~ | — | **已修复** 2026-09-11（5 处） | — |
+| ~~5~~ | ~~`IsErrorCode` 不兼容 `%w`~~ | — | **已修复**，改用 `errors.As` | — |
+| ~~6~~ | ~~`ReflogEntry` 持裸指针~~ | — | **已修复**，改为深拷贝 | — |
+| ~~7~~ | ~~门禁布尔逻辑过宽~~ | — | **已修复**，要求成对出现 | — |
+| ~~8~~ | ~~`reflect.SliceHeader` 残留~~ | — | **已修复**，全仓库归零 | — |
+| ~~9~~ | ~~strarray 释放混用~~ | — | **已修复** | — |
+| ~~10~~ | ~~options init 返回值未检查~~ | — | **已修复**，启动时集中校验 | — |
 | 11 | 迭代器结束语义三种表达 | 见 §2.3 | API 一致性 | **有** |
 | 12 | `Free()` 签名两派 | 见 §4.6 | API 一致性 | **有** |
 | 13 | 双表非原子 | `remote.go:674` | 结构性隐患 | 无 |
 | 14 | `git_openssl_set_locking` 改全局态 | `git.go:177` | 越界副作用 | **有** |
 
-第 1–10 项均为**非破坏性**，可在 v36-pre 线内逐步修复。
+第 1–10 项均为非破坏性，**已于 2026-09-11 全部修复**。
 第 11、12、14 项属破坏性变更，**宜与 libgit2 v2 适配合并发布**，避免多次破坏调用方。
 
 ### 6.3 与 libgit2 v2 适配的关联

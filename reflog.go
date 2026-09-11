@@ -38,20 +38,37 @@ func (r *Reflog) Free() {
 	C.git_reflog_free(ptr)
 }
 
-// ReflogEntry is a single entry within a Reflog. Its accessors read data owned
-// by the parent Reflog, so a ReflogEntry must not be used after the Reflog is
-// freed.
+// ReflogEntry is a single entry within a Reflog.
+//
+// libgit2 returns reflog entries as pointers owned by the parent git_reflog, so
+// the values are copied out at construction time. Holding the C pointer instead
+// would leave it dangling once the parent Reflog is freed, and nothing in the Go
+// type system would prevent a caller from doing exactly that. This mirrors the
+// advice libgit2 gives for git_index_entry ("make your own permanent copy").
 type ReflogEntry struct {
 	doNotCompare
-	ptr    *C.git_reflog_entry
-	reflog *Reflog
+	idOld     *Oid
+	idNew     *Oid
+	committer *Signature
+	message   string
 }
 
 func newReflogEntryFromC(ptr *C.git_reflog_entry, reflog *Reflog) *ReflogEntry {
 	if ptr == nil {
 		return nil
 	}
-	return &ReflogEntry{ptr: ptr, reflog: reflog}
+
+	entry := &ReflogEntry{
+		idOld:     newOidFromC(C.git_reflog_entry_id_old(ptr)),
+		idNew:     newOidFromC(C.git_reflog_entry_id_new(ptr)),
+		committer: newSignatureFromC(C.git_reflog_entry_committer(ptr)),
+	}
+	if cmsg := C.git_reflog_entry_message(ptr); cmsg != nil {
+		entry.message = C.GoString(cmsg)
+	}
+	// The parent must outlive the reads above, not the returned entry.
+	runtime.KeepAlive(reflog)
+	return entry
 }
 
 // ReadReflog reads the reflog for the reference with the given name.
@@ -199,37 +216,26 @@ func (r *Reflog) Drop(index int, rewritePreviousEntry bool) error {
 //
 // Wraps `git_reflog_entry_id_old`.
 func (e *ReflogEntry) IdOld() *Oid {
-	oid := newOidFromC(C.git_reflog_entry_id_old(e.ptr))
-	runtime.KeepAlive(e)
-	return oid
+	return e.idOld
 }
 
 // IdNew returns the OID the reference points at after this entry.
 //
 // Wraps `git_reflog_entry_id_new`.
 func (e *ReflogEntry) IdNew() *Oid {
-	oid := newOidFromC(C.git_reflog_entry_id_new(e.ptr))
-	runtime.KeepAlive(e)
-	return oid
+	return e.idNew
 }
 
 // Committer returns the signature of the committer for this entry.
 //
 // Wraps `git_reflog_entry_committer`.
 func (e *ReflogEntry) Committer() *Signature {
-	sig := newSignatureFromC(C.git_reflog_entry_committer(e.ptr))
-	runtime.KeepAlive(e)
-	return sig
+	return e.committer
 }
 
 // Message returns the log message for this entry (may be empty).
 //
 // Wraps `git_reflog_entry_message`.
 func (e *ReflogEntry) Message() string {
-	cmsg := C.git_reflog_entry_message(e.ptr)
-	runtime.KeepAlive(e)
-	if cmsg == nil {
-		return ""
-	}
-	return C.GoString(cmsg)
+	return e.message
 }

@@ -166,6 +166,13 @@ func initLibGit2() {
 		panic("libgit2 was not built with threading support")
 	}
 
+	// Same reasoning: an options struct the loaded library refused to
+	// initialize would be passed to libgit2 still holding whatever was on the
+	// stack. Checking it here turns that into an explicit failure at startup.
+	if err := checkOptionsVersions(); err != nil {
+		panic(err)
+	}
+
 	if features&FeatureHTTPS == 0 {
 		if err := registerManagedHTTP(); err != nil {
 			panic(err)
@@ -219,21 +226,27 @@ func (e GitError) Error() string {
 	return e.Message
 }
 
+// IsErrorClass reports whether err, or any error it wraps, is a *GitError with
+// the given class.
+//
+// It uses errors.As, so a GitError stays recognizable after being wrapped with
+// fmt.Errorf("...: %w", err).
 func IsErrorClass(err error, c ErrorClass) bool {
-	if err == nil {
-		return false
-	}
-	if gitError, ok := err.(*GitError); ok {
+	var gitError *GitError
+	if errors.As(err, &gitError) {
 		return gitError.Class == c
 	}
 	return false
 }
 
+// IsErrorCode reports whether err, or any error it wraps, is a *GitError with
+// the given code.
+//
+// It uses errors.As, so a GitError stays recognizable after being wrapped with
+// fmt.Errorf("...: %w", err).
 func IsErrorCode(err error, c ErrorCode) bool {
-	if err == nil {
-		return false
-	}
-	if gitError, ok := err.(*GitError); ok {
+	var gitError *GitError
+	if errors.As(err, &gitError) {
 		return gitError.Code == c
 	}
 	return false
