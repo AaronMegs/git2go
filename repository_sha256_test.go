@@ -129,6 +129,84 @@ func TestSHA256RepositoryCommitRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSHA256PackDirectoryMultiplePacks(t *testing.T) {
+	repo := createTestRepoSHA256(t)
+	defer cleanupTestRepo(t, repo)
+	odb, err := repo.Odb()
+	checkFatal(t, err)
+	defer odb.Free()
+	objectsDir := t.TempDir()
+	packDir := filepath.Join(objectsDir, "pack")
+	checkFatal(t, os.MkdirAll(packDir, 0755))
+	expected := map[string]string{}
+	for _, payload := range []string{"first packed blob", "second packed blob"} {
+		id, err := odb.Write([]byte(payload), ObjectBlob)
+		checkFatal(t, err)
+		expected[id.String()] = payload
+		builder, err := repo.NewPackbuilder()
+		checkFatal(t, err)
+		defer builder.Free()
+		checkFatal(t, builder.Insert(id, "blob"))
+		var pack bytes.Buffer
+		checkFatal(t, builder.Write(&pack))
+		builder.Free()
+		idx, err := NewIndexerForOidType(packDir, nil, ObjectIdSHA256, nil)
+		checkFatal(t, err)
+		defer idx.Free()
+		_, err = idx.Write(pack.Bytes())
+		checkFatal(t, err)
+		_, err = idx.Commit()
+		checkFatal(t, err)
+		idx.Free()
+	}
+	files, err := filepath.Glob(filepath.Join(packDir, "*.pack"))
+	checkFatal(t, err)
+	if len(files) != 2 {
+		t.Fatalf("pack files = %d, want 2", len(files))
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		packed, err := NewOdbWithOidType(ObjectIdSHA256)
+		checkFatal(t, err)
+		defer packed.Free()
+		backend, err := NewOdbBackendPackWithOidType(objectsDir, ObjectIdSHA256)
+		checkFatal(t, err)
+		if err := packed.AddBackend(backend, 1); err != nil {
+			backend.Free()
+			t.Fatal(err)
+		}
+		seen := map[string]bool{}
+		checkFatal(t, packed.ForEach(func(id *Oid) error {
+			if id.Type() != ObjectIdSHA256 {
+				t.Errorf("enumerated OID type = %v", id.Type())
+			}
+			seen[id.String()] = true
+			return nil
+		}))
+		if len(seen) != len(expected) {
+			t.Fatalf("enumerated objects = %d, want %d", len(seen), len(expected))
+		}
+		for text, payload := range expected {
+			id, err := NewOid(text)
+			checkFatal(t, err)
+			if !seen[text] || !packed.Exists(id) {
+				t.Fatal("packed object missing")
+			}
+			size, kind, err := packed.ReadHeader(id)
+			checkFatal(t, err)
+			if size != uint64(len(payload)) || kind != ObjectBlob {
+				t.Fatal("packed object header mismatch")
+			}
+			obj, err := packed.Read(id)
+			checkFatal(t, err)
+			if string(obj.Data()) != payload {
+				t.Error("packed object payload mismatch")
+			}
+			obj.Free()
+		}
+		packed.Free()
+	}
+}
+
 // TestSHA256IndexerForOidType builds a packfile from the SHA256 repo and indexes
 // it via the SHA256-aware indexer constructor, asserting the produced pack name
 // is a 64-hex SHA256 id.

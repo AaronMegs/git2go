@@ -555,10 +555,11 @@ arr.count = 0
 
 **已全部迁移**（2026-09-11），全仓库 `reflect.SliceHeader` 归零。
 
-最后迁移的 `OdbReadStream.Read` 值得一提：它原先 `header.Len = int(ret)` 再
-`return len(data)`。由于 slice 是值传递，改写只作用于函数自己的副本，
-**等价于直接返回 `int(ret)`** ——因此不需要任何「原地改长度」的替代写法，
-去掉 SliceHeader 后语义不变。
+`OdbReadStream.Read` 不需要改写 slice header，直接返回 libgit2 的读取字节数即可。
+2026-10-21 复核进一步修正了历史错误：传给 C 的缓冲区大小必须为 `len(data)`，
+不能扩展到 `cap(data)`，否则可能覆盖调用方未提供的区域，连零长度读也会消耗输入。
+`TestOdbReadStreamRespectsLength` 对 SHA1/SHA256 验证短切片、哨兵区域、零长度和 EOF。
+当前 main 的 `git_odb_stream_read` 返回字节数，而不是通常 C API 的零成功码。
 
 ### 4.4 值类型的特殊责任：`Oid` 案例
 
@@ -610,8 +611,9 @@ Go 的惯例是 `Close() error`，但释放函数返回错误后调用方通常�
 
 ### 5.1 准则：能力探测优先于版本比较
 
-libgit2 main 至今自报 `1.9.x`，因此**版本号不可信**。同时，同一版本号的库可能因编译选项
-不同而缺少 SHA256 provider 或 reftable。
+当前 pin `42a89d7` 自报 `2.0.0-rc.1`；早期 promoted-OID main 快照仍报 `1.9.x`，
+因此不能仅靠版本号判定 ABI。同一版本号的库也可能因编译选项不同而缺少 SHA256 provider
+或 reftable。
 
 本仓库因此建立了三层策略，这是本文认为最值得推广的一点：
 

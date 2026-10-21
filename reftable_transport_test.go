@@ -1,6 +1,7 @@
 package git
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -29,10 +30,86 @@ func newReftableRepoAt(t *testing.T, dir string, bare bool) *Repository {
 	return repo
 }
 
-// TestReftableFetchFromFilesRepo fetches from a files repository into a
-// reftable one. CloneOptions cannot select a reference format, so
-// init-then-fetch is the only way to populate a reftable repository from a
-// remote, which makes this the path callers have to take.
+func TestReftableTransportPersistence(t *testing.T) {
+	if !IsReftableSupported() {
+		t.Skip("reftable disabled")
+	}
+	for _, oidType := range []ObjectIdType{ObjectIdSHA1, ObjectIdSHA256} {
+		for _, operation := range []string{"fetch", "push"} {
+			t.Run(fmt.Sprintf("%s-%s", oidType, operation), func(t *testing.T) {
+				options := &RepositoryInitOptions{Flags: RepositoryInitMkpath | RepositoryInitBare, OidType: oidType, RefdbType: RefdbReftable}
+				src, err := InitRepositoryExt(t.TempDir(), options)
+				checkFatal(t, err)
+				defer src.Free()
+				id := seedCommit(t, src)
+				branch := defaultBranchName(t, src)
+				dstPath := t.TempDir()
+				dst, err := InitRepositoryExt(dstPath, options)
+				checkFatal(t, err)
+				defer func() { dst.Free() }()
+				cfg, err := dst.Config()
+				checkFatal(t, err)
+				checkFatal(t, cfg.SetBool("core.logAllRefUpdates", true))
+				checkFatal(t, cfg.SetString("user.name", "Test"))
+				checkFatal(t, cfg.SetString("user.email", "test@example.com"))
+				cfg.Free()
+				refname := "refs/heads/" + branch
+				if operation == "push" {
+					remote, err := src.Remotes.Create("target", dst.Path())
+					checkFatal(t, err)
+					defer remote.Free()
+					checkFatal(t, remote.Push([]string{refname}, nil))
+					remote.Free()
+				} else {
+					remote, err := dst.Remotes.Create("origin", src.Path())
+					checkFatal(t, err)
+					defer remote.Free()
+					refname = "refs/remotes/origin/" + branch
+					checkFatal(t, remote.Fetch([]string{"refs/heads/*:refs/remotes/origin/*"}, nil, "persist fetch"))
+					remote.Free()
+				}
+				dst.Free()
+				dst, err = OpenRepository(dstPath)
+				checkFatal(t, err)
+				assertRepositoryFormats(t, dst, oidType, RefdbReftable)
+				ref, err := dst.References.Lookup(refname)
+				checkFatal(t, err)
+				if !ref.Target().Equal(id) {
+					t.Fatal("transferred reference did not persist")
+				}
+				ref.Free()
+				commit, err := dst.LookupCommit(id)
+				checkFatal(t, err)
+				commit.Free()
+				log, err := dst.ReadReflog(refname)
+				checkFatal(t, err)
+				entry := log.EntryByIndex(0)
+				if entry == nil || !entry.IdNew().Equal(id) || entry.IdNew().Type() != oidType || entry.IdOld().Type() != oidType {
+					t.Fatal("typed reflog entry did not persist")
+				}
+				if operation == "fetch" && entry.Message() != "persist fetch" {
+					t.Fatalf("reflog message = %q", entry.Message())
+				}
+				count := log.EntryCount()
+				checkFatal(t, log.Drop(0, true))
+				checkFatal(t, log.Write())
+				log.Free()
+				dst.Free()
+				dst, err = OpenRepository(dstPath)
+				checkFatal(t, err)
+				log, err = dst.ReadReflog(refname)
+				checkFatal(t, err)
+				defer log.Free()
+				if log.EntryCount() != count-1 {
+					t.Fatal("reflog Drop did not persist")
+				}
+			})
+		}
+	}
+}
+
+// TestReftableFetchFromFilesRepo covers init-then-fetch, an alternative to
+// CloneOptions.RepositoryCreateCallback for selecting reference storage.
 func TestReftableFetchFromFilesRepo(t *testing.T) {
 	if !IsReftableSupported() {
 		t.Skip("linked libgit2 does not support reftable")

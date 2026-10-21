@@ -1,9 +1,16 @@
 # reftable 事务处理方式调研与方案建议
 
-> 调研日期：2026-09-07
-> libgit2 基线：main `0551dfd4ad989b6a3d5683c0d4cf326c6efef929`（2026-08-15，**即当前上游 main tip**）
+> 初始调研：2026-09-07，历史基线 `0551dfd4`；以下探针记录与方案推演保留其历史范围。
+> 复核日期：2026-10-21，当前 libgit2 main `42a89d7`（`2.0.0-rc.1`）。
 > git2go 分支：`feat-sha256-reftable`
-> 结论摘要：这不是「上游还没写」的工时问题，而是 **libgit2 refdb 后端 vtable 与 reftable 存储模型的架构性失配**。git2go 侧的最佳方案是**保持现状 + 补齐可发现性**，不要自造绕过。
+> 当前结论：公共 `git_transaction_*` 仍未接入 reftable 的 `lock/unlock`，需上游集成设计，
+> git2go 不应自行模拟。但不能据此断言 reftable 不支持事务，或现有 vtable 永远无法集成。
+>
+> **语义更正**：底层 reftable addition 本身可原子提交多条记录，rename 等内部操作已使用。
+> files 上的 `git_transaction_commit` 则逐引用提交，可能部分成功，并非全有全无的批次。
+> 本文后续「事务原子性」「必须扩展」等表述应视为对理想批次接口的方案讨论，而非当前
+> 公共 API 已承诺的保证。相关测试已更名为 `TestFilesTransactionMultipleRefsStagedCommit`，
+> 只验证暂存/提交结果。当前用户能力边界以 `docs/capability-boundaries.md` 为准。
 
 ---
 

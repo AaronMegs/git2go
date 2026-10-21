@@ -10,7 +10,7 @@ Due to the fact that Go 1.11 module versions have semantic meaning and don't nec
 
 | libgit2 | git2go        |
 |---------|---------------|
-| main (SHA256 promoted; before the formal release) | v36-pre (`/v36`) |
+| main @ `42a89d7` (`2.0.0-rc.1`, promoted SHA256) | v36-pre (`/v36`) |
 | 1.9     | v35           |
 | 1.5     | v34           |
 | 1.3     | v33           |
@@ -149,27 +149,21 @@ Related APIs: `Repository.Refdb`, `Repository.OpenRefdb`, `Refdb.Compress`,
 `Repository.NewRefdbBackendFs`, `Repository.NewRefdbBackendReftable`, the
 `Reflog` API, and `Repository.NewTransaction` for reference transactions.
 
-Reference transactions are only available on the `files` backend. This is an
-architectural mismatch rather than a missing upstream feature: libgit2's refdb
-API locks one reference at a time, whereas reftable's atomicity unit is a single
-"addition" that locks the entire reference database, so a per-reference mapping
-breaks on the second reference of a transaction. `NewTransaction` still succeeds
-on a reftable repository; `Transaction.LockRef` is where it reports the error.
-See `docs/reftable-transaction-research.md` for the full analysis.
+To clone directly into reftable, use `CloneOptions.RepositoryCreateCallback`
+and create the destination with `InitRepositoryExt`. Choose the object-id type
+that matches the source. The callback transfers repository ownership to libgit2
+on success; the returned Go wrapper is invalidated. Initialization followed by
+fetch remains an alternative. Local bundle clone is also supported by this
+libgit2 baseline, including SHA256 bundles.
 
-A single reference write is atomic on both backends, so grouping is only needed
-when several references must change together. Branch on the backend up front:
-
-    format, err := repo.RefStorageFormat()
-    if err != nil {
-        return err
-    }
-    if format == git.RefdbReftable {
-        _, err = repo.References.Create(name, target, true, msg)
-        return err
-    }
-    tx, err := repo.NewTransaction()
-    // ... LockRef / SetTarget / Commit ...
+The public reference transaction API works with `files`, but its `Commit`
+applies references one by one: it does not guarantee an all-or-nothing batch,
+and `Free` cannot roll back already committed updates. The reftable backend
+has not connected its locking hooks to this API; `NewTransaction` succeeds but
+`Transaction.LockRef` fails. This is distinct from reftable's internal addition
+mechanism, which can atomically commit multiple records under a database-wide
+lock. See `docs/reftable-transaction-research.md` and
+`docs/capability-boundaries.md` for the integration limits.
 
 Go programs can also supply their own reference database by implementing
 `RefdbBackendInterface` and passing it to `NewRefdbBackendFromInterface`.
@@ -194,9 +188,9 @@ work of version compatibility. It ends with a checklist to run through when
 adding a new binding.
 
 `docs/capability-boundaries.md` records what this binding can and cannot do,
-and why. It separates upstream limitations (reference transactions are
-unavailable on reftable; no released libgit2 carries the promoted typed object
-ids yet) from deliberate non-bindings (the `oid` comparison and formatting
+and why. It separates upstream limitations (the public transaction API is not
+connected to reftable; promoted typed object ids are in the v2 release candidate,
+not yet a stable release) from deliberate non-bindings (the `oid` comparison and formatting
 helpers are implemented in Go) and from genuine gaps, and lists the outstanding
 work split by whether it is breaking. Per-module coverage of the libgit2 public
 API can be reproduced with:

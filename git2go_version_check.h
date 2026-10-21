@@ -33,8 +33,8 @@
 #endif
 
 /*
- * Capability checks define the real ABI contract; the version numbers above are
- * only a floor, because libgit2 main still reports 1.9.x.
+ * Capability checks define the real ABI contract. The current main baseline
+ * reports 2.0.0-rc.1; earlier promoted-OID snapshots still reported 1.9.x.
  */
 #if !defined(GIT_OID_SHA256_SIZE) || !defined(GIT_OBJECT_ID_OPTIONS_VERSION) || !defined(GIT_INDEX_OPTIONS_VERSION) || !defined(GIT_DIFF_PARSE_OPTIONS_VERSION)
 # error "This git2go requires libgit2's promoted typed object-id API (SHA256 plus object-id/index/diff options); use the pinned vendored baseline or a compatible release"

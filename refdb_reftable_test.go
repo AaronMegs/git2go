@@ -424,17 +424,10 @@ func TestFilesTransactionSupported(t *testing.T) {
 	}
 }
 
-// TestFilesTransactionMultipleRefsAtomic pins down the property that makes
-// libgit2's transaction API incompatible with reftable: several references can
-// be locked simultaneously and then committed together.
-//
-// The `files` backend supports this because each lock is a separate
-// `refs/…/x.lock` file. reftable cannot, because its atomicity unit is a single
-// "addition" holding one lock on the whole reference database — a second
-// concurrent addition fails with a lock error. If this test ever has to change
-// shape to keep passing, the transaction contract itself has changed.
-// See docs/reftable-transaction-research.md.
-func TestFilesTransactionMultipleRefsAtomic(t *testing.T) {
+// TestFilesTransactionMultipleRefsStagedCommit verifies staged updates become
+// visible after Commit. It does not assert all-or-nothing batch atomicity:
+// libgit2 commits each locked reference separately.
+func TestFilesTransactionMultipleRefsStagedCommit(t *testing.T) {
 	repo := createTestRepo(t)
 	defer cleanupTestRepo(t, repo)
 	commitID := seedCommit(t, repo)

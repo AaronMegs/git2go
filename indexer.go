@@ -19,6 +19,12 @@ import (
 // lookup.
 type Indexer struct {
 	doNotCompare
+	*indexerState
+	odb *Odb
+}
+
+// Keep C-facing storage in an allocation without Go pointers.
+type indexerState struct {
 	ptr        *C.git_indexer
 	stats      C.git_indexer_progress
 	ccallbacks C.git_remote_callbacks
@@ -27,7 +33,8 @@ type Indexer struct {
 // NewIndexer creates a new indexer instance.
 //
 // The object id type defaults to SHA1. To create an indexer for a SHA256
-// packfile, use NewIndexerForOidType.
+// packfile, use NewIndexerForOidType. The optional odb supplies bases for thin
+// packs and must not be explicitly freed until the indexer is freed.
 func NewIndexer(packfilePath string, odb *Odb, callback TransferProgressCallback) (indexer *Indexer, err error) {
 	return newIndexerWithOidType(packfilePath, odb, 0, callback)
 }
@@ -40,7 +47,7 @@ func newIndexerWithOidType(packfilePath string, odb *Odb, oidType C.int, callbac
 		odbPtr = odb.ptr
 	}
 
-	indexer = new(Indexer)
+	indexer = &Indexer{indexerState: new(indexerState), odb: odb}
 	populateRemoteCallbacks(&indexer.ccallbacks, &RemoteCallbacks{TransferProgressCallback: callback}, nil)
 
 	runtime.LockOSThread()
@@ -90,6 +97,7 @@ func (indexer *Indexer) Commit() (*Oid, error) {
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_indexer_commit(indexer.ptr, &indexer.stats)
+	runtime.KeepAlive(indexer)
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
@@ -106,12 +114,15 @@ func (indexer *Indexer) Commit() (*Oid, error) {
 
 // Free frees the indexer and its resources.
 func (indexer *Indexer) Free() {
-	if indexer == nil || indexer.ptr == nil {
+	if indexer == nil || indexer.indexerState == nil || indexer.ptr == nil {
 		return
 	}
 	ptr := indexer.ptr
 	indexer.ptr = nil
-	untrackCallbacksPayload(&indexer.ccallbacks)
+	odb := indexer.odb
+	indexer.odb = nil
 	runtime.SetFinalizer(indexer, nil)
 	C.git_indexer_free(ptr)
+	runtime.KeepAlive(odb)
+	untrackCallbacksPayload(&indexer.ccallbacks)
 }

@@ -506,16 +506,11 @@ type OdbReadStream struct {
 
 // Read reads from the stream
 func (stream *OdbReadStream) Read(data []byte) (int, error) {
-	// Read into the slice's full capacity, which is what this method has always
-	// done, and report the count instead of rewriting the slice header. The
-	// header rewrite only ever affected this function's own copy of the slice,
-	// so `return len(data)` was already equivalent to returning the count.
-	buf := data[:cap(data)]
-	if len(buf) == 0 {
+	if len(data) == 0 {
 		return 0, nil
 	}
-	ptr := (*C.char)(unsafe.Pointer(&buf[0]))
-	size := C.size_t(len(buf))
+	ptr := (*C.char)(unsafe.Pointer(&data[0]))
+	size := C.size_t(len(data))
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()

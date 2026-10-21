@@ -1,7 +1,7 @@
 # 能力边界与绑定覆盖率
 
-> 基线：git2go `feat-sha256-reftable`；libgit2 main `0551dfd4`（= 上游 main tip）
-> 审计日期：2026-09-11
+> 基线：git2go `feat-sha256-reftable`；libgit2 main `42a89d7`（本次直查官方 main，版本 `2.0.0-rc.1`）
+> 审计日期：2026-10-21；以下结论限定于这一 pin，不表示未来 main 自动兼容。
 >
 > 本文回答两个问题：**当前能做什么、不能做什么**（能力边界），以及**哪些绑定尚未完成**
 > （覆盖率缺口）。区分「上游限制」「有意不绑定」「真实缺口」三类，避免把设计决策误读为
@@ -21,7 +21,11 @@
 | reftable 引用存储 | 可用（默认编入） | `RefdbReftable`、`IsReftableSupported()` | 分支/符号引用/reflog/重开持久化 |
 | 四组合（SHA1/SHA256 × files/reftable） | 全部可用 | `InitRepositoryExt` | `TestRepositoryFormatMatrix`，含真实提交与查找 |
 | reftable 上的 fetch / push | 可用 | 常规 `Remote` API | `TestReftableFetchFromFilesRepo`、`TestReftablePushToReftableBare` |
-| SHA256 + reftable 跨仓库传输 | 可用 | 常规 `Remote` API | `TestSHA256ReftableFetch` |
+| SHA256 + reftable 跨仓库传输 | 可用 | 常规 `Remote` API | `TestReftableTransportPersistence`：push/fetch、typed reflog、Drop 后重开 |
+| 直接 clone 到四种格式 | 可用 | `CloneOptions.RepositoryCreateCallback` | `TestCloneRepositoryCallbackFormats` |
+| 本地 bundle clone | 可用 | `Clone` | `TestCloneBundleFormats`：四组合、checkout 与重开 |
+| SHA256 多 pack 目录 | 可用 | `NewOdbBackendPackWithOidType` | `TestSHA256PackDirectoryMultiplePacks`：双 pack、读取/枚举与重开 |
+| SHA1/SHA256 thin pack | 可用 | `NewIndexerForOidType` | `TestIndexerThinPackRetainsOdb`：仅由 indexer 保活 ODB、GC 后 delta 解析 |
 | reflog 读写 | 可用 | `Repository.ReadReflog` 等 | 13/13 API 全绑定 |
 | 引用事务 | **仅 files** | `Repository.NewTransaction()` | 见 1.2.1 |
 | Go 自定义 refdb 后端 | 可用（19 回调） | `NewRefdbBackendFromInterface` | 生命周期/并发/能力位/panic 转错误 |
@@ -29,40 +33,27 @@
 
 ### 1.2 上游限制（git2go 无法绕过）
 
-#### 1.2.1 reftable 不支持引用事务
+#### 1.2.1 公共引用事务 API 未接入 reftable
 
-`Repository.NewTransaction()` 在 reftable 仓库上可创建，但首次 `LockRef` 即失败：
+`Repository.NewTransaction()` 在 reftable 仓库上可创建，但首次 `LockRef` 返回
+`backend does not support locking`：当前 `refdb_reftable.c` 未装配 `lock/unlock`。
 
-```text
-backend does not support locking
-```
+这不表示 reftable 没有事务能力。其底层 addition 可在整库锁下原子提交一批记录，
+上游 rename 等内部操作已使用该机制；只是没有通过公共 `git_transaction_*` 暴露。
+逐引用加锁与整库 addition 的集成需要上游设计，不能将每次 `LockRef` 机械映射为一个 addition。
+历史方案分析见 `docs/reftable-transaction-research.md`。
 
-**这是架构失配，不是上游「还没写」**：libgit2 的 refdb vtable 是 per-ref 锁
-（`lock(refname)` / `unlock(payload)`），为 files 后端的 `.lock` 文件模型定制；而 reftable
-的原子性单位是一个持有**整库锁**的 addition。实测第二次 addition 返回
-`REFTABLE_LOCK_ERROR (-5)`，即朴素映射恰好在多引用场景下失败。
-
-详细论证与四方案评估见 `docs/reftable-transaction-research.md`。
-
-**替代方案**：reftable 的单次引用写入自身是原子的，因此只有「多引用必须同时生效」的场景
-受影响。按后端分支：
-
-```go
-format, err := repo.RefStorageFormat()
-if err != nil {
-    return err
-}
-if format == git.RefdbReftable {
-    _, err = repo.References.Create(name, target, true, msg)
-    return err
-}
-tx, err := repo.NewTransaction()
-// ... LockRef / SetTarget / Commit ...
-```
+**同时纠正 files 事务语义**：`git_transaction_commit` 逐个提交引用，首次失败即返回；
+先前已提交的修改不会回滚。它也不保证整个批次同时可见或全有全无。
+`TestFilesTransactionMultipleRefsStagedCommit` 只验证暂存/提交结果，不证明批次原子性。
+需要单条更新时可直接使用 `References.Create`；需要多引用全有全无时，不能把 files
+事务当作 reftable 原子批次的等价替代。
 
 #### 1.2.2 稳定版 `v36.0.0` 被上游阻塞
 
-最新 release 为 **v1.9.7**，其 `include/git2/oid.h` 中：
+本次查询官方标签：最新稳定系列为 **v1.9.7**，另有 **v2.0.0-rc.1**（含 promoted typed OID，
+仍是候选版）。不能再称「没有任何 release 包含该 ABI」，但稳定发布条件仍未满足。
+v1.9.7 的 `include/git2/oid.h` 中：
 
 - 无 `git_object_id_options`（promoted typed OID 的标志性类型）；
 - SHA256 仍在 `#ifdef GIT_EXPERIMENTAL_SHA256` 之后；
@@ -72,20 +63,20 @@ tx, err := repo.NewTransaction()
 本线的 ABI 守卫要求 `GIT_OID_MAX_SIZE == 32`，对 v1.9.x 会正确地编译期拒绝
 （CI 的 `reject-legacy-v1-9-4` job 覆盖）。
 
-#### 1.2.3 `CloneOptions` 无法指定引用格式
+#### 1.2.3 clone 引用格式：绑定缺口已补齐
 
-libgit2 的 `git_clone_options` 不含 `refdb_type`，因此**无法直接 clone 出一个 reftable
-仓库**。唯一路径是 init-then-fetch：
+此前「无法直接 clone 出 reftable」的结论不准确：`git_clone_options` 虽无 `refdb_type`，
+但已有 `repository_cb`。现在 `CloneOptions.RepositoryCreateCallback` 暴露了它，
+回调中用 `InitRepositoryExt` 选择 `OidType`、`RefdbType` 即可。
 
-```go
-repo, err := git.InitRepositoryExt(path, &git.RepositoryInitOptions{
-    Flags:     git.RepositoryInitMkpath,
-    RefdbType: git.RefdbReftable,
-})
-// 然后创建 remote 并 Fetch
-```
+回调必须返回存活、拥有所有权的空仓库，对象格式与源仓库一致；成功后所有权交给 libgit2，
+返回的 Go 包装对象失效，不可继续使用或保留子对象。错误时回调负责清理其已创建的资源。
+同时修复了 nil options 解引用和 remote-create 回调将 panic 吞成成功的问题，
+普通错误保留原值，panic（包括旧 Go 语义的 `panic(nil)`）转为 callback/User 错误。
 
-此路径已由 `TestReftableFetchFromFilesRepo` 覆盖。
+`TestCloneRepositoryCallbackFormats` 验证四组合与所有权/重开；`TestCloneBundleFormats`
+覆盖最新 main 新增的 bundle clone，含 SHA256。init-then-fetch 仍是可选路径。
+上游 bundle transport 支持 clone/fetch，不支持 push 或 shallow；本轮直接实测 clone。
 
 #### 1.2.4 reftable 不支持 namespace
 
@@ -93,6 +84,17 @@ repo, err := git.InitRepositoryExt(path, &git.RepositoryInitOptions{
 "TODO: this backend does not yet have support for namespaces"）。
 
 **对 git2go 用户不可达** —— git2go 未绑定 namespace API（见 2.3），因此不构成实际风险。
+
+#### 1.2.5 同 pack 路径不能混用 OID 格式
+
+当前上游 `src/libgit2/mwindow.c` 的 `git_mwindow_get_pack` 按路径缓存 pack，
+命中时复用已有结构，没有将 `oid_type` 纳入缓存键或校验。因此不要在同一进程中
+用 SHA1、SHA256 同时打开同一 pack 路径；后端的 OID 类型必须匹配磁盘格式。
+
+本轮隔离探针复现：先保留指向 SHA256 pack 目录的 SHA1 后端，再用 SHA256 后端读取，
+正确类型的访问也受到缓存干扰；释放相关后端后，按正确类型重开恢复。探针仅用于调查，
+未作为依赖错误行为的常驻测试。绑定层没有修改 vendored 源码或加进程级缓存绕过。
+正常的同格式多 pack 读取、枚举与重开由 `TestSHA256PackDirectoryMultiplePacks` 覆盖。
 
 ### 1.3 平台验证边界
 
@@ -114,18 +116,23 @@ repo, err := git.InitRepositoryExt(path, &git.RepositoryInitOptions{
 
 按模块统计 libgit2 公开 `GIT_EXTERN` 与 git2go 实际引用（审计脚本见 §2.5）。
 
-### 2.1 本次适配域：完整
+### 2.1 本次适配域：引用覆盖与语义验证
 
-| 模块 | 覆盖 | 说明 |
+| 模块 | 引用覆盖 | 说明 |
 | --- | --- | --- |
-| `refdb` | **4/4 100%** | 含 `git_refdb_backend_reftable` |
-| `reflog` | **13/13 100%** | |
-| `transaction` | **8/8 100%** | 绑定完整；运行期受 1.2.1 限制 |
+| `refdb` | 4/4 | `git_refdb_backend_reftable` 位于 sys 头，不计入这 4 项 |
+| `reflog` | 13/13 | 含本轮 Drop 后重开验证 |
+| `transaction` | 8/8 | 符号覆盖完整；运行期受 1.2.1 限制 |
+| `clone` | 2/2 | 该数字不包含 options 字段和回调；本轮仍补出了 repository 回调缺口 |
 | `oid` | 2/22 | **20 项为有意不绑定**，见 2.2 |
 | `odb` | 23/36 | typed 入口齐备；缺口见 2.4 |
+| `odb_backend` | 3/5 | loose/one-pack/pack 已覆盖；另两项为 options init |
 | `indexer` | 5/7 | 缺口非 SHA256 相关，见 2.2 |
 
-reftable / SHA256 的核心 API **无缺口**。
+符号出现不等于行为正确。本轮另行验证四组合 clone、typed 读流、thin pack 生命周期、
+SHA256 多 pack 和传输后的 reflog 持久化；不能由引用比例推导「所有功能零缺口」。
+旧 pin 到当前 main 的公开头变化仅涉及版本、两个 config backend 符号导出和新增
+`git_transport_bundle`。bundle 可经现有 `Clone`/remote 入口使用，不必另暴露底层构造器。
 
 ### 2.2 有意不绑定（非缺陷）
 
@@ -262,12 +269,15 @@ stack，绑定 worktree 后才需要考虑该路径的测试覆盖。
 
 ## 4. 判断
 
-**SHA256 与 reftable 的适配在本次范围内已完善可用**：
+**在当前 pin 与已测场景内，SHA256/reftable 的核心路径可用**。本轮补齐了真实的 clone
+回调缺口，修正读流长度与 indexer/ODB 生命周期，而非仅凭符号统计判定完整。
 
-- 核心 API 零缺口（refdb / reflog / transaction 各 100%）；
-- 四组合矩阵与传输层均实测通过，且经变异验证（改为 `RefdbFiles` 后断言确实失败）；
-- 五条构建轨道全绿：static / race / dynamic / `libgit2_no_reftable` / `DEPRECATE_HARD`；
-- 能力缺失正确降级为 SKIP 而非 FAIL（13 项）。
+- 四组合初始化、直接 clone、bundle clone 和重开测试通过；
+- SHA256 多 pack 读取/枚举、typed thin pack 与 GC 后 delta 解析通过；
+- SHA1/SHA256 reftable push/fetch、typed reflog 与 Drop 的重开持久化通过；
+- static / race / dynamic / `libgit2_no_reftable` / 硬弃用宏编译轨道通过；
+- clone 回调的普通错误、nil 返回、panic 及 `panic(nil)` 兼容语义均有回归测试。
 
-遗留项中，唯一与 SHA256 相关的绑定缺口是 `git_odb_backend_pack`（§2.4.1），
-且为历史既有、影响限于手工组装 ODB 的高级场景。其余为独立模块空白或需等待上游。
+`git_odb_backend_pack` 已绑定，不再列为遗留缺口。上游公共事务接入、namespace 和混合
+OID pack 缓存限制仍然存在；完整平台验证与稳定版发布条件仍待外部验证，详见 §1。
+`libgit2_no_reftable` 是 Go 绑定的关闭轨道，不等于对所有关闭 reftable 的 C 构建做过测试。

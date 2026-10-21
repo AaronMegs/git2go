@@ -11,33 +11,17 @@ import (
 	"unsafe"
 )
 
-// Transaction represents a group of reference updates. References must be
-// locked before they are updated. Free rolls back and unlocks any locks that
-// were not committed.
+// Transaction stages reference updates after acquiring per-reference locks.
+// Commit applies updates one by one and stops on the first failure; it does
+// not guarantee all-or-nothing visibility for a batch. Free releases any
+// remaining locks, but cannot roll back updates that were already committed.
 //
-// Backend support: transactions require the refdb backend to implement
-// reference locking. The traditional `files` backend does; the reftable backend
-// does NOT, and this is an architectural mismatch rather than merely missing
-// work upstream:
-//
-//   - libgit2's refdb vtable locks one reference at a time
-//     (`lock(refname)` / `unlock(payload, ...)`), which models the `files`
-//     backend's per-reference `.lock` files. Each unlock commits independently.
-//   - reftable's atomicity unit is a single "addition" that locks the *entire*
-//     reference database and commits every staged update at once. A second
-//     concurrent addition fails with a lock error, so a per-reference mapping
-//     would break on the second reference of a transaction — precisely the case
-//     transactions exist for. libgit2's vtable also has no "stage everything,
-//     then commit" hook in which reftable's commit could be placed.
-//
-// Fixing this needs a transaction-level backend API (as git itself has, with
-// transaction_prepare/finish/abort). See docs/reftable-transaction-research.md.
-//
-// On a reftable repository, NewTransaction still succeeds; the failure only
-// surfaces at LockRef. Use Repository.RefStorageFormat to decide up front
-// whether a transaction is usable. Note that a single reference write on the
-// reftable backend is itself atomic, so grouping is only needed for updates
-// that must apply across several references.
+// The pinned libgit2 reftable backend does not implement the lock/unlock hooks
+// required by this public API: NewTransaction succeeds, but LockRef fails.
+// This does not mean reftable lacks atomic updates. Its underlying addition
+// mechanism commits a batch under a database-wide lock and is used internally
+// for operations such as rename; it is not exposed through git_transaction_*.
+// See docs/reftable-transaction-research.md for integration considerations.
 type Transaction struct {
 	doNotCompare
 	ptr  *C.git_transaction

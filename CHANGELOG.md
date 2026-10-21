@@ -7,6 +7,30 @@ typed object-id ABI and supports SHA1 and SHA256 in the same build, together
 with the reftable reference-storage backend. SHA1 and the `files` reference
 backend remain the defaults.
 
+The vendored libgit2 baseline is now main at `42a89d7` (`2.0.0-rc.1`).
+This includes the updated reftable implementation and bundle clone/fetch.
+
+Latest main compatibility updates:
+
+- Added `CloneOptions.RepositoryCreateCallback`, including ownership transfer,
+  original-error propagation and panic containment. It allows cloning directly
+  into SHA1/SHA256 repositories with files or reftable reference storage.
+- Fixed `Clone(..., nil)` dereferencing nil options, and the remote-create
+  callback swallowing panics as success. Returned remote wrappers are now
+  invalidated when ownership transfers to libgit2.
+- Fixed `OdbReadStream.Read` writing to the buffer capacity instead of its
+  length, including consuming input on a zero-length read.
+- `Indexer` retains the ODB used for thin-pack bases until it is freed. Its
+  C-facing state is separately allocated to comply with cgo pointer rules.
+- Added regression coverage for typed thin packs, SHA256 multi-pack directory
+  backends, four-format clone/bundle clone, and reftable push/fetch/reflog
+  persistence across repository reopen.
+- Corrected transaction documentation: the public API is not wired to the
+  reftable backend; files transactions commit references one by one, not as an
+  all-or-nothing batch. The underlying reftable addition mechanism is distinct.
+- Recorded an upstream pack-cache limitation: do not open the same pack path
+  with conflicting OID formats in one process. See `docs/capability-boundaries.md`.
+
 The module path is now:
 
 ```text

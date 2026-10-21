@@ -149,9 +149,12 @@ void _go_git_populate_rebase_callbacks(git_rebase_options *opts)
 	opts->commit_create_cb = commit_create_callback;
 }
 
-void _go_git_populate_clone_callbacks(git_clone_options *opts)
+void _go_git_populate_clone_callbacks(git_clone_options *opts, int repository_cb, int remote_cb)
 {
-	opts->remote_cb = (git_remote_create_cb)&remoteCreateCallback;
+	if (repository_cb)
+		opts->repository_cb = (git_repository_create_cb)&repositoryCreateCallback;
+	if (remote_cb)
+		opts->remote_cb = (git_remote_create_cb)&remoteCreateCallback;
 }
 
 void _go_git_populate_checkout_callbacks(git_checkout_options *opts)
