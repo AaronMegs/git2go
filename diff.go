@@ -179,17 +179,18 @@ func newDiffFromC(ptr *C.git_diff, repo *Repository) *Diff {
 }
 
 func (diff *Diff) Free() error {
-	if diff.ptr == nil {
+	if diff == nil || diff.ptr == nil {
 		return ErrInvalid
 	}
+	ptr := diff.ptr
+	diff.ptr = nil
 	if !diff.runFinalizer {
 		// This is the case with the Diff objects that are involved in the DiffNotifyCallback.
-		diff.ptr = nil
 		return nil
 	}
 	runtime.SetFinalizer(diff, nil)
-	C.git_diff_free(diff.ptr)
-	diff.ptr = nil
+	C.git_diff_free(ptr)
+	runtime.KeepAlive(diff.repo)
 	return nil
 }
 
@@ -226,12 +227,13 @@ type DiffStats struct {
 }
 
 func (stats *DiffStats) Free() error {
-	if stats.ptr == nil {
+	if stats == nil || stats.ptr == nil {
 		return ErrInvalid
 	}
-	runtime.SetFinalizer(stats, nil)
-	C.git_diff_stats_free(stats.ptr)
+	ptr := stats.ptr
 	stats.ptr = nil
+	runtime.SetFinalizer(stats, nil)
+	C.git_diff_stats_free(ptr)
 	return nil
 }
 

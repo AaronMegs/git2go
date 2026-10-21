@@ -39,6 +39,42 @@ func (s *testSmartSubtransportStream) Write(buf []byte) (int, error) {
 func (s *testSmartSubtransportStream) Free() {
 }
 
+func TestRegisteredSmartTransportFreeFailurePreservesHandle(t *testing.T) {
+	callback := func(*Remote, *Transport) (SmartSubtransport, error) {
+		return &testSmartSubtransport{}, nil
+	}
+	transport, err := NewRegisteredSmartTransport("git2go-free-retry", true, callback)
+	checkFatal(t, err)
+	name, handle := transport.name, transport.handle
+	defer func() {
+		transport.name = name
+		if err := transport.Free(); err != nil {
+			t.Errorf("transport cleanup: %v", err)
+		}
+	}()
+
+	transport.name = "git2go-free-unregistered"
+	if err := transport.Free(); !IsErrorCode(err, ErrorCodeNotFound) {
+		t.Fatalf("Free = %v, want not found", err)
+	}
+	if transport.handle != handle {
+		t.Fatal("failed unregister lost the handle")
+	}
+	if value, ok := pointerHandles.GetOk(handle); !ok || value != transport {
+		t.Fatal("failed unregister untracked the live transport")
+	}
+
+	transport.name = name
+	checkFatal(t, transport.Free())
+	if transport.handle != nil {
+		t.Fatal("successful unregister did not clear the handle")
+	}
+	if _, ok := pointerHandles.GetOk(handle); ok {
+		t.Fatal("successful unregister left a tracked handle")
+	}
+	checkFatal(t, transport.Free())
+}
+
 func TestTransport(t *testing.T) {
 	t.Parallel()
 	repo := createTestRepo(t)

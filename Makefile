@@ -10,8 +10,6 @@ generate: static-build/install/lib/libgit2.a
 # ==============
 # This uses whatever version of libgit2 can be found in the system.
 test:
-	go run script/check-MakeGitError-thread-lock.go
-	go run script/check-binding-invariants.go
 	go test $(TEST_ARGS) ./...
 
 install:
@@ -38,10 +36,6 @@ dynamic-build/install/lib/libgit2.so:
 
 test-dynamic: dynamic-build/install/lib/libgit2.so
 	PKG_CONFIG_PATH=dynamic-build/install/lib/pkgconfig \
-			go run script/check-MakeGitError-thread-lock.go
-	PKG_CONFIG_PATH=dynamic-build/install/lib/pkgconfig \
-			go run script/check-binding-invariants.go
-	PKG_CONFIG_PATH=dynamic-build/install/lib/pkgconfig \
 			LD_LIBRARY_PATH=$(DYNAMIC_LIBDIR) \
 			CGO_LDFLAGS="-Wl,-rpath,$(DYNAMIC_LIBDIR)" \
 			go test $(TEST_ARGS) ./...
@@ -62,8 +56,6 @@ static-build/install/lib/libgit2.a:
 	./script/build-libgit2-static.sh
 
 test-static: static-build/install/lib/libgit2.a
-	go run script/check-MakeGitError-thread-lock.go
-	go run script/check-binding-invariants.go
 	go test --tags "static" $(TEST_ARGS) ./...
 
 # The reference-storage bindings are compiled in by default, because the pinned
@@ -94,7 +86,16 @@ lint:
 	test -z "$$(gofmt -l $$(git ls-files '*.go' | grep -v '^vendor/'))" || \
 		(gofmt -l $$(git ls-files '*.go' | grep -v '^vendor/'); exit 1)
 	go vet --tags "static" ./...
+
+.PHONY: check-bindings test-binding-invariants
+check-bindings: test-binding-invariants
+	go run script/check-MakeGitError-thread-lock.go
 	go run script/check-binding-invariants.go
+
+test-binding-invariants:
+	go test -count=1 script/check-binding-invariants.go script/check-binding-invariants_test.go
+
+test test-static test-dynamic test-static-race test-static-no-reftable test-static-offline lint: check-bindings
 
 # Go dependencies and the libgit2 submodule intentionally share vendor/. The Go
 # command recreates vendor/ from scratch, so restore the pinned C submodule after

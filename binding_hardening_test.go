@@ -156,3 +156,96 @@ func TestOptionsVersionsAccepted(t *testing.T) {
 		t.Fatalf("options version check failed: %v", err)
 	}
 }
+
+func TestFreeNilAndZeroValues(t *testing.T) {
+	cases := []struct {
+		name  string
+		value interface{ Free() error }
+	}{
+		{"nil diff", (*Diff)(nil)}, {"zero diff", &Diff{}},
+		{"nil stats", (*DiffStats)(nil)}, {"zero stats", &DiffStats{}},
+		{"nil patch", (*Patch)(nil)}, {"zero patch", &Patch{}},
+		{"nil blame", (*Blame)(nil)}, {"zero blame", &Blame{}},
+		{"nil note", (*Note)(nil)}, {"zero note", &Note{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.value.Free(); err != ErrInvalid {
+				t.Fatalf("Free = %v, want ErrInvalid", err)
+			}
+		})
+	}
+	for _, status := range []*StatusList{nil, {}} {
+		status.Free()
+		status.Free()
+	}
+	var remote *Remote
+	remote.free()
+}
+
+func TestFreeOwnedResources(t *testing.T) {
+	repo := createTestRepo(t)
+	defer cleanupTestRepo(t, repo)
+	oldTree, newTree := createTestTrees(t, repo)
+	defer oldTree.Free()
+	defer newTree.Free()
+	diff, err := repo.DiffTreeToTree(oldTree, newTree, nil)
+	checkFatal(t, err)
+	defer diff.Free()
+
+	borrowed := &Diff{ptr: diff.ptr, repo: repo}
+	checkFatal(t, borrowed.Free())
+	if borrowed.ptr != nil || borrowed.Free() != ErrInvalid {
+		t.Fatal("borrowed diff must invalidate only its own wrapper")
+	}
+	stats, err := diff.Stats()
+	checkFatal(t, err)
+	defer stats.Free()
+	patch, err := diff.Patch(0)
+	checkFatal(t, err)
+	defer patch.Free()
+	checkFatal(t, diff.Free())
+	if diff.ptr != nil || diff.Free() != ErrInvalid {
+		t.Fatal("diff Free must clear the pointer and preserve ErrInvalid on repetition")
+	}
+	if stats.FilesChanged() != 1 {
+		t.Fatal("stats must remain usable after Diff.Free")
+	}
+	_, err = patch.String()
+	checkFatal(t, err)
+	checkFatal(t, stats.Free())
+	checkFatal(t, patch.Free())
+	if stats.ptr != nil || patch.ptr != nil || stats.Free() != ErrInvalid || patch.Free() != ErrInvalid {
+		t.Fatal("stats and patch must be released exactly once")
+	}
+
+	blame, err := repo.BlameFile("README", nil)
+	checkFatal(t, err)
+	defer blame.Free()
+	checkFatal(t, blame.Free())
+	if blame.ptr != nil || blame.Free() != ErrInvalid {
+		t.Fatal("blame must be released exactly once")
+	}
+
+	head, err := repo.Head()
+	checkFatal(t, err)
+	defer head.Free()
+	commit, err := repo.LookupCommit(head.Target())
+	checkFatal(t, err)
+	defer commit.Free()
+	note, _ := createTestNote(t, repo, commit)
+	defer note.Free()
+	checkFatal(t, note.Free())
+	if note.ptr != nil || note.Free() != ErrInvalid {
+		t.Fatal("note must be released exactly once")
+	}
+
+	status, err := repo.StatusList(&StatusOptions{Show: StatusShowIndexAndWorkdir})
+	checkFatal(t, err)
+	defer status.Free()
+	status.Free()
+	status.Free()
+	if status.ptr != nil {
+		t.Fatal("status Free must clear the pointer")
+	}
+}

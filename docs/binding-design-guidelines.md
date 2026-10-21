@@ -114,11 +114,17 @@ func (v *Refdb) Free() {
 }
 ```
 
-四个要点缺一不可：nil 双检查；**先置空后释放**（否则 finalizer 与显式调用竞争）；
-解除终结器；`KeepAlive(parent)` 覆盖到调用之后。
+拥有 C 指针的包装对象应遵循：nil 双检查；保存指针后**先置空再释放**；
+在释放前解除终结器；依赖父对象的释放路径用 `KeepAlive(parent)` 覆盖到调用之后。
+这保证的是顺序清理约定，**普通指针赋 nil 不提供同步**，不能保证并发 `Free()` 或
+`Free()` 与读写并发安全；调用方仍必须串行化这些操作。`KeepAlive` 也无法阻止显式的
+父对象 `Free()`。
 
-**本仓库现状：全部幂等**（2026-09-11 修复 28 处），并由 `script/check-binding-invariants.go`
-作为构建门禁持续保证。修复前有一处已实测为真实缺陷：
+2026-09-11 修复了 28 处重复释放问题；2026-10-21 进一步统一了 `Diff`、`DiffStats`、
+`Patch`、`Blame`、`Note`、`StatusList` 和 `Remote.free` 的清空顺序，并补齐相关父对象保活。
+保留现有 API 语义：上述返回 error 的 `Free()` 重复调用仍返回 `ErrInvalid`，并非一律返回 nil。
+`script/check-binding-invariants.go` 检查 nil 早退、对应字段置空与 finalizer 解除顺序，
+但不是完整的幂等性或并发安全证明。修复前有一处已实测为真实缺陷：
 
 ```go
 // remote.go:658-664
@@ -817,14 +823,20 @@ vtable 是 per-ref 锁（为 files 的 `.lock` 模型定制），而 reftable �
 
 ## 8. 约定的机器化执行
 
-文档会腐化，构建门禁不会。本仓库把两类跨语言约定编码成了构建步骤：
+本仓库把两类跨语言约定编码成了构建步骤；检查器自身也需要正反例测试，不能替代所有权评审。
 
-| 门禁 | 强制的不变式 |
+| 门禁 | 检查内容 |
 |---|---|
-| `script/check-MakeGitError-thread-lock.go` | 读取 libgit2 线程局部错误前必须锁定 OS 线程（§2.2） |
-| `script/check-binding-invariants.go` | 每个 `//export` 回调有 panic 边界（§3.3）；每个释放 C 指针的 `Free()` 幂等（§1.3） |
+| `script/check-MakeGitError-thread-lock.go` | `MakeGitError` 所在函数中同时存在 OS 线程锁与延迟解锁（§2.2） |
+| `script/check-binding-invariants.go` | `//export` 回调存在 panic 守卫（§3.3）；`Free/free` 对实际释放字段 nil 早退、先置空、先解除 finalizer（§1.3） |
 
-两者都接入 `make lint` 与各 `test-*` target，并在 CI 中作为独立 job 运行。
+`make check-bindings` 先运行纯 Go 门禁自测，再执行两项仓库扫描；`make lint`、`make test`
+及所有 `test-static*` / `test-dynamic` 入口共享这一前置条件。CI 的 lint job 在构建 libgit2
+之前先运行它。直接运行 `go test ./...` 不包含这些构建门禁。
+
+自测位于 `script/check-binding-invariants_test.go`，覆盖正确模式、清错字段、延迟清空、
+无效 nil 守卫、错误或延后的 finalizer、私有 helper、文本伪调用以及注销操作误报。
+可单独运行 `make test-binding-invariants`，不依赖 libgit2。
 
 ### 为什么这两条特别需要机器执行
 
@@ -847,19 +859,26 @@ vtable 是 per-ref 锁（为 files 的 `.lock` 模型定制），而 reftable �
 //git2go:allow-nonidempotent-free <reason>
 ```
 
-检查器另有一个短的白名单（`freeAllowlist`），用于那些以其他等价方式保证幂等的方法。
-**白名单应当保持简短并附理由**；它每增长一项，规则的价值就削弱一分。
+原有 `RefdbBackend.Free` 白名单已移除，其实现可直接通过规则。修复代码或识别逻辑时
+应补自测，不应通过增加豁免消除告警。
+
+`RegisteredSmartTransport.Free` 是注销操作，不是 C 指针释放：注销失败时必须保留句柄，
+成功后才解除跟踪、清空句柄和 finalizer。检查器按调用及参数区分这些操作，不需要白名单；
+`TestRegisteredSmartTransportFreeFailurePreservesHandle` 固化失败后重试的语义。
 
 ### 检查器的已知边界
 
-与 §2.2 列出的门禁边界同理，这个检查器也是语法层面的近似：
+与 §2.2 列出的门禁边界同理，这个检查器仍是 AST 层面的近似：
 
-- `free-idempotent` 只认「前两条语句中出现含 `nil` 的 `if`」这一形态。用别的方式实现幂等
-  （例如先 `Untrack` 再判断）会被误报，需要走白名单或选择退出注释。
-- 它只对**调用了 `C.git_*` / `C._go_git_*` / `C.free`** 的 `Free()` 生效；纯 Go 的
-  `Free()`（测试替身、接口实现）不在范围内。
-- `callback-panic-guard` 接受出现在函数体任意位置的 `defer ... recover`，因为 refdb 的
-  teardown 回调需要先解析并 untrack 句柄，再只保护用户的 `Free` 调用。因此它保证的是
-  「存在 panic 边界」，而不是「边界覆盖了整个函数体」。
+- 释放识别限定于 `Free/free` 中的 `C.git_*_free`、`C._go_git_*_free`、`C.free`，且参数
+  可追溯到接收者字段或顶层局部别名。临时 CString 清理不算对象释放；其他名称的辅助函数、
+  复杂指针变换及闭包需要评审，未做跨函数调用图或完整数据流分析。
+- `free-idempotent` 要求前两条语句中有针对实际释放字段的 nil 比较及立即 return；
+  `free-clear-first` 要求顶层清空同一字段，再用保存的别名释放；`free-finalizer` 要求
+  释放前顶层调用 `runtime.SetFinalizer(receiver, nil)`。这不是任意控制流的正确性证明。
+- 第四要点 `KeepAlive(parent)` 取决于具体 C 析构和回调的所有权，仍须人工核对。
+  先清空字段不提供线程同步，也不允许提前显式释放父对象。
+- `callback-panic-guard` 仍只检查守卫存在；refdb teardown 可先解析并 untrack 句柄。
+  守卫是否覆盖全部用户代码、是否正确传递 panic 错误，仍须审查与运行期测试。
 
-这些边界应当在扩展规则时一并收紧，而不是假装不存在。
+正反例自测能防止已覆盖模式退化，但不能据此宣称所有生命周期缺陷都已被排除。

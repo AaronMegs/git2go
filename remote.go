@@ -657,10 +657,16 @@ func RemoteNameIsValid(name string) (bool, error) {
 
 // free releases the resources of the Remote.
 func (r *Remote) free() {
-	runtime.SetFinalizer(r, nil)
-	C.git_remote_free(r.ptr)
+	if r == nil || r.ptr == nil {
+		return
+	}
+	ptr := r.ptr
 	r.ptr = nil
+	owner := r.repo
 	r.repo = nil
+	runtime.SetFinalizer(r, nil)
+	C.git_remote_free(ptr)
+	runtime.KeepAlive(owner)
 }
 
 // Free releases the resources of the Remote. It is safe to call more than

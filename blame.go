@@ -130,12 +130,13 @@ func newBlameFromC(ptr *C.git_blame) *Blame {
 }
 
 func (blame *Blame) Free() error {
-	if blame.ptr == nil {
+	if blame == nil || blame.ptr == nil {
 		return ErrInvalid
 	}
-	runtime.SetFinalizer(blame, nil)
-	C.git_blame_free(blame.ptr)
+	ptr := blame.ptr
 	blame.ptr = nil
+	runtime.SetFinalizer(blame, nil)
+	C.git_blame_free(ptr)
 	return nil
 }
 

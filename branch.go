@@ -68,6 +68,7 @@ func (i *BranchIterator) Free() {
 	i.ptr = nil
 	runtime.SetFinalizer(i, nil)
 	C.git_branch_iterator_free(ptr)
+	runtime.KeepAlive(i.repo)
 }
 
 func (i *BranchIterator) ForEach(f BranchIteratorFunc) error {

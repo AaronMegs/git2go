@@ -153,12 +153,14 @@ func newNoteFromC(ptr *C.git_note, r *Repository) *Note {
 
 // Free frees a git_note object
 func (n *Note) Free() error {
-	if n.ptr == nil {
+	if n == nil || n.ptr == nil {
 		return ErrInvalid
 	}
-	runtime.SetFinalizer(n, nil)
-	C.git_note_free(n.ptr)
+	ptr := n.ptr
 	n.ptr = nil
+	runtime.SetFinalizer(n, nil)
+	C.git_note_free(ptr)
+	runtime.KeepAlive(n.r)
 	return nil
 }
 

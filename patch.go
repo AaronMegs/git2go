@@ -28,12 +28,13 @@ func newPatchFromC(ptr *C.git_patch) *Patch {
 }
 
 func (patch *Patch) Free() error {
-	if patch.ptr == nil {
+	if patch == nil || patch.ptr == nil {
 		return ErrInvalid
 	}
-	runtime.SetFinalizer(patch, nil)
-	C.git_patch_free(patch.ptr)
+	ptr := patch.ptr
 	patch.ptr = nil
+	runtime.SetFinalizer(patch, nil)
+	C.git_patch_free(ptr)
 	return nil
 }
 

@@ -487,6 +487,7 @@ func (v *ReferenceIterator) Free() {
 	v.ptr = nil
 	runtime.SetFinalizer(v, nil)
 	C.git_reference_iterator_free(ptr)
+	runtime.KeepAlive(v.repo)
 }
 
 // ReferenceNameIsValid returns whether the reference name is well-formed.

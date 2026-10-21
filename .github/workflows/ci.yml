@@ -27,6 +27,8 @@ jobs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: 'stable'
+    - name: Check binding invariants and analyzer tests
+      run: make check-bindings
     - name: Build libgit2
       run: |
         sudo apt-get update
