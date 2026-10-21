@@ -1,6 +1,6 @@
 # git2go SHA1 / SHA256 兼容性适配设计文档
 
-> **当前状态（基线：libgit2 `main` @ `0551dfd4`）：SHA256 已在上游转正，第一步代码/构建收敛已完成。**
+> **当前状态（2026-10-21，git2go `93ac057` / libgit2 `main` @ `42a89d7`，`2.0.0-rc.1`）：SHA256 已转正，代码/构建收敛和本轮适配已完成。**
 > `GIT_EXPERIMENTAL_SHA256` 宏、`EXPERIMENTAL_SHA256` cmake 选项与实验安装布局均已移除；
 > `git_oid` 无条件为 typed 结构，同一构建同时支持 SHA1 与 SHA256，且 SHA1 仍为默认。
 >
@@ -9,8 +9,8 @@
 > `v36.0.0-pre.N`）。旧 20 字节 `git_oid` ABI 的 libgit2 1.9.x 发布包不再兼容，相关用户
 > 应停留在 git2go v35。
 >
-> 本文 §1.1–§1.7、§2–§4.5 保留的是转正前双轨方案的**历史设计记录**，不可再作为当前构建
-> 指南。当前实现与两步发版策略分别见 §1.8、§4.8；迁移指南见 §5 和
+> 本文 §1.1–§1.7、§2–§4.6 保留的是转正前双轨方案及收敛预案的**历史设计记录**，不可再
+> 作为当前构建指南。§1.8 为最初转正确认，当前已测范围及发版策略见 §4.7–§4.8；迁移见 §5 和
 > `sha256-breaking-changes.md`。
 
 ---
@@ -476,7 +476,15 @@ SHA256 在上游"转正"后，`git_oid` 的 ABI 与解析函数 arity 将统一�
 
 ### 4.7 兼容性完整度自查（转正收敛后）
 
-#### 已完整覆盖
+#### 当前 pin 下的已测路径
+
+2026-10-21 的增量验证与完整轨道记录见 `sha256-reftable-integration-report.md` §6.5。
+除以下主链路外，还覆盖：
+
+- `CloneOptions.RepositoryCreateCallback` 直接创建四种格式的目标仓库，以及本地 bundle clone；
+- SHA256 多 pack 目录的读取、枚举与重开；SHA1/SHA256 thin pack 在 GC 后解析 ODB base；
+- SHA1/SHA256 reftable push/fetch 后引用、对象、typed reflog 及 Drop 的重开持久化；
+- `OdbReadStream.Read` 的短切片、零长度及 EOF；clone 普通错误、nil 返回和 panic 传播。
 
 - **SHA1 保留且默认**：40-hex/20-byte oid、默认仓库、默认 ODB/index/diff/indexer 均保持 SHA1。
 - **SHA256 本地全生命周期**：仓库 init → ODB buffer/file hash → write/read → standalone ODB +
@@ -497,7 +505,10 @@ SHA256 在上游"转正"后，`git_oid` 的 ABI 与解析函数 arity 将统一�
 |---|---|
 | 文件 hash 不应用 repository filters | `HashFile` / `HashFileWithType` 对应 `git_object_id_from_file`，按上游语义只哈希 raw content；需要 attributes/CRLF filters 时应使用 repository-aware hash API（后续可单独绑定） |
 | push 未使用真实网络服务端做端到端测试 | clone/fetch/pack 协商及 local receive-pack push 已覆盖；外部 SSH/HTTP push 依赖服务端环境 |
-| 正式版本号尚未发布 | 当前以能力宏守卫；正式发布后执行 §4.8 第二步 |
+| 稳定转正版本尚未发布 | 已有 `v2.0.0-rc.1`，不等于稳定版；正式发布与跨平台验证后执行 §4.8 第二步 |
+| 公共引用事务 | reftable 未接入 `git_transaction_*`；files 的逐引用提交也不保证批次全有全无，不应混同于 reftable 底层原子 addition |
+| 同路径混合 OID pack 缓存 | 不得在同一进程用不同 OID 格式打开同一 pack 路径，后端类型须与磁盘格式匹配 |
+| ODB 生命周期 | `Indexer` 持有用于 thin-pack base 的 ODB 至释放，但不能防止调用方提前显式 `Odb.Free()` |
 | `Oid` 不再是 `[20]byte` | 属明确 breaking change；迁移见 `sha256-breaking-changes.md` |
 
 #### 结论
@@ -515,7 +526,7 @@ loose/pack backend、index/diff/indexer 与 clone/fetch 主链路均有真实端
 
 #### 第一步：代码与构建收敛（本分支已完成）
 
-- `Oid` 统一为带 type 的 32 字节结构，运行时同时表示 SHA1/SHA256；SHA1 仍为默认。
+- `Oid` 为 1 字节 type + 32 字节最大 ID（整体 33 字节），运行时同时表示 SHA1/SHA256；SHA1 仍为默认。
 - `wrapper.c` 删除实验宏/next 双分支，仅保留转正后的 typed / `_ext` API。
 - 删除 `oid_default.go`、`sha256_default.go`、`sha256_experimental.go`、`libgit2_next.go`、
   `Build_bundled_static_sha256.go`；类型感知 API 与测试全部去 build tag。
@@ -529,8 +540,10 @@ loose/pack backend、index/diff/indexer 与 clone/fetch 主链路均有真实端
 
 - **已确定**：module 主版本为 v36，路径为 `github.com/libgit2/git2go/v36`；上游正式发布前
   使用 v36-pre 阶段与 `v36.0.0-pre.N` 标签。v35 继续对应 libgit2 1.9.x。
-- 上游 main 的 `version.h` 目前仍报告 1.9.0，故暂时保留 `LIBGIT2_VER_MAJOR/MINOR == 1.9`
-  版本范围；上游发布包含转正 SHA256 的正式版本后，更新三个 `Build_*.go` 的版本守卫。
+- 当前 main pin 已报告 `2.0.0-rc.1`，但稳定版条件仍未满足。三个 `Build_*.go` 共用
+  `git2go_version_check.h`，使用非弃用的 `LIBGIT2_VERSION_*`，并检查 promoted options 宏与
+  OID 布局；没有 `LIBGIT2_VER_MAJOR/MINOR == 1.9` 的精确版本锁。
+  上游稳定发布后统一明确版本下限，并保留能力与布局守卫。
 - 在最终 Linux / macOS / Windows CI 上验证正式发布包的 dynamic / system-static / bundled-static。
 - 将 `docs/sha256-breaking-changes.md` 的清单整理进正式 CHANGELOG / release notes，然后发布
   `v36.0.0`。
@@ -549,7 +562,10 @@ loose/pack backend、index/diff/indexer 与 clone/fetch 主链路均有真实端
 - 使用 `oid.Bytes()` 取有效原始字节（SHA1=20、SHA256=32），`oid.String()` 取 hex
   （SHA1=40、SHA256=64），`oid.Type()` 取类型。
 - 创建 SHA256 仓库使用 `InitRepositoryWithOidType(..., ObjectIdSHA256)`；standalone ODB、
-  loose/one-pack backend、index、diff、indexer 均提供对应 `WithOidType` API。
+  loose/one-pack/pack backend、index、diff 均有类型化入口，indexer 使用 `NewIndexerForOidType`。
+- 直接 clone 到 reftable 使用 `CloneOptions.RepositoryCreateCallback`，在回调内用
+  `InitRepositoryExt` 选择与源匹配的 OID 类型和目标引用格式；成功时移交所有权，原包装对象失效。
+  clone 回调错误处理、读流长度与 ODB 释放顺序的迁移要求见 `sha256-breaking-changes.md`。
 - 构建不再使用 `EXPERIMENTAL_SHA256`、`git_experimental_sha256` 或 `libgit2_next`；常规
   `libgit2` 构建同时提供 SHA1 与 SHA256。
 

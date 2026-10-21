@@ -1,6 +1,6 @@
-# libgit2 最新 main 下的 reftable 适配完整性审计
+# libgit2 main 下的 reftable 适配审计（历史快照）
 
-> **历史文档说明（2026-09-07）**
+> **历史文档说明（2026-10-21 更新导航）**
 >
 > 本文记录的是 `feat-reftable` 分支整合进 `feat-sha256-reftable` 之前的状态，保留
 > 作为设计与审计依据。以下内容在整合后已发生变化：
@@ -11,7 +11,18 @@
 > - `GIT2GO_HAS_REFDB_BACKEND_INIT` 条件编译已移除（pin 的基线始终提供该回调）。
 > - 临时 `OidType` 枚举已由统一的 `ObjectIdType` 取代。
 >
-> 当前状态以 `docs/sha256-reftable-integration-report.md` 为准。
+> **当前基线**：git2go `93ac057`，libgit2 main `42a89d7`（`2.0.0-rc.1`）。后续补齐
+> `CloneOptions.RepositoryCreateCallback`，直接 clone 到 reftable 不再是绑定缺口；四组合
+> bundle clone、SHA256 多 pack、thin-pack ODB 保活，以及 reftable push/fetch 后 typed reflog
+> 与 Drop 的重开持久化均已有测试。
+>
+> **阅读边界**：下文的“当前”“最新”、旧 CI 建议和测试计数均属于原审计时点，不是现行配置。
+> `libgit2_no_reftable` 只关闭 Go 绑定，不会使 v36 兼容 v1.9.x 的旧 OID ABI。
+> 公共 `git_transaction_*` 仍未接入 reftable，但底层 addition 可原子提交多条记录；files
+> 事务也不保证批次全有全无。旧测试通过不等于当前 pin 在 Linux/Windows 已获验证。
+>
+> 当前状态见 [整合适配报告](./sha256-reftable-integration-report.md)，限制及证据见
+> [能力边界](./capability-boundaries.md)，迁移要求见 [Breaking Changes](./sha256-breaking-changes.md)。
 
 > 审计日期：2026-08-04
 > 上游基线：libgit2 main `939362a3c`

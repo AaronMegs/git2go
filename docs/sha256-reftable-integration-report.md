@@ -2,26 +2,28 @@
 
 > 分支：`feat-sha256-reftable`
 > 整合来源：`feat-sha256-reftable`（SHA256 主体，HEAD `55cf351`）+ `feat-reftable`（reftable 主体，`3d65b2d`）
-> libgit2 基线：`vendor/libgit2` pin 至 main `0551dfd4ad989b6a3d5683c0d4cf326c6efef929`
-> （2026-09-07 经 `git ls-remote` 复核，该提交即上游 main tip，落后 0 个提交）
-> 目标：单一分支同时具备 libgit2 main 的 SHA256 与 reftable 完整能力，为后续 libgit2 v2 适配奠定基础
+> 原始整合基线：libgit2 main `0551dfd4`（2026-09-07 查询快照，不是当前 main）
+> 当前复核：2026-10-21，git2go `93ac057`；`vendor/libgit2` pin 为官方 main `42a89d7`，版本 `2.0.0-rc.1`
+> 范围：当前 pin 在 macOS (darwin/arm64) 上的已测 SHA256/reftable 路径；不承诺未来 main 或未测平台兼容
+> 阅读导航：§1–2、§5.1、§6.5、§7 为当前状态；§3–5 原始记录及 §6.1–6.4 保留历史验证；能力边界见 `capability-boundaries.md`
 
 ---
 
 ## 1. 结论摘要
 
-整合已完成并全量验证通过。
+整合及最新 pin 适配已完成，以下为 `93ac057` 所含代码在 2026-10-21 的验证记录：
 
-- SHA1/SHA256 × files/reftable **四组合全部实测通过**，无跳过。
-- 默认静态轨道 **205 个顶层测试 + 40 个子测试全部通过，0 失败 0 跳过**。
-- `gofmt`、`go vet` 全绿；`go vet` 此前报告的 5 处 `unsafe.Pointer` / `reflect.SliceHeader` 误用已全部消除。
-- 竞态检测、动态链接、`DEPRECATE_HARD=ON`、`-DGIT_DEPRECATE_HARD`、`libgit2_no_reftable` 退化构建均通过。
+- SHA1/SHA256 × files/reftable 初始化、直接 clone、bundle clone 与重开均有实测。
+- 含网络的静态全量：**232 个顶层测试 + 81 个子测试通过，0 失败、0 跳过**。
+- 离线、race、动态链接、硬弃用宏、`libgit2_no_reftable` 轨道均通过；按配置跳过网络或 reftable 用例，详见 §6.5。
+- 新增 clone 仓库创建回调，修复 nil options、回调 panic、读流长度和 thin-pack ODB 生命周期；补齐多 pack 与 reftable 传输/reflog 持久化测试。
+- 公共事务未接入 reftable、files 事务非批次原子、混合 OID pack 缓存等限制仍存在，不能由测试通过推导全部 API 或平台都兼容。
 
-整合过程中另外修复了 **两处内存泄漏、一处数据竞争、一处双重释放、一处静默失败**，详见第 5 节。这些均为两分支各自遗留的真实缺陷，而非合并引入。
+原始整合缺陷保留在第 5 节，本次升级补充见 §5.1。
 
-### 1.1 关键决策：不做整体 merge
+### 1.1 历史决策：不做整体 merge
 
-两分支自共同基线 `1f7dbc4`（libgit2 v1.9.4）后独立演进：当前分支 18 个独有提交，`feat-reftable` 46 个独有提交，且在 `wrapper.c`、`repository.go`、`oid*.go`、`remote.go`、`Build_*.go`、CI、Makefile 上存在**语义冲突**（同一处两侧都改，且改法不同）。
+原始整合时，两分支自共同基线 `1f7dbc4`（libgit2 v1.9.4）后独立演进：本线 18 个独有提交，`feat-reftable` 46 个独有提交，且在 `wrapper.c`、`repository.go`、`oid*.go`、`remote.go`、`Build_*.go`、CI、Makefile 上存在**语义冲突**（同一处两侧都改，且改法不同）。
 
 因此采用**按功能域手工整合**，逐文件判定采信方，而非 `git merge` 后择一侧。每个决策点记录在第 3 节。
 
@@ -39,7 +41,11 @@
 | 引用存储格式探测 | 支持 | `Repository.RefStorageFormat()` |
 | Go 自定义 refdb 后端 | 支持（19 回调桥接） | `NewRefdbBackendFromInterface` |
 | reflog 读写 | 支持 | `Repository.ReadReflog` 等 |
-| 引用事务 | 支持（files 后端） | `Repository.NewTransaction()` |
+| 引用事务 | files 逐引用提交，不保证批次全有全无；reftable 未接入公共 API | `Repository.NewTransaction()` |
+| 四组合直接 clone | 支持，回调创建的目标对象格式须匹配源 | `CloneOptions.RepositoryCreateCallback` |
+| 本地 bundle clone | SHA1/SHA256 × files/reftable 已验证 | `Clone` |
+| SHA256 多 pack 目录 | 读取、枚举、重开已验证 | `NewOdbBackendPackWithOidType` |
+| SHA1/SHA256 thin pack | base 解析与 ODB 保活已验证 | `NewIndexerForOidType` |
 | 运行时版本报告 | 支持 | `Version()` / `VersionString()` |
 
 `RepositoryInitOptions` 是 SHA256 与 reftable 两条线的**收口点**：
@@ -203,9 +209,25 @@ dyld[88989]: Library not loaded: @rpath/libgit2.1.9.dylib
 
 ---
 
+### 5.1 最新 main 适配补充（2026-10-21）
+
+提交 `93ac057` 将子模块从 `0551dfd4` 更新到 `42a89d7`，未修改 vendored 源码：
+
+| 变更 | 代码位置 | 契约与验证 |
+|---|---|---|
+| 暴露上游已有的仓库创建回调 | `clone.go`、`wrapper.c` | `RepositoryCreateCallback` 用 `InitRepositoryExt` 选择两种格式，成功时移交所有权并使原包装对象失效 |
+| 修复 clone 默认参数及回调失败 | `clone.go` | nil options 可用；普通错误原样返回；panic（含旧 Go 语义的 `panic(nil)`）转为 `ErrorClassCallback` / `ErrorCodeUser`；remote 包装对象在移交后失效 |
+| 读流按切片长度写入 | `odb.go` | `Read` 使用 `len` 而非 `cap`，零长度不消耗数据；短切片、哨兵和 EOF 均有测试 |
+| thin-pack ODB 保活 | `indexer.go` | `Indexer` 持有 ODB 至释放，C 状态另行分配以满足 cgo 指针规则；调用方仍不能提前显式 `Odb.Free()` |
+| 补强组合回归 | `clone_test.go`、`repository_sha256_test.go`、`reftable_transport_test.go` | 四组合/bundle clone、SHA256 双 pack、reftable push/fetch 后 typed reflog 及 Drop 重开持久化 |
+
+回调和生命周期的调用方迁移要求见 `sha256-breaking-changes.md`。公共事务及同路径混合 OID
+pack 缓存限制见 `capability-boundaries.md`，未通过绑定层模拟或补丁绕过。
+
 ## 6. 验证记录
 
-全部在 macOS (darwin/arm64) + libgit2 `0551dfd4` 下实测。
+§6.1–6.4 保留原始整合阶段在 macOS (darwin/arm64) + libgit2 `0551dfd4` 的实测，
+其计数不代表当前套件；`42a89d7` 的升级验证见 §6.5。
 
 ### 6.1 测试轨道
 
@@ -241,7 +263,7 @@ dyld[88989]: Library not loaded: @rpath/libgit2.1.9.dylib
 - 生命周期：分支增删改查、符号引用、reflog、**重新打开后持久化**
 - 格式探测：`RefStorageFormat` 正确遵循 `core.repositoryformatversion >= 1` 门控（v0 仓库即使声明 `extensions.refStorage=reftable` 也报告 files）
 - Go 桥接：多迭代器生命周期、**并发迭代器**、能力位（init/compress/lock）、回调 panic 转错误
-- 事务：files 后端支持、**reftable 后端正确报告不支持**、提交后不可复用、取消回滚
+- 事务：files 后端的暂存/提交、reftable 的公共 `LockRef` 报错、提交后不可复用、取消未提交修改；不证明批次全有全无，也不支持回滚已提交更新
 
 ### 6.4 外网依赖测试（已治理）
 
@@ -263,22 +285,43 @@ clone_test.go:86: cannot clone remote repo via https, error: ... TLS handshake t
 
 ---
 
+### 6.5 当前 pin 的升级验证（2026-10-21）
+
+以下结果来自 `93ac057` 提交前的最终代码验证，不是本次纯文档同步重新运行的测试。
+环境为 macOS (darwin/arm64)，libgit2 `42a89d7` 的静态库及配套动态库均已重建。
+
+| 检查 | 结果与范围 |
+|---|---|
+| 静态全量，含公开网络用例 | 232 顶层 + 81 子测试通过；0 失败、0 跳过 |
+| 静态离线、race、动态链接、`CGO_CFLAGS=-DGIT_DEPRECATE_HARD` | 全部通过；网络用例按配置跳过 |
+| `static,libgit2_no_reftable` | 通过；网络和 reftable 用例按配置跳过 |
+| `GODEBUG=panicnil=1` | clone 失败回调与 thin-pack 保活专项通过 |
+| `GOEXPERIMENT=cgocheck2` | clone、indexer、读流专项通过 |
+| `make lint`、绑定门禁和差异格式 | 通过 |
+
+`libgit2_no_reftable` 验证的是 Go 绑定关闭轨道，不代表测试了所有禁用 reftable 的 C 构建。
+Linux/Windows 尚待 CI；IDE 默认动态解析仍可能选中不兼容的系统 libgit2，不能把该解析结果
+与指定配套库的构建验证混为一谈。本轮未修改系统库或编辑器配置。
+
+---
+
 ## 7. 面向 libgit2 v2 的准备情况
 
-本次整合为 v2 适配清理了以下障碍：
+当前已适配 `2.0.0-rc.1` 对应 main pin，但尚不代表稳定版本发布验收：
 
-1. **零硬废弃依赖**。`DEPRECATE_HARD=ON` 构建 + cgo 层 `-DGIT_DEPRECATE_HARD` 双重验证通过，说明既不链接也不引用任何废弃声明。v2 移除废弃 API 时不会断裂。
-2. **集中式 ABI 守卫**。`git2go_version_check.h` 是唯一的版本/布局断言点，v2 若调整 `git_oid` 布局会在编译期立即报错，而非运行期静默损坏。
-3. **能力探测优先于版本比较**。`IsSha256Supported()` / `IsReftableSupported()` 基于实际探测，不依赖版本号（libgit2 main 仍自报 1.9.0，版本号本就不可信）。
-4. **CMake 选项已对齐上游当前命名**，不再依赖已废弃的选项名。
-5. **`go vet` 干净**，无 `reflect.SliceHeader` 等在新 Go 版本中会被收紧的用法。
+1. **硬弃用检查**。旧基线有库级 `DEPRECATE_HARD=ON` 记录；本轮在新 pin 上重新通过 cgo 层 `-DGIT_DEPRECATE_HARD` 轨道。检查只约束所测代码与构建，不承诺未来 v2 API 不变。
+2. **集中式 ABI 守卫**。三个 `Build_*.go` 共用 `git2go_version_check.h`，检查 promoted options 宏以及 OID 大小、字段偏移和枚举值；不是精确锁定 1.9 版本号。
+3. **能力探测优先于版本比较**。当前 pin 自报 `2.0.0-rc.1`，早期 promoted-OID main 快照仍报 `1.9.x`；`IsSha256Supported()` / `IsReftableSupported()` 仍检查实际能力。
+4. **CMake 选项已对齐当前 pin**，构建和依赖升级仍需重新验证。
+5. **`go vet` 与绑定门禁通过**，生命周期语法检查不能替代所有权审查。
 
 ### 7.1 遗留事项
 
 | 项 | 说明 |
 |---|---|
-| 稳定版 `v36.0.0` | 阻塞于上游发布含 promoted typed OID 的正式版本。2026-09-07 直查最新 release v1.9.7 的 `oid.h`：无 `git_object_id_options`，SHA256 仍在 `GIT_EXPERIMENTAL_SHA256` 之后，默认 `GIT_OID_MAX_SIZE` 仍为 20。当前仅发 `v36.0.0-pre.N` |
-| reftable 事务 | **架构失配，非工时问题**：libgit2 refdb vtable 是 per-ref 锁，reftable 只有库级锁。已评估并否决两条绕过路径，长期需上游 vtable 扩展。详见 `docs/reftable-transaction-research.md` |
+| 稳定版 `v36.0.0` | 2026-10-21 复核已有含 promoted typed OID 的 `v2.0.0-rc.1`，最新稳定系列仍为 `v1.9.7`；稳定版与跨平台验收条件未满足，仍处于 `v36.0.0-pre.N` 阶段 |
+| reftable 公共事务 | `git_transaction_*` 仍未接入后端 `lock/unlock`；底层 addition 可原子提交多条记录，需上游集成设计，不由绑定层模拟。files 事务也不保证批次全有全无，见 `reftable-transaction-research.md` |
+| 同路径混合 OID pack 缓存 | 上游缓存按路径复用 pack；同一进程不得用不同 OID 格式打开同一 pack 路径，后端格式必须匹配磁盘格式 |
 | 跨平台验证 | 本次仅在 macOS 实测；Linux/Windows 依赖 CI |
 | Windows 平台 | 归入正式包阶段，依赖上游正式发布 |
 

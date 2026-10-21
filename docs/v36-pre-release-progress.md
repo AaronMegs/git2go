@@ -4,9 +4,11 @@
 >
 > 预发布标签：`v36.0.0-pre.N`
 >
-> libgit2 基线：promoted-SHA256 `main @ 0551dfd4ad989b6a3d5683c0d4cf326c6efef929`
+> 当前基线（2026-10-21）：git2go `93ac057`；libgit2 main `42a89d7`（`2.0.0-rc.1`）
 
-本文件按执行顺序记录 v36-pre 发布准备工作、验证证据和仍受外部条件阻塞的事项。
+本文件按执行顺序记录 v36-pre 发布准备工作。除已同步的 §7 发布条件外，§1–14 保留各阶段
+历史方案与当时验证，不代表当前 CI、编辑器或上游 main 状态。最新适配见 §15，完整验证
+见 `sha256-reftable-integration-report.md` §6.5，当前限制见 `capability-boundaries.md`。
 
 ## 总览
 
@@ -18,14 +20,15 @@
 | 4 | 生成正式 Changelog / pre-release notes | ✅ 已完成 |
 | 5 | 增加 SHA256 push/receive-pack 测试 | ✅ 已完成（本地真实 receive-pack；外部网络服务留待第 7 项） |
 | 6 | 审计 deprecated libgit2 API，并验证 `DEPRECATE_HARD=ON` | ✅ 已完成 |
-| 7 | 等待上游正式版本、更新守卫和跨平台正式包验证 | ⏸ 外部阻塞（最新正式版仍为 v1.9.6） |
+| 7 | 等待上游稳定版本、更新守卫和跨平台正式包验证 | 外部阻塞（已有 `v2.0.0-rc.1`；最新稳定系列仍为 `v1.9.7`） |
 | 8 | 绑定 `git_object_id_from_file` 文件路径类型化 hash | ✅ 已完成 |
 | 9 | 修复 Go 1.14+ 自动 vendor 模式导致的 GitHub CI 全任务失败 | ✅ 已完成 |
 | 10 | 升级 libgit2 pin 至 `0551dfd4` 并清除全部 hard-deprecated 依赖 | ✅ 已完成 |
-| 11 | 修复本地默认（dynamic）配置无法解析 promoted libgit2 | ✅ 已完成 |
-| 12 | 修复 GitHub CI `check-generate` 失败并现代化 workflow | ✅ 已完成 |
-| 13 | 整合 `feat-reftable`，使本线同时具备 SHA256 与 reftable 完整能力 | ✅ 已完成 |
-| 14 | 以上游 main 最新提交为准复核适配；调研 reftable 事务方案 | ✅ 已完成 |
+| 11 | 本地默认（dynamic）配置解析 promoted libgit2 | 保留历史处理方案；本轮 IDE 默认解析仍命中旧系统库 |
+| 12 | 修复 GitHub CI `check-generate` 失败并现代化 workflow | 已完成（历史验证） |
+| 13 | 整合 `feat-reftable`，统一 SHA256 与 reftable 核心入口 | 已完成；当前范围以能力边界文档为准 |
+| 14 | 2026-09-07 main 快照复核及事务方案调研 | 历史记录；事务保证已更正 |
+| 15 | 升级 `42a89d7` 并补齐 clone、读流、thin-pack 与持久化适配 | 已完成，提交 `93ac057`；见 §15 |
 
 ---
 
@@ -190,19 +193,20 @@ v36.0.0 发布时可根据上游正式包配置决定是否把默认值改为 ON
 
 ## 7. 上游正式版本与正式 v36.0.0 — ⏸ 外部阻塞
 
-2026-08-04 查询 libgit2 官方 GitHub Releases：最新正式版为 **v1.9.6**，发布说明未声明
-SHA256 已转为正式/非实验能力；promoted typed oid 目前只存在于 pinned main commit。
+历史查询：2026-08-04 的最新稳定版为 `v1.9.6`，2026-09-03 为 `v1.9.7`；已检查的
+v1.9.5–v1.9.7 头文件均不含 `git_object_id_options`，不满足 promoted typed OID ABI。
 
-2026-09-03 复核：上游已发布 **v1.9.7**，阻塞仍未解除。逐个检查 v1.9.5 / v1.9.6 / v1.9.7 的
-`include/git2/oid.h`，**均不含** `git_object_id_options`，即 promoted typed object-id API 仍未
-进入任何正式发布。
+2026-10-21 已核实官方标签存在 **`v2.0.0-rc.1`**，包含 promoted typed OID；当前 main pin
+也自报该版本。不能再说“没有任何 release 包含该 ABI”，但 RC 不等于稳定发布，最新稳定
+系列仍为 `v1.9.7`。
 
-因此以下工作不能提前完成：
+以下稳定发布条件仍未满足：
 
-- 将三个 `Build_*.go` 从临时的 1.9 + capability guard 改为正式版本下限；
-- 把子模块从 main commit 切到正式 release commit/tag；
-- 验证上游正式 Linux/macOS/Windows 包；
-- 发布稳定 `v36.0.0`。
+- 在三个 `Build_*.go` 共用的 `git2go_version_check.h` 中明确稳定版兼容下限；当前使用
+  `LIBGIT2_VERSION_*` 加能力和布局检查，不是精确锁在 1.9；
+- 将子模块改为经验证的稳定 release commit/tag；
+- 验证正式 Linux/macOS/Windows 包的构建与链接组合；
+- 完成以上验收后发布稳定 `v36.0.0`。
 
 当前可发布范围是 `v36.0.0-pre.N`。Windows 正式 CI 和外部 SSH/HTTP SHA256 push 服务端测试
 也归入本阶段；它们需要可复现的正式包/服务环境，不能用当前本地条件完整闭环。
@@ -581,7 +585,7 @@ reftable 线用 `libgit2_reftable` 选择性**开启**；本线改为**默认编
 
 ## 14. 上游 main 复核与 reftable 事务调研 — ✅ 已完成
 
-### 14.1 pin 与上游 main tip 一致
+### 14.1 当时的 pin 与上游 main tip 一致（2026-09-07 快照）
 
 2026-09-07 复核（`git ls-remote` 直查远端，避免过期本地引用）：
 
@@ -591,8 +595,8 @@ reftable 线用 `libgit2_reftable` 选择性**开启**；本线改为**默认编
 落后提交数        0
 ```
 
-网页侧交叉核对：该提交为 2026-08-15 合入的 PR #7346（zstream 死循环修复），
-其后上游 main **无新提交**。因此当前适配即针对 main 最新状态，无需追平。
+该提交为 2026-08-15 合入的 PR #7346（zstream 死循环修复），上述“落后 0”仅限
+2026-09-07 查询时点。2026-10-21 已发现并适配新的 main `42a89d7`，见 §15。
 
 同时复核了 main 上与本线相关的近期动向：
 
@@ -635,9 +639,15 @@ v1.9.7:include/git2/oid.h
 `GIT_OID_MAX_SIZE == 32`，因此对 v1.9.7 会正确地编译期拒绝（CI 的
 `reject-legacy-v1-9-4` job 覆盖同类场景）。稳定 `v36.0.0` 仍须等待上游转正。
 
-### 14.3 reftable 事务：根因是架构失配，非工时问题
+### 14.3 reftable 公共事务集成（历史调研，语义已更正）
 
-完整调研见 `docs/reftable-transaction-research.md`。要点：
+完整调研见 `docs/reftable-transaction-research.md`。2026-10-21 更正：公共
+`git_transaction_*` 仍未接入 reftable 的 `lock/unlock`，但底层 addition 可以原子提交多条
+记录，rename 等内部操作已使用它。files 事务逐引用提交，不承诺批次全有全无，
+`Free` 也不能回滚已提交的更新。以下探针只反驳朴素的逐引用 addition 映射，
+不能证明 reftable 没有事务能力或上游必须采取唯一一种集成方案。
+
+原始比较：
 
 | 维度 | files 后端 | reftable 后端 |
 | --- | --- | --- |
@@ -645,8 +655,8 @@ v1.9.7:include/git2/oid.h
 | 可同时持有多把锁 | 是 | **否** |
 | 原子性单位 | 每次 unlock 独立落盘 | 一个 addition 全量提交 |
 
-libgit2 的 refdb vtable 是 per-ref `lock`/`unlock`，为 files 的 `.lock` 模型定制；
-reftable 无法在不改该 vtable 的前提下正确实现。实测证据（C 探针直连静态库）：
+libgit2 的 refdb vtable 使用 per-ref `lock`/`unlock`。历史探针表明，将每个引用锁都
+直接映射为独立 addition 会发生整库锁冲突；这不是对所有可能集成设计的证明：
 
 ```text
 1st new_addition (ref A)  -> 0 ok
@@ -665,12 +675,37 @@ reftable 的 addition 生命周期天然同构——这解释了上游为何留 
 - git2go 直连 reftable 原语：实测头文件未公开安装，且**共享库中 `reftable_*` 符号全部被
   visibility 隐藏（可见数 0）**，动态链接不可行。
 
-长期路径是向上游贡献 vtable 扩展（`GIT_REFDB_BACKEND_VERSION` 1→2），已纳入
-libgit2 v2 适配观察项。
+vtable 扩展是历史方案之一，具体公共事务集成方式仍需上游设计，不能将其写成已经确定的
+版本升级计划。
 
-### 14.4 本轮代码改动
+### 14.4 历史改动及后续更正
 
-- `transaction.go`：文档从「上游尚未实现」改为说明架构失配与根因；
-- `refdb_reftable_test.go`：新增 `TestFilesTransactionMultipleRefsAtomic`，固化
-  「多引用同时加锁 + 统一提交」这一被 reftable 破坏的前提（经变异验证：移除 `Commit`
-  后测试确实失败）。
+- `transaction.go` 的早期架构说明已在 `93ac057` 中收敛为公共 API 未接入及 files 逐引用提交的准确契约。
+- `refdb_reftable_test.go` 的测试现名为 `TestFilesTransactionMultipleRefsStagedCommit`：验证暂存及提交结果，不证明多引用同时可见或全有全无。历史变异测试只证明遗漏 `Commit` 会被发现。
+
+---
+
+## 15. 最新 main 适配与语义补强（2026-10-21）
+
+### 基线与交付
+
+- git2go 提交 `93ac057`；`vendor/libgit2` 从 `0551dfd4` 更新到官方 main `42a89d7`，版本 `2.0.0-rc.1`。子模块无本地源码补丁。
+- 上游新增 bundle clone/fetch 并更新 reftable 实现；Go 侧复核的是这一明确 pin，不承诺未来 main 自动兼容。
+- 补齐 `CloneOptions.RepositoryCreateCallback`，可直接 clone 到 SHA1/SHA256 × files/reftable；同时修复 nil options、创建回调错误/panic（包括旧语义 `panic(nil)`）和所有权交接。
+- `OdbReadStream.Read` 按切片长度而非容量写入；`Indexer` 持有 thin-pack ODB，C 状态独立分配，调用方仍须遵守显式释放顺序。
+- 补齐 SHA256 多 pack、四组合 bundle clone、reftable push/fetch 与 typed reflog/Drop 重开持久化测试。
+
+### 验证与剩余边界
+
+提交前在 macOS (darwin/arm64) 重建配套静态/动态库；含网络静态全量 **232 顶层 + 81 子测试
+通过，0 失败、0 跳过**。离线、race、动态、关闭 reftable 绑定和硬弃用宏轨道通过，按配置跳过
+网络或 reftable 用例；nil panic 兼容、增强 cgo 指针检查、lint 与绑定门禁专项通过。
+此处引用适配轮次的验证记录，纯文档同步不重新声称执行过测试；完整记录见
+`sha256-reftable-integration-report.md` §6.5。
+
+上游公共事务接入、namespace 及同路径混合 OID pack 缓存限制仍存在。files 事务不保证批次
+原子；reftable 底层 addition 的原子能力也不能替代尚未接入的公共接口。Linux/Windows 与
+稳定发布条件仍待外部验证。IDE 默认解析旧系统 libgit2 的问题仍与配套库的命令行验证分开
+处理，本轮未修改系统或编辑器配置。
+
+调用方迁移见 `sha256-breaking-changes.md`；能力及限制的权威入口为 `capability-boundaries.md`。

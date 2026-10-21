@@ -6,7 +6,8 @@
 >
 > Go module 路径固定为 `github.com/libgit2/git2go/v36`（预发布阶段也不能使用 `/v36-pre`）。
 >
-> 基线：libgit2 `main` @ `0551dfd4ad989b6a3d5683c0d4cf326c6efef929`。
+> 当前复核：2026-10-21，git2go `93ac057`；libgit2 `main` @ `42a89d7`（`2.0.0-rc.1`）。
+> RC 已包含 promoted typed OID，但不等于稳定版发布条件已满足；验证记录见 `sha256-reftable-integration-report.md` §6.5。
 >
 > 重要兼容性结论：**libgit2 没有移除 SHA1。** SHA1 仍是 `GIT_OID_DEFAULT`，默认创建的
 > 仓库、`NewOidFromBytes`、`NewIndex`、`NewIndexer` 等仍使用 SHA1。此次变化是让 SHA1 与
@@ -19,8 +20,8 @@
 - `git.Oid` 从公开的 `[20]byte` 数组变为可同时表示 SHA1/SHA256 的结构体。依赖数组索引、
   切片、数组转换、固定长度、反射布局或 `unsafe` 布局的代码必须迁移。
 - git2go 现在要求链接包含**已转正 typed `git_oid` ABI** 的 libgit2；旧版 libgit2 1.9.x
-  发布包（默认 20 字节 `git_oid` ABI）不再兼容。当前 vendored main 的版本头仍报告
-  `1.9.0`，因此构建额外检查 `GIT_OID_SHA256_SIZE`，而不能只依赖版本号。
+  发布包（默认 20 字节 `git_oid` ABI）不再兼容。当前 pin 自报 `2.0.0-rc.1`；早期转正快照
+  仍报 `1.9.x`，因此不能只依赖版本号，必须同时满足 promoted options 与 OID 布局检查。
 - 删除 Go build tags `git_experimental_sha256` 和 `libgit2_next`。在构建命令中保留它们不再
   改变行为；应从 CI、Makefile 和下游构建脚本中移除。
 - 删除 `EXPERIMENTAL_SHA256=ON` 构建方式及 `libgit2-experimental` 库/头/pkg-config
@@ -55,8 +56,9 @@
 
 ### Build and dependency compatibility
 
-- 最低 libgit2 要求不再能仅用 `LIBGIT2_VERSION` 表达：当前转正 main 仍报告 1.9.0，构建以
-  `GIT_OID_SHA256_SIZE` 作为 typed oid 能力探针。正式版本发布后会改为明确版本下限。
+- 三个 `Build_*.go` 共用 `git2go_version_check.h`：使用非弃用的 `LIBGIT2_VERSION_*`，
+  检查 SHA256/object-id/index/diff options 宏及 OID 大小、字段偏移、枚举值，不是 `1.9` 精确版本锁。
+  当前基线为 `42a89d7`（`2.0.0-rc.1`）；稳定版发布后还需明确兼容下限，能力与布局检查继续保留。
 - bundled static 构建从 `libgit2-experimental.pc` / `libgit2-experimental.a` 迁回
   `libgit2.pc` / `libgit2.a`。
 - 旧的 `EXPERIMENTAL_SHA256` 环境变量、`git_experimental_sha256` 与 `libgit2_next` tags、
@@ -78,6 +80,21 @@
 - `NewIndexerForOidType`
 - `NewIndexWithOidType`, `OpenIndexWithOidType`
 - `DiffFromBufferWithOidType`
+
+后续补齐的常规入口：`NewOdbBackendPack` / `NewOdbBackendPackWithOidType`（目录 pack 后端），
+以及 `CloneOptions.RepositoryCreateCallback`（仓库创建回调）。两者不依赖实验 build tag；
+选择 reftable 仍须具备对应后端能力。
+
+### 最新 main 适配的行为与生命周期迁移（2026-10-21）
+
+- `CloneOptions` 增加 `RepositoryCreateCallback` 字段；若使用无字段名的复合字面量，改用字段名初始化，避免新增字段导致编译失败。
+- 在仓库创建回调中用 `InitRepositoryExt` 选择 `OidType` 与 `RefdbType`，返回存活、拥有所有权的空仓库，OID 格式须匹配源仓库。成功时所有权交给 libgit2，原包装对象失效；不得继续使用或保留依赖对象，也不能在回调中提前释放仓库。出错时回调负责清理自己创建的资源。
+- `RemoteCreateCallback` 必须返回由所提供的借用仓库创建、存活且拥有所有权的 remote；成功后 remote 包装对象也失效。不得在回调后使用借用仓库或移交的 remote，应使用 `Clone` 成功返回的仓库重新获取对象。
+- `Clone(..., nil)` 现在使用默认选项；两个创建回调的普通错误原样返回，nil 对象返回错误，panic（含旧 Go 语义的 `panic(nil)`）转为 `GitError`，类别为 `ErrorClassCallback`、代码为 `ErrorCodeUser`，不再可能误报成功。
+- `OdbReadStream.Read` 仅写入传入切片的 `len` 范围。若以前传入 `buf[:0]` 并期待按容量读取，需改成实际可写长度；零长度读取返回 `(0, nil)` 且不消耗输入，读到末尾返回 `io.EOF`。
+- `Indexer` 保留 thin-pack base ODB 的 Go 引用至释放，但不取得调用方的显式释放权；仍须先 `Indexer.Free()`、再 `Odb.Free()`，不能把 GC 保活当成允许提前释放或并发使用。
+- 本地 bundle clone 可直接使用 `Clone`；上游 bundle transport 支持 clone/fetch，不支持 push 或 shallow，本轮直接验证的是 clone。
+- 文档语义更正：files 事务逐引用提交，失败可能部分生效；`Free` 不能回滚已提交更新。reftable 底层有原子 addition，但未接入公共 `git_transaction_*`。同一进程也不能以不同 OID 格式打开同一 pack 路径，详见 `capability-boundaries.md`。
 
 ### Behavioral compatibility retained
 
@@ -265,6 +282,6 @@ format, err := repo.RefStorageFormat() // RefdbFiles / RefdbReftable
 
 ## 正式 v36.0.0 发布前待确认
 
-- 上游正式发布版本号及最低兼容版本；当前 main 仍报告 1.9.0。
-- README 的 git2go/libgit2 版本映射表和三个 `Build_*.go` 的版本守卫同步到正式版本。
+- 含 promoted typed OID 的稳定发布版本及最低兼容版本；当前已有 `v2.0.0-rc.1`，不能把 RC 当成稳定版。
+- `README.md` 版本映射和三个 `Build_*.go` 共用的 `git2go_version_check.h` 同步到稳定版本，继续保留能力及布局检查。
 - 在最终目标 Linux/Windows/macOS CI 上跑常规静态、动态和 system_libgit2 组合。
