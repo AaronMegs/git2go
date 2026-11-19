@@ -199,3 +199,58 @@ func TestShortenOids(t *testing.T) {
 		t.Errorf("ShortenOids() = %d, want 40", n)
 	}
 }
+
+func TestZeroOid(t *testing.T) {
+	t.Parallel()
+
+	zDefault, err := ZeroOid(ObjectIdTypeDefault)
+	if err != nil {
+		t.Fatalf("ZeroOid(Default) error: %v", err)
+	}
+	zSHA1, err := ZeroOid(ObjectIdSHA1)
+	if err != nil {
+		t.Fatalf("ZeroOid(SHA1) error: %v", err)
+	}
+	parsedSHA1Zero, err := NewOid("0000000000000000000000000000000000000000")
+	if err != nil {
+		t.Fatalf("NewOid(sha1 zero) error: %v", err)
+	}
+	if !zDefault.IsZero() || zDefault.Type() != ObjectIdSHA1 || *zDefault != *zSHA1 || *zSHA1 != *parsedSHA1Zero {
+		t.Fatalf("SHA1 zero mismatch: default=%+v sha1=%+v parsed=%+v", zDefault, zSHA1, parsedSHA1Zero)
+	}
+
+	// Verify map-key interoperability between ZeroOid and NewOid.
+	seen := map[Oid]string{*zSHA1: "zero-sha1"}
+	if got := seen[*parsedSHA1Zero]; got != "zero-sha1" {
+		t.Fatalf("ZeroOid(SHA1) map lookup via NewOid = %q, want %q", got, "zero-sha1")
+	}
+
+	// Documented behavior: Go zero value Oid{} has kind=0 so == differs from
+	// ZeroOid(SHA1) (kind=1), while Equal() treats them as equal.
+	var goZero Oid
+	if !goZero.Equal(zSHA1) || !goZero.IsZero() {
+		t.Fatalf("Oid{} must be Equal and IsZero with ZeroOid(SHA1)")
+	}
+	if goZero == *zSHA1 {
+		t.Fatalf("expected Oid{} == *ZeroOid(SHA1) to remain false due to unset kind byte")
+	}
+
+	zSHA256, err := ZeroOid(ObjectIdSHA256)
+	if err != nil {
+		t.Fatalf("ZeroOid(SHA256) error: %v", err)
+	}
+	parsedSHA256Zero, err := NewOid("0000000000000000000000000000000000000000000000000000000000000000")
+	if err != nil {
+		t.Fatalf("NewOid(sha256 zero) error: %v", err)
+	}
+	if !zSHA256.IsZero() || zSHA256.Type() != ObjectIdSHA256 || *zSHA256 != *parsedSHA256Zero {
+		t.Fatalf("SHA256 zero mismatch: sha256=%+v parsed=%+v", zSHA256, parsedSHA256Zero)
+	}
+	if zSHA1.Equal(zSHA256) {
+		t.Fatal("SHA1 and SHA256 zero oids must not be equal")
+	}
+
+	if _, err := ZeroOid(ObjectIdType(255)); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("ZeroOid(invalid) error = %v, want ErrorCodeInvalid", err)
+	}
+}

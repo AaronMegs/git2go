@@ -19,6 +19,14 @@ import (
 //
 // Oid is no longer a [20]byte array. Do not index or slice it directly; use
 // Bytes(), String() and Type() instead.
+//
+// Zero-value and equality caveat: a Go zero-valued Oid{} leaves its internal
+// type byte unset (0), whereas NewOid("0000...0000"), ZeroOid(ObjectIdSHA1),
+// and all-zero SHA1 ids returned by libgit2 carry ObjectIdSHA1 (1). As a
+// result, `Oid{} == *ZeroOid(ObjectIdSHA1)` evaluates to false even though
+// Equal() returns true. Prefer IsZero() to test for an all-zero id, Equal()
+// for semantic comparison, and ZeroOid(t) when a typed zero Oid is needed
+// (for example, as a map key alongside ids produced by NewOid or libgit2).
 type Oid struct {
 	kind uint8    // mirrors C git_oid.type (git_oid_t)
 	id   [32]byte // GIT_OID_MAX_SIZE
@@ -181,6 +189,19 @@ func NewOid(s string) (*Oid, error) {
 
 func (oid *Oid) String() string {
 	return hex.EncodeToString(oid.Bytes())
+}
+
+// ZeroOid returns the all-zero object id for the given ObjectIdType
+// (ObjectIdTypeDefault resolves to ObjectIdSHA1).
+//
+// Unlike the Go zero value Oid{} (whose internal type byte is 0), the returned
+// Oid has its type byte explicitly set so that it matches the representation
+// returned by NewOid and libgit2 under both Equal() and Go == / map lookups.
+func ZeroOid(t ObjectIdType) (*Oid, error) {
+	if err := validateObjectIdType(t); err != nil {
+		return nil, err
+	}
+	return &Oid{kind: uint8(normalizeObjectIdType(t))}, nil
 }
 
 // IsZero reports whether the raw id bytes are all zero (ignoring the type).

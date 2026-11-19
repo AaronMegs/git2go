@@ -39,6 +39,13 @@ func validateObjectIdType(t ObjectIdType) error {
 	}
 }
 
+func normalizeObjectIdType(t ObjectIdType) ObjectIdType {
+	if t == ObjectIdTypeDefault {
+		return ObjectIdSHA1
+	}
+	return t
+}
+
 // String returns the canonical `extensions.objectFormat` token for the type.
 func (t ObjectIdType) String() string {
 	switch t {

@@ -6,7 +6,9 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"unsafe"
 )
 
 // TestIsErrorCodeThroughWrappedError covers the errors.As behaviour: a
@@ -247,5 +249,238 @@ func TestFreeOwnedResources(t *testing.T) {
 	status.Free()
 	if status.ptr != nil {
 		t.Fatal("status Free must clear the pointer")
+	}
+}
+
+// TestOdbBackendTypeMismatchRejected verifies GG-02: attaching an OdbBackend
+// whose ObjectIdType does not match the target Odb must fail with
+// ErrorCodeInvalid instead of silently writing truncated or corrupt objects.
+func TestOdbBackendTypeMismatchRejected(t *testing.T) {
+	if !IsSha256Supported() {
+		t.Skip("libgit2 built without SHA256 support")
+	}
+
+	objectsDir := t.TempDir()
+	packDir := filepath.Join(objectsDir, "pack")
+	checkFatal(t, os.MkdirAll(packDir, 0o755))
+
+	// Seed one SHA1 packfile so OnePack/Pack constructors succeed cleanly.
+	idx, err := NewIndexer(packDir, nil, nil)
+	checkFatal(t, err)
+	defer idx.Free()
+	_, err = idx.Write(outOfOrderPack)
+	checkFatal(t, err)
+	packOid, err := idx.Commit()
+	checkFatal(t, err)
+	idxPath := filepath.Join(packDir, "pack-"+packOid.String()+".idx")
+
+	sha256Odb, err := NewOdbWithOidType(ObjectIdSHA256)
+	checkFatal(t, err)
+	defer sha256Odb.Free()
+
+	sha1Backends := []struct {
+		name string
+		make func() (*OdbBackend, error)
+	}{
+		{"loose", func() (*OdbBackend, error) { return NewOdbBackendLoose(objectsDir, -1, false, 0, 0) }},
+		{"pack", func() (*OdbBackend, error) { return NewOdbBackendPack(objectsDir) }},
+		{"one-pack", func() (*OdbBackend, error) { return NewOdbBackendOnePack(idxPath) }},
+		{"loose-default", func() (*OdbBackend, error) {
+			return NewOdbBackendLooseWithOidType(objectsDir, -1, false, 0, 0, ObjectIdTypeDefault)
+		}},
+	}
+
+	for _, tc := range sha1Backends {
+		t.Run("sha1-"+tc.name+"-into-sha256-odb", func(t *testing.T) {
+			backend, err := tc.make()
+			checkFatal(t, err)
+			defer backend.Free()
+
+			if err := sha256Odb.AddBackend(backend, 1); !IsErrorCode(err, ErrorCodeInvalid) {
+				t.Fatalf("AddBackend mismatch error = %v, want ErrorCodeInvalid", err)
+			}
+			if backend.ptr == nil {
+				t.Fatal("failed AddBackend must leave ownership with caller")
+			}
+			if err := sha256Odb.AddAlternate(backend, 1); !IsErrorCode(err, ErrorCodeInvalid) {
+				t.Fatalf("AddAlternate mismatch error = %v, want ErrorCodeInvalid", err)
+			}
+			if backend.ptr == nil {
+				t.Fatal("failed AddAlternate must leave ownership with caller")
+			}
+
+			// The rejected backend is still valid and can be attached to a matching SHA1 Odb.
+			sha1Odb, err := NewOdb()
+			checkFatal(t, err)
+			defer sha1Odb.Free()
+			checkFatal(t, sha1Odb.AddBackend(backend, 1))
+			if backend.ptr != nil {
+				t.Fatal("successful AddBackend must clear wrapper pointer")
+			}
+		})
+	}
+
+	// Reverse direction: SHA256 backend must be rejected by both NewOdb() and
+	// NewOdbWithOidType(ObjectIdTypeDefault).
+	for _, tc := range []struct {
+		name string
+		make func() (*Odb, error)
+	}{
+		{"NewOdb", NewOdb},
+		{"NewOdbWithOidType(Default)", func() (*Odb, error) { return NewOdbWithOidType(ObjectIdTypeDefault) }},
+	} {
+		t.Run("sha256-loose-into-"+tc.name, func(t *testing.T) {
+			odb, err := tc.make()
+			checkFatal(t, err)
+			defer odb.Free()
+			if odb.OidType() != ObjectIdSHA1 {
+				t.Fatalf("odb.OidType() = %v, want ObjectIdSHA1", odb.OidType())
+			}
+
+			backend, err := NewOdbBackendLooseWithOidType(t.TempDir(), -1, false, 0, 0, ObjectIdSHA256)
+			checkFatal(t, err)
+			defer backend.Free()
+
+			if err := odb.AddBackend(backend, 1); !IsErrorCode(err, ErrorCodeInvalid) {
+				t.Fatalf("AddBackend mismatch error = %v, want ErrorCodeInvalid", err)
+			}
+			if err := odb.AddAlternate(backend, 1); !IsErrorCode(err, ErrorCodeInvalid) {
+				t.Fatalf("AddAlternate mismatch error = %v, want ErrorCodeInvalid", err)
+			}
+		})
+	}
+}
+
+// TestOdbAddBackendOwnershipAndGuards verifies GG-12: nil/freed guards,
+// ownership transfer clearing the wrapper so later backend.Free() is a safe
+// no-op, rejection of re-attaching an already-transferred backend, and
+// compatibility with NewOdbBackendFromC (unknown oidType).
+func TestOdbAddBackendOwnershipAndGuards(t *testing.T) {
+	var nilOdb *Odb
+	var nilBackend *OdbBackend
+
+	if err := nilOdb.AddBackend(nilBackend, 1); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("nil odb AddBackend = %v, want ErrorCodeInvalid", err)
+	}
+	if err := nilOdb.AddAlternate(nilBackend, 1); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("nil odb AddAlternate = %v, want ErrorCodeInvalid", err)
+	}
+
+	odb, err := NewOdb()
+	checkFatal(t, err)
+	defer odb.Free()
+
+	if err := odb.AddBackend(nilBackend, 1); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("nil backend AddBackend = %v, want ErrorCodeInvalid", err)
+	}
+
+	freedBackend, err := NewOdbBackendLoose(t.TempDir(), -1, false, 0, 0)
+	checkFatal(t, err)
+	freedBackend.Free()
+	freedBackend.Free()
+	if err := odb.AddBackend(freedBackend, 1); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("freed backend AddBackend = %v, want ErrorCodeInvalid", err)
+	}
+
+	// Normal attach: ownership transfers, wrapper is cleared, and a subsequent
+	// Free() must be a safe no-op while the odb remains usable.
+	looseDir := t.TempDir()
+	backend, err := NewOdbBackendLoose(looseDir, -1, false, 0, 0)
+	checkFatal(t, err)
+	checkFatal(t, odb.AddBackend(backend, 1))
+	if backend.ptr != nil {
+		t.Fatal("AddBackend must clear backend.ptr after ownership transfer")
+	}
+	backend.Free()
+	if err := odb.AddAlternate(backend, 2); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("re-attaching transferred backend = %v, want ErrorCodeInvalid", err)
+	}
+
+	written, err := odb.Write([]byte("hello ownership"), ObjectBlob)
+	checkFatal(t, err)
+	if !odb.Exists(written) {
+		t.Fatal("odb must remain functional after backend.Free() no-op")
+	}
+
+	// Unknown-type backend wrapped via NewOdbBackendFromC skips the type check
+	// and transfers cleanly.
+	rawBackend, err := NewOdbBackendLoose(t.TempDir(), -1, false, 0, 0)
+	checkFatal(t, err)
+	cptr := unsafe.Pointer(rawBackend.ptr)
+	rawBackend.ptr = nil
+	runtime.SetFinalizer(rawBackend, nil)
+
+	fromC := NewOdbBackendFromC(cptr)
+	checkFatal(t, odb.AddAlternate(fromC, 2))
+	if fromC.ptr != nil {
+		t.Fatal("AddAlternate must clear NewOdbBackendFromC wrapper pointer")
+	}
+	fromC.Free()
+
+	// Freed Odb must reject new backends without touching C.
+	odb.Free()
+	other, err := NewOdbBackendLoose(t.TempDir(), -1, false, 0, 0)
+	checkFatal(t, err)
+	defer other.Free()
+	if err := odb.AddBackend(other, 1); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("freed odb AddBackend = %v, want ErrorCodeInvalid", err)
+	}
+}
+
+// TestRepositoryDerivedOdbHelpers verifies GG-03: repository-derived ODB and
+// backend constructors inherit the repository's ObjectIdType automatically.
+func TestRepositoryDerivedOdbHelpers(t *testing.T) {
+	var nilRepo *Repository
+	if _, err := NewOdbForRepository(nilRepo); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("NewOdbForRepository(nil) = %v, want ErrorCodeInvalid", err)
+	}
+	if _, err := nilRepo.NewOdbBackendLoose(t.TempDir(), -1, false, 0, 0); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("nil repo NewOdbBackendLoose = %v, want ErrorCodeInvalid", err)
+	}
+	if _, err := nilRepo.NewOdbBackendPack(t.TempDir()); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("nil repo NewOdbBackendPack = %v, want ErrorCodeInvalid", err)
+	}
+	if _, err := nilRepo.NewOdbBackendOnePack("/nonexistent.idx"); !IsErrorCode(err, ErrorCodeInvalid) {
+		t.Fatalf("nil repo NewOdbBackendOnePack = %v, want ErrorCodeInvalid", err)
+	}
+
+	formats := []ObjectIdType{ObjectIdSHA1}
+	if IsSha256Supported() {
+		formats = append(formats, ObjectIdSHA256)
+	}
+
+	for _, oidType := range formats {
+		t.Run(oidType.String(), func(t *testing.T) {
+			repo, err := InitRepositoryWithOidType(t.TempDir(), true, oidType)
+			checkFatal(t, err)
+			defer repo.Free()
+
+			odb, err := NewOdbForRepository(repo)
+			checkFatal(t, err)
+			defer odb.Free()
+			if odb.OidType() != oidType {
+				t.Fatalf("NewOdbForRepository().OidType() = %v, want %v", odb.OidType(), oidType)
+			}
+
+			looseDir := t.TempDir()
+			looseBackend, err := repo.NewOdbBackendLoose(looseDir, -1, false, 0, 0)
+			checkFatal(t, err)
+			defer looseBackend.Free()
+			checkFatal(t, odb.AddBackend(looseBackend, 1))
+
+			packBackend, err := repo.NewOdbBackendPack(looseDir)
+			checkFatal(t, err)
+			defer packBackend.Free()
+			checkFatal(t, odb.AddAlternate(packBackend, 2))
+
+			id, err := odb.Write([]byte("repo-derived-"+oidType.String()), ObjectBlob)
+			checkFatal(t, err)
+			if id.Type() != oidType || len(id.String()) != oidType.HexSize() {
+				t.Fatalf("written oid = %s (type %v), want type %v len %d", id, id.Type(), oidType, oidType.HexSize())
+			}
+			if !odb.Exists(id) {
+				t.Fatalf("written object %s not found in derived odb", id)
+			}
+		})
 	}
 }

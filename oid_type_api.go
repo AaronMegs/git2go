@@ -58,6 +58,18 @@ func NewOdbWithOidType(oidType ObjectIdType) (*Odb, error) {
 	return newOdbWithOidType(oidType)
 }
 
+// NewOdbForRepository creates a standalone object database with no backends
+// configured with the same object id type as repo.
+//
+// This is useful for quarantine or alternate ODBs so callers do not have to
+// remember to thread repo.OidType() manually.
+func NewOdbForRepository(repo *Repository) (*Odb, error) {
+	if repo == nil || repo.ptr == nil {
+		return nil, &GitError{Message: "repository is nil or already freed", Class: ErrorClassRepository, Code: ErrorCodeInvalid}
+	}
+	return newOdbWithOidType(repo.OidType())
+}
+
 // NewOdbBackendPackWithOidType creates a backend for a directory of packfiles
 // using the specified object id type.
 //
@@ -67,16 +79,43 @@ func NewOdbBackendPackWithOidType(objectsDir string, oidType ObjectIdType) (*Odb
 	return newOdbBackendPackWithOidType(objectsDir, oidType)
 }
 
+// NewOdbBackendPack creates a pack-directory backend matching this repository's
+// object id type.
+func (v *Repository) NewOdbBackendPack(objectsDir string) (*OdbBackend, error) {
+	if v == nil || v.ptr == nil {
+		return nil, &GitError{Message: "repository is nil or already freed", Class: ErrorClassRepository, Code: ErrorCodeInvalid}
+	}
+	return newOdbBackendPackWithOidType(objectsDir, v.OidType())
+}
+
 // NewOdbBackendOnePackWithOidType creates a backend for one packfile using the
 // specified object id type.
 func NewOdbBackendOnePackWithOidType(packfileIndexPath string, oidType ObjectIdType) (*OdbBackend, error) {
 	return newOdbBackendOnePackWithOidType(packfileIndexPath, oidType)
 }
 
+// NewOdbBackendOnePack creates a single-packfile backend matching this
+// repository's object id type.
+func (v *Repository) NewOdbBackendOnePack(packfileIndexPath string) (*OdbBackend, error) {
+	if v == nil || v.ptr == nil {
+		return nil, &GitError{Message: "repository is nil or already freed", Class: ErrorClassRepository, Code: ErrorCodeInvalid}
+	}
+	return newOdbBackendOnePackWithOidType(packfileIndexPath, v.OidType())
+}
+
 // NewOdbBackendLooseWithOidType creates a loose-object backend using the
 // specified object id type.
 func NewOdbBackendLooseWithOidType(objectsDir string, compressionLevel int, doFsync bool, dirMode os.FileMode, fileMode os.FileMode, oidType ObjectIdType) (*OdbBackend, error) {
 	return newOdbBackendLooseWithOidType(objectsDir, compressionLevel, doFsync, dirMode, fileMode, oidType)
+}
+
+// NewOdbBackendLoose creates a loose-object backend matching this repository's
+// object id type.
+func (v *Repository) NewOdbBackendLoose(objectsDir string, compressionLevel int, doFsync bool, dirMode os.FileMode, fileMode os.FileMode) (*OdbBackend, error) {
+	if v == nil || v.ptr == nil {
+		return nil, &GitError{Message: "repository is nil or already freed", Class: ErrorClassRepository, Code: ErrorCodeInvalid}
+	}
+	return newOdbBackendLooseWithOidType(objectsDir, compressionLevel, doFsync, dirMode, fileMode, v.OidType())
 }
 
 // HashWithType determines the object id of a data buffer using the given object

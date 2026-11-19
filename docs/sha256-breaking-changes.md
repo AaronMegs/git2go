@@ -106,8 +106,8 @@
   - `Oid.String()` 对 SHA1 仍输出 40 hex，`Bytes()` 仍返回 20 bytes。
 - 64-hex 字符串由 `NewOid` 解析为 SHA256；SHA256 的 `String()` / `Bytes()` 分别为
   64 hex / 32 bytes。
-- `Oid` 仍是 comparable，可继续作为 map key，也可使用 `==`；但推荐使用 `Equal`，以获得
-  零值规范化语义。
+- `Oid` 仍是 comparable，可继续作为 map key，也可使用 `==`；但**不要用 `Oid{} == ...` 判零**（Go 零值 `Oid{}` 的内部类型字节为 `0`，而 `NewOid(40个0)`、`ZeroOid(ObjectIdSHA1)` 及 libgit2 返回的 SHA1 零值为 `1`，两者 `==` 为 `false`、`Equal()` 为 `true`）。判零请用 `IsZero()`，语义判等请用 `Equal()`，需要作为 map key 的精确类型零值请用 `ZeroOid(t)`。
+- `Odb.AddBackend` / `Odb.AddAlternate` 现在校验后端与 ODB 的 `ObjectIdType` 一致（不匹配返回 `ErrorCodeInvalid`），成功时接管所有权并清空 `backend` 包装器指针（后续 `backend.Free()` 为安全 no-op），失败时所有权留在调用方（与 `Refdb.SetBackend` 语义一致）。推荐优先使用仓库派生入口 `NewOdbForRepository`、`(*Repository).NewOdbBackendLoose` / `NewOdbBackendPack` / `NewOdbBackendOnePack`，避免静默默认 SHA1。
 - `ObjectIdSHA1` 与 `ObjectIdSHA256` 的数值继续对应 libgit2 的 `git_oid_t`（1/2）。
 
 ## 迁移示例
