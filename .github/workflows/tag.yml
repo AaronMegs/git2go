@@ -90,6 +90,7 @@ jobs:
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
         DEPRECATE_HARD=ON make build-libgit2-static
         make TEST_ARGS=-test.v test-static
+        PKG_CONFIG_PATH="$PWD/static-build/install/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
         go test --count=1 --race --tags static \
           -run 'TestRepositoryFormatMatrix|TestRefdbBackendConcurrentIterators|TestRefdbBackendTransaction' ./...
 

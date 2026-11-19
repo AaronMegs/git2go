@@ -66,6 +66,28 @@ jobs:
     - name: Test
       run:  make TEST_ARGS=-test.v test-static
 
+  build-static-linux-arm64:
+    name: Go (bundled static, Linux arm64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        submodules: recursive
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: 'stable'
+    - name: Build libgit2
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libssh2-1-dev
+        make build-libgit2-static
+    - name: Test
+      run: make TEST_ARGS=-test.v test-static-offline
+    - name: Test under race detector
+      run: GIT2GO_SKIP_NETWORK_TESTS=1 make TEST_ARGS=--count=1 test-static-race
+
   build-static-macos:
     name: Go (bundled static, macOS)
     runs-on: macos-latest
@@ -130,6 +152,7 @@ jobs:
         make build-libgit2-static
     - name: Run the reftable / refdb / reflog suite
       run: |
+        PKG_CONFIG_PATH="$PWD/static-build/install/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
         go test --count=1 --tags static -v \
           -run 'Reftable|Refdb|Reflog|RefStorage|InitRepositoryExt|FormatMatrix|Transaction' ./...
     # Network-dependent tests add no race coverage (their concurrency is inside
@@ -185,7 +208,8 @@ jobs:
         BUILD_LIBGIT_REF=v1.9.4 make build-libgit2-static
     - name: Verify the ABI guard rejects the legacy git_oid layout
       run: |
-        if go build --tags static ./... > /tmp/legacy-build.log 2>&1; then
+        if PKG_CONFIG_PATH="$PWD/static-build/install/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+           go build --tags static ./... > /tmp/legacy-build.log 2>&1; then
           echo "expected the v36 build against libgit2 v1.9.4 to fail"
           exit 1
         fi

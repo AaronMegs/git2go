@@ -1,10 +1,13 @@
 TEST_ARGS ?= --count=1
 
+STATIC_PKGCONFIG_DIR := $(CURDIR)/static-build/install/lib/pkgconfig
+STATIC_PKG_CONFIG_PATH = $(STATIC_PKGCONFIG_DIR)$(if $(PKG_CONFIG_PATH),:$(PKG_CONFIG_PATH))
+
 default: test
 
 
 generate: static-build/install/lib/libgit2.a
-	go generate --tags "static" ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go generate --tags "static" ./...
 
 # System library
 # ==============
@@ -56,36 +59,36 @@ static-build/install/lib/libgit2.a:
 	./script/build-libgit2-static.sh
 
 test-static: static-build/install/lib/libgit2.a
-	go test --tags "static" $(TEST_ARGS) ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go test --tags "static" $(TEST_ARGS) ./...
 
 # The reference-storage bindings are compiled in by default, because the pinned
 # libgit2 baseline always carries reftable. This target proves the documented
 # opt-out still builds and passes for a libgit2 that predates reftable.
 test-static-no-reftable: static-build/install/lib/libgit2.a
-	go test --tags "static,libgit2_no_reftable" $(TEST_ARGS) ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go test --tags "static,libgit2_no_reftable" $(TEST_ARGS) ./...
 
 # The refdb backend bridge and the managed HTTP transport both hand memory
 # between libgit2's threads and Go, so the race detector is part of the
 # supported test matrix rather than an optional extra.
 test-static-race: static-build/install/lib/libgit2.a
-	go test --tags "static" -race $(TEST_ARGS) ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go test --tags "static" -race $(TEST_ARGS) ./...
 
 install-static: static-build/install/lib/libgit2.a
-	go install --tags "static" ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go install --tags "static" ./...
 
 # Offline / firewalled environments. A handful of tests clone and negotiate
 # against github.com; they are not hermetic and fail with connection or TLS
 # timeouts that say nothing about this repository. This target runs everything
 # else deterministically.
 test-static-offline: static-build/install/lib/libgit2.a
-	GIT2GO_SKIP_NETWORK_TESTS=1 go test --tags "static" $(TEST_ARGS) ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" GIT2GO_SKIP_NETWORK_TESTS=1 go test --tags "static" $(TEST_ARGS) ./...
 
 # Static analysis that must stay clean.
 .PHONY: lint
 lint:
 	test -z "$$(gofmt -l $$(git ls-files '*.go' | grep -v '^vendor/'))" || \
 		(gofmt -l $$(git ls-files '*.go' | grep -v '^vendor/'); exit 1)
-	go vet --tags "static" ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go vet --tags "static" ./...
 
 .PHONY: check-bindings test-binding-invariants
 check-bindings: test-binding-invariants

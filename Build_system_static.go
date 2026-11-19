@@ -5,7 +5,7 @@ package git
 
 /*
 #cgo pkg-config: libgit2 --static
-#cgo CFLAGS: -DLIBGIT2_STATIC
+#cgo CFLAGS: -DGIT_STATIC
 #include <git2.h>
 
 // The compile-time version and ABI capability checks are centralized here.
