@@ -14,9 +14,9 @@ import (
 type RevparseFlag int
 
 const (
-	RevparseSingle    RevparseFlag = C.GIT_REVPARSE_SINGLE
-	RevparseRange     RevparseFlag = C.GIT_REVPARSE_RANGE
-	RevparseMergeBase RevparseFlag = C.GIT_REVPARSE_MERGE_BASE
+	RevparseSingle    RevparseFlag = C.GIT_REVSPEC_SINGLE
+	RevparseRange     RevparseFlag = C.GIT_REVSPEC_RANGE
+	RevparseMergeBase RevparseFlag = C.GIT_REVSPEC_MERGE_BASE
 )
 
 type Revspec struct {

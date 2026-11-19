@@ -54,15 +54,27 @@ func (v *HandleList) Clear() {
 	v.Unlock()
 }
 
-// Get retrieves the pointer from the given handle
+// Get retrieves the pointer from the given handle. It panics when the handle is
+// no longer tracked, which indicates a use-after-free in the calling binding.
 func (v *HandleList) Get(handle unsafe.Pointer) interface{} {
-	v.RLock()
-	defer v.RUnlock()
-
-	ptr, ok := v.handles[handle]
+	ptr, ok := v.GetOk(handle)
 	if !ok {
 		panic(fmt.Sprintf("invalid pointer handle: %p", handle))
 	}
 
 	return ptr
+}
+
+// GetOk retrieves the pointer from the given handle and reports whether the
+// handle is still tracked.
+//
+// Callbacks invoked by libgit2 during teardown (for example a refdb backend
+// `free` that libgit2 may call more than once) must tolerate an already
+// untracked handle instead of panicking across the cgo boundary.
+func (v *HandleList) GetOk(handle unsafe.Pointer) (interface{}, bool) {
+	v.RLock()
+	defer v.RUnlock()
+
+	ptr, ok := v.handles[handle]
+	return ptr, ok
 }

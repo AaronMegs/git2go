@@ -12,7 +12,8 @@ func TestAnnotatedCommitFromRevspec(t *testing.T) {
 
 	seedTestRepo(t, repo)
 
-	mergeHead, err := repo.AnnotatedCommitFromRevspec("refs/heads/master")
+	branchName := defaultBranchName(t, repo)
+	mergeHead, err := repo.AnnotatedCommitFromRevspec("refs/heads/" + branchName)
 	checkFatal(t, err)
 
 	expectedId := "473bf778b67b6d53e2ab289e0f1a2e8addef2fc2"
@@ -28,7 +29,8 @@ func TestMergeWithSelf(t *testing.T) {
 
 	seedTestRepo(t, repo)
 
-	master, err := repo.References.Lookup("refs/heads/master")
+	branchName := defaultBranchName(t, repo)
+	master, err := repo.References.Lookup("refs/heads/" + branchName)
 	checkFatal(t, err)
 
 	mergeHead, err := repo.AnnotatedCommitFromRef(master)
@@ -47,7 +49,7 @@ func TestMergeWithSelf(t *testing.T) {
 	mergeMessage, err := repo.Message()
 	checkFatal(t, err)
 
-	expectedMessage := "Merge branch 'master'\n"
+	expectedMessage := "Merge branch '" + branchName + "'\n"
 	if mergeMessage != expectedMessage {
 		t.Errorf("merge Message = %v, want %v", mergeMessage, expectedMessage)
 	}
@@ -60,7 +62,8 @@ func TestMergeAnalysisWithSelf(t *testing.T) {
 
 	seedTestRepo(t, repo)
 
-	master, err := repo.References.Lookup("refs/heads/master")
+	branchName := defaultBranchName(t, repo)
+	master, err := repo.References.Lookup("refs/heads/" + branchName)
 	checkFatal(t, err)
 
 	mergeHead, err := repo.AnnotatedCommitFromRef(master)
@@ -190,6 +193,27 @@ func TestMergeBases(t *testing.T) {
 
 	if mergeBases[0].Cmp(commitAId) != 0 {
 		t.Fatalf("unexpected merge base")
+	}
+}
+
+func TestMergeBaseManyRejectsInvalidInput(t *testing.T) {
+	repo := createTestRepo(t)
+	defer cleanupTestRepo(t, repo)
+	for name, ids := range map[string][]*Oid{
+		"empty": nil,
+		"nil":   {nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := repo.MergeBaseMany(ids); !IsErrorCode(err, ErrorCodeInvalid) {
+				t.Fatalf("MergeBaseMany error = %v, want ErrorCodeInvalid", err)
+			}
+			if _, err := repo.MergeBasesMany(ids); !IsErrorCode(err, ErrorCodeInvalid) {
+				t.Fatalf("MergeBasesMany error = %v, want ErrorCodeInvalid", err)
+			}
+			if _, err := repo.MergeBaseOctopus(ids); !IsErrorCode(err, ErrorCodeInvalid) {
+				t.Fatalf("MergeBaseOctopus error = %v, want ErrorCodeInvalid", err)
+			}
+		})
 	}
 }
 

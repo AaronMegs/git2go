@@ -73,7 +73,7 @@ func (t CredentialType) String() string {
 	}
 
 	if t != 0 {
-		parts = append(parts, fmt.Sprintf("CredentialType(%#x)", t))
+		parts = append(parts, fmt.Sprintf("CredentialType(%#x)", uint(t)))
 	}
 
 	return strings.Join(parts, "|")
@@ -102,9 +102,13 @@ func (o *Credential) Type() CredentialType {
 }
 
 func (o *Credential) Free() {
-	C.git_credential_free(o.ptr)
-	runtime.SetFinalizer(o, nil)
+	if o == nil || o.ptr == nil {
+		return
+	}
+	ptr := o.ptr
 	o.ptr = nil
+	runtime.SetFinalizer(o, nil)
+	C.git_credential_free(ptr)
 }
 
 // GetUserpassPlaintext returns the plaintext username/password combination stored in the Cred.
@@ -114,7 +118,7 @@ func (o *Credential) GetUserpassPlaintext() (username, password string, err erro
 		return
 	}
 
-	plaintextCredPtr := (*C.git_cred_userpass_plaintext)(unsafe.Pointer(o.ptr))
+	plaintextCredPtr := (*C.git_credential_userpass_plaintext)(unsafe.Pointer(o.ptr))
 	username = C.GoString(plaintextCredPtr.username)
 	password = C.GoString(plaintextCredPtr.password)
 	return
@@ -127,7 +131,7 @@ func (o *Credential) GetSSHKey() (username, publickey, privatekey, passphrase st
 		return
 	}
 
-	sshKeyCredPtr := (*C.git_cred_ssh_key)(unsafe.Pointer(o.ptr))
+	sshKeyCredPtr := (*C.git_credential_ssh_key)(unsafe.Pointer(o.ptr))
 	username = C.GoString(sshKeyCredPtr.username)
 	publickey = C.GoString(sshKeyCredPtr.publickey)
 	privatekey = C.GoString(sshKeyCredPtr.privatekey)
@@ -233,6 +237,7 @@ type credentialSSHCustomData struct {
 
 //export credentialSSHCustomFree
 func credentialSSHCustomFree(cred *C.git_credential_ssh_custom) {
+	defer recoverVoidCallback()
 	if cred == nil {
 		return
 	}
@@ -251,7 +256,8 @@ func credentialSSHSignCallback(
 	data *C.uchar,
 	data_len C.size_t,
 	handle unsafe.Pointer,
-) C.int {
+) (ret C.int) {
+	defer recoverCallback(errorMessage, &ret, "credentialSSHSignCallback")
 	signer := pointerHandles.Get(handle).(*credentialSSHCustomData).signer
 	signature, err := signer.Sign(rand.Reader, C.GoBytes(unsafe.Pointer(data), C.int(data_len)))
 	if err != nil {

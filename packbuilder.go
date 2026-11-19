@@ -40,8 +40,13 @@ func newPackbuilderFromC(ptr *C.git_packbuilder, r *Repository) *Packbuilder {
 }
 
 func (pb *Packbuilder) Free() {
+	if pb == nil || pb.ptr == nil {
+		return
+	}
+	ptr := pb.ptr
+	pb.ptr = nil
 	runtime.SetFinalizer(pb, nil)
-	C.git_packbuilder_free(pb.ptr)
+	C.git_packbuilder_free(ptr)
 }
 
 func (pb *Packbuilder) Insert(id *Oid, name string) error {
@@ -140,7 +145,8 @@ type packbuilderCallbackData struct {
 }
 
 //export packbuilderForEachCallback
-func packbuilderForEachCallback(buf unsafe.Pointer, size C.size_t, handle unsafe.Pointer) C.int {
+func packbuilderForEachCallback(buf unsafe.Pointer, size C.size_t, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	payload := pointerHandles.Get(handle)
 	data, ok := payload.(*packbuilderCallbackData)
 	if !ok {

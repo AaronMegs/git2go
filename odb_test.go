@@ -91,6 +91,43 @@ func TestOdbStream(t *testing.T) {
 	}
 }
 
+func TestOdbReadStreamRespectsLength(t *testing.T) {
+	for _, oidType := range []ObjectIdType{ObjectIdSHA1, ObjectIdSHA256} {
+		t.Run(fmt.Sprint(oidType), func(t *testing.T) {
+			repo, err := InitRepositoryWithOidType(t.TempDir(), true, oidType)
+			checkFatal(t, err)
+			defer repo.Free()
+			odb, err := repo.Odb()
+			checkFatal(t, err)
+			defer odb.Free()
+			id, err := odb.Write([]byte("hello"), ObjectBlob)
+			checkFatal(t, err)
+			stream, err := odb.NewReadStream(id)
+			checkFatal(t, err)
+			defer stream.Free()
+
+			buffer := bytes.Repeat([]byte{0xcc}, 64)
+			if n, err := stream.Read(buffer[:0]); n != 0 || err != nil {
+				t.Fatalf("zero-length Read = %d, %v; want 0, nil", n, err)
+			}
+			if n, err := stream.Read(buffer[:1]); n != 1 || err != nil {
+				t.Fatalf("one-byte Read = %d, %v; want 1, nil", n, err)
+			}
+			if buffer[0] != 'h' || !bytes.Equal(buffer[1:], bytes.Repeat([]byte{0xcc}, 63)) {
+				t.Fatal("Read modified data outside the supplied slice length")
+			}
+			rest, err := io.ReadAll(stream)
+			checkFatal(t, err)
+			if string(rest) != "ello" {
+				t.Fatalf("remaining payload = %q", rest)
+			}
+			if n, err := stream.Read(buffer[:1]); n != 0 || err != io.EOF {
+				t.Fatalf("end Read = %d, %v; want EOF", n, err)
+			}
+		})
+	}
+}
+
 func TestOdbHash(t *testing.T) {
 	t.Parallel()
 	repo := createTestRepo(t)

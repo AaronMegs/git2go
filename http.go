@@ -123,13 +123,21 @@ func (t *httpSmartSubtransport) Free() {
 }
 
 type httpSmartSubtransportStream struct {
-	owner       *httpSmartSubtransport
-	req         *http.Request
-	resp        *http.Response
-	reader      *io.PipeReader
-	writer      *io.PipeWriter
+	owner  *httpSmartSubtransport
+	req    *http.Request
+	resp   *http.Response
+	reader *io.PipeReader
+	writer *io.PipeWriter
+	// sentRequest is only ever written by the goroutine that initiates the
+	// request (Action via sendRequestBackground, or Read for the synchronous
+	// path), never by the background goroutine itself.
 	sentRequest bool
 	recvReply   sync.WaitGroup
+	// httpError is written by the background request goroutine and read by
+	// Read/Write, which are driven by libgit2 on other threads, so it must be
+	// guarded. recvReply alone is not sufficient: Write observes it without
+	// waiting.
+	httpErrorMu sync.Mutex
 	httpError   error
 }
 
@@ -143,12 +151,25 @@ func newManagedHttpStream(owner *httpSmartSubtransport, req *http.Request) *http
 	}
 }
 
+func (self *httpSmartSubtransportStream) setHTTPError(err error) {
+	self.httpErrorMu.Lock()
+	defer self.httpErrorMu.Unlock()
+	self.httpError = err
+}
+
+func (self *httpSmartSubtransportStream) getHTTPError() error {
+	self.httpErrorMu.Lock()
+	defer self.httpErrorMu.Unlock()
+	return self.httpError
+}
+
 func (self *httpSmartSubtransportStream) Read(buf []byte) (int, error) {
 	if !self.sentRequest {
 		self.recvReply.Add(1)
 		if err := self.sendRequest(); err != nil {
 			return 0, err
 		}
+		self.sentRequest = true
 	}
 
 	if err := self.writer.Close(); err != nil {
@@ -157,16 +178,16 @@ func (self *httpSmartSubtransportStream) Read(buf []byte) (int, error) {
 
 	self.recvReply.Wait()
 
-	if self.httpError != nil {
-		return 0, self.httpError
+	if err := self.getHTTPError(); err != nil {
+		return 0, err
 	}
 
 	return self.resp.Body.Read(buf)
 }
 
 func (self *httpSmartSubtransportStream) Write(buf []byte) (int, error) {
-	if self.httpError != nil {
-		return 0, self.httpError
+	if err := self.getHTTPError(); err != nil {
+		return 0, err
 	}
 	return self.writer.Write(buf)
 }
@@ -179,13 +200,23 @@ func (self *httpSmartSubtransportStream) Free() {
 
 func (self *httpSmartSubtransportStream) sendRequestBackground() {
 	go func() {
-		self.httpError = self.sendRequest()
+		self.sendRequest()
 	}()
 	self.sentRequest = true
 }
 
+// sendRequest performs the request and publishes its outcome. Both the error
+// and the response are stored before recvReply.Done() so that a reader
+// returning from recvReply.Wait() is guaranteed to observe them.
 func (self *httpSmartSubtransportStream) sendRequest() error {
 	defer self.recvReply.Done()
+
+	err := self.doSendRequest()
+	self.setHTTPError(err)
+	return err
+}
+
+func (self *httpSmartSubtransportStream) doSendRequest() error {
 	self.resp = nil
 
 	var resp *http.Response
@@ -237,7 +268,8 @@ func (self *httpSmartSubtransportStream) sendRequest() error {
 		return fmt.Errorf("Unhandled HTTP error %s", resp.Status)
 	}
 
-	self.sentRequest = true
+	// sentRequest is deliberately not set here: it belongs to the goroutine
+	// that initiated the request, otherwise it would race with Read.
 	self.resp = resp
 	return nil
 }

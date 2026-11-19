@@ -3,41 +3,71 @@ package git
 /*
 #include <git2.h>
 
-extern int git_odb_backend_one_pack(git_odb_backend **out, const char *index_file);
-extern int git_odb_backend_loose(git_odb_backend **out, const char *objects_dir, int compression_level, int do_fsync, unsigned int dir_mode, unsigned int file_mode);
+extern int _go_git_odb_backend_pack(git_odb_backend **out, const char *objects_dir, int oid_type);
+extern int _go_git_odb_backend_one_pack(git_odb_backend **out, const char *index_file, int oid_type);
+extern int _go_git_odb_backend_loose(git_odb_backend **out, const char *objects_dir, int compression_level, int do_fsync, unsigned int dir_mode, unsigned int file_mode, int oid_type);
+extern int _go_git_odb_new(git_odb **out, int oid_type);
+extern int _go_git_odb_hash(git_oid *out, const void *data, size_t len, git_object_t obj_type, int oid_type);
+extern int _go_git_object_id_from_file(git_oid *out, const char *path, git_object_t obj_type, int oid_type);
 extern int _go_git_odb_foreach(git_odb *db, void *payload);
 extern void _go_git_odb_backend_free(git_odb_backend *backend);
 extern int _go_git_odb_write_pack(git_odb_writepack **out, git_odb *db, void *progress_payload);
-extern int _go_git_odb_writepack_append(git_odb_writepack *writepack, const void *, size_t, git_transfer_progress *);
-extern int _go_git_odb_writepack_commit(git_odb_writepack *writepack, git_transfer_progress *);
+extern int _go_git_odb_writepack_append(git_odb_writepack *writepack, const void *, size_t, git_indexer_progress *);
+extern int _go_git_odb_writepack_commit(git_odb_writepack *writepack, git_indexer_progress *);
 extern void _go_git_odb_writepack_free(git_odb_writepack *writepack);
 */
 import "C"
 import (
 	"io"
 	"os"
-	"reflect"
 	"runtime"
+	"strings"
 	"unsafe"
 )
 
 type Odb struct {
 	doNotCompare
 	ptr *C.git_odb
+
+	// oidType is the object id type this database stores, following git_oid_t.
+	// Repository.Odb() inherits it from the repository; standalone constructors
+	// set it explicitly (NewOdb defaults to SHA1).
+	oidType C.int
 }
 
 type OdbBackend struct {
 	doNotCompare
-	ptr *C.git_odb_backend
+	ptr     *C.git_odb_backend
+	oidType ObjectIdType
 }
 
-func NewOdb() (odb *Odb, err error) {
-	odb = new(Odb)
+// OidType reports the object id type configured for this Odb.
+func (v *Odb) OidType() ObjectIdType {
+	if v == nil {
+		return ObjectIdTypeDefault
+	}
+	return normalizeObjectIdType(ObjectIdType(v.oidType))
+}
+
+// NewOdb creates a standalone SHA1 object database with no backends.
+//
+// This constructor always defaults to SHA1. For SHA256 or format-agnostic
+// callers, use NewOdbForRepository or NewOdbWithOidType instead.
+func NewOdb() (*Odb, error) {
+	return newOdbWithOidType(ObjectIdSHA1)
+}
+
+func newOdbWithOidType(oidType ObjectIdType) (odb *Odb, err error) {
+	if err := validateObjectIdType(oidType); err != nil {
+		return nil, err
+	}
+	resolvedType := normalizeObjectIdType(oidType)
+	odb = &Odb{oidType: C.int(resolvedType)}
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_odb_new(&odb.ptr)
+	ret := C._go_git_odb_new(&odb.ptr, C.int(resolvedType))
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
@@ -51,53 +81,150 @@ func NewOdbBackendFromC(ptr unsafe.Pointer) (backend *OdbBackend) {
 	return backend
 }
 
+func newOwnedOdbBackend(ptr *C.git_odb_backend, oidType ObjectIdType) *OdbBackend {
+	backend := &OdbBackend{
+		ptr:     ptr,
+		oidType: normalizeObjectIdType(oidType),
+	}
+	runtime.SetFinalizer(backend, (*OdbBackend).Free)
+	return backend
+}
+
+func (v *Odb) addBackend(backend *OdbBackend, priority int, alternate bool) error {
+	if v == nil || v.ptr == nil {
+		return &GitError{Message: "odb is nil or already freed", Class: ErrorClassOdb, Code: ErrorCodeInvalid}
+	}
+	if backend == nil || backend.ptr == nil {
+		return &GitError{Message: "odb backend is nil or already freed", Class: ErrorClassOdb, Code: ErrorCodeInvalid}
+	}
+	if v.oidType != 0 && backend.oidType != 0 && normalizeObjectIdType(ObjectIdType(v.oidType)) != backend.oidType {
+		return &GitError{
+			Message: "odb backend object id type does not match odb",
+			Class:   ErrorClassOdb,
+			Code:    ErrorCodeInvalid,
+		}
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	var ret C.int
+	if alternate {
+		ret = C.git_odb_add_alternate(v.ptr, backend.ptr, C.int(priority))
+	} else {
+		ret = C.git_odb_add_backend(v.ptr, backend.ptr, C.int(priority))
+	}
+	runtime.KeepAlive(v)
+	runtime.KeepAlive(backend)
+	if ret < 0 {
+		// libgit2 did not take ownership; the caller may retry or free it.
+		return MakeGitError(ret)
+	}
+	// Ownership transferred to the odb. Clear the wrapper and detach its
+	// finalizer so any later backend.Free() is a safe no-op rather than a
+	// double-free or use-after-free.
+	backend.ptr = nil
+	runtime.SetFinalizer(backend, nil)
+	return nil
+}
+
+// AddAlternate attaches backend as an alternate object backend to the Odb.
+//
+// The backend's object id type (when known) must match the Odb's object id
+// type, or ErrorCodeInvalid is returned without attaching the backend.
+// On success ownership transfers to the Odb and the backend wrapper is cleared
+// (making a subsequent backend.Free() a safe no-op). On failure ownership
+// remains with the caller.
 func (v *Odb) AddAlternate(backend *OdbBackend, priority int) (err error) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	ret := C.git_odb_add_alternate(v.ptr, backend.ptr, C.int(priority))
-	runtime.KeepAlive(v)
-	if ret < 0 {
-		backend.Free()
-		return MakeGitError(ret)
-	}
-	return nil
+	return v.addBackend(backend, priority, true)
 }
 
+// AddBackend attaches backend to the Odb.
+//
+// The backend's object id type (when known) must match the Odb's object id
+// type, or ErrorCodeInvalid is returned without attaching the backend.
+// On success ownership transfers to the Odb and the backend wrapper is cleared
+// (making a subsequent backend.Free() a safe no-op). On failure ownership
+// remains with the caller.
 func (v *Odb) AddBackend(backend *OdbBackend, priority int) (err error) {
+	return v.addBackend(backend, priority, false)
+}
+
+// NewOdbBackendPack creates a SHA1 backend for a directory of packfiles.
+//
+// objectsDir is the repository's objects directory, which is expected to
+// contain a `pack/` subdirectory. Use NewOdbBackendOnePack instead to read a
+// single packfile by its index path.
+//
+// This constructor defaults to SHA1. For SHA256 or format-agnostic callers,
+// use (*Repository).NewOdbBackendPack or NewOdbBackendPackWithOidType instead.
+func NewOdbBackendPack(objectsDir string) (*OdbBackend, error) {
+	return newOdbBackendPackWithOidType(objectsDir, ObjectIdSHA1)
+}
+
+func newOdbBackendPackWithOidType(objectsDir string, oidType ObjectIdType) (backend *OdbBackend, err error) {
+	if err := validateObjectIdType(oidType); err != nil {
+		return nil, err
+	}
+	resolvedType := normalizeObjectIdType(oidType)
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_odb_add_backend(v.ptr, backend.ptr, C.int(priority))
-	runtime.KeepAlive(v)
+	cstr := C.CString(objectsDir)
+	defer C.free(unsafe.Pointer(cstr))
+
+	var odbPack *C.git_odb_backend
+	ret := C._go_git_odb_backend_pack(&odbPack, cstr, C.int(resolvedType))
 	if ret < 0 {
-		backend.Free()
-		return MakeGitError(ret)
+		return nil, MakeGitError(ret)
 	}
-	return nil
+	return newOwnedOdbBackend(odbPack, resolvedType), nil
 }
 
-func NewOdbBackendOnePack(packfileIndexPath string) (backend *OdbBackend, err error) {
+// NewOdbBackendOnePack creates a SHA1 backend for a single packfile.
+//
+// This constructor defaults to SHA1. For SHA256 or format-agnostic callers,
+// use (*Repository).NewOdbBackendOnePack or NewOdbBackendOnePackWithOidType instead.
+func NewOdbBackendOnePack(packfileIndexPath string) (*OdbBackend, error) {
+	return newOdbBackendOnePackWithOidType(packfileIndexPath, ObjectIdSHA1)
+}
+
+func newOdbBackendOnePackWithOidType(packfileIndexPath string, oidType ObjectIdType) (backend *OdbBackend, err error) {
+	if err := validateObjectIdType(oidType); err != nil {
+		return nil, err
+	}
+	resolvedType := normalizeObjectIdType(oidType)
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	cstr := C.CString(packfileIndexPath)
 	defer C.free(unsafe.Pointer(cstr))
 
-	var odbOnePack *C.git_odb_backend = nil
-	ret := C.git_odb_backend_one_pack(&odbOnePack, cstr)
+	var odbOnePack *C.git_odb_backend
+	ret := C._go_git_odb_backend_one_pack(&odbOnePack, cstr, C.int(resolvedType))
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
-	return NewOdbBackendFromC(unsafe.Pointer(odbOnePack)), nil
+	return newOwnedOdbBackend(odbOnePack, resolvedType), nil
 }
 
-// NewOdbBackendLoose creates a backend for loose objects.
-func NewOdbBackendLoose(objectsDir string, compressionLevel int, doFsync bool, dirMode os.FileMode, fileMode os.FileMode) (backend *OdbBackend, err error) {
+// NewOdbBackendLoose creates a SHA1 backend for loose objects.
+//
+// This constructor defaults to SHA1. For SHA256 or format-agnostic callers,
+// use (*Repository).NewOdbBackendLoose or NewOdbBackendLooseWithOidType instead.
+func NewOdbBackendLoose(objectsDir string, compressionLevel int, doFsync bool, dirMode os.FileMode, fileMode os.FileMode) (*OdbBackend, error) {
+	return newOdbBackendLooseWithOidType(objectsDir, compressionLevel, doFsync, dirMode, fileMode, ObjectIdSHA1)
+}
+
+func newOdbBackendLooseWithOidType(objectsDir string, compressionLevel int, doFsync bool, dirMode os.FileMode, fileMode os.FileMode, oidType ObjectIdType) (backend *OdbBackend, err error) {
+	if err := validateObjectIdType(oidType); err != nil {
+		return nil, err
+	}
+	resolvedType := normalizeObjectIdType(oidType)
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	var odbLoose *C.git_odb_backend = nil
+	var odbLoose *C.git_odb_backend
 	var doFsyncInt C.int
 	if doFsync {
 		doFsyncInt = C.int(1)
@@ -106,11 +233,11 @@ func NewOdbBackendLoose(objectsDir string, compressionLevel int, doFsync bool, d
 	cstr := C.CString(objectsDir)
 	defer C.free(unsafe.Pointer(cstr))
 
-	ret := C.git_odb_backend_loose(&odbLoose, cstr, C.int(compressionLevel), doFsyncInt, C.uint(dirMode), C.uint(fileMode))
+	ret := C._go_git_odb_backend_loose(&odbLoose, cstr, C.int(compressionLevel), doFsyncInt, C.uint(dirMode), C.uint(fileMode), C.int(resolvedType))
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
-	return NewOdbBackendFromC(unsafe.Pointer(odbLoose)), nil
+	return newOwnedOdbBackend(odbLoose, resolvedType), nil
 }
 
 func (v *Odb) ReadHeader(oid *Oid) (uint64, ObjectType, error) {
@@ -150,7 +277,7 @@ func (v *Odb) Write(data []byte, otype ObjectType) (oid *Oid, err error) {
 		size = C.size_t(0)
 	}
 
-	ret := C.git_odb_write(oid.toC(), v.ptr, unsafe.Pointer(&data[0]), size, C.git_object_t(otype))
+	ret := C.git_odb_write(oid.outC(), v.ptr, unsafe.Pointer(&data[0]), size, C.git_object_t(otype))
 	runtime.KeepAlive(v)
 	if ret < 0 {
 		return nil, MakeGitError(ret)
@@ -209,7 +336,8 @@ type odbForEachCallbackData struct {
 }
 
 //export odbForEachCallback
-func odbForEachCallback(id *C.git_oid, handle unsafe.Pointer) C.int {
+func odbForEachCallback(id *C.git_oid, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	data, ok := pointerHandles.Get(handle).(*odbForEachCallbackData)
 	if !ok {
 		panic("could not retrieve handle")
@@ -248,7 +376,12 @@ func (v *Odb) ForEach(callback OdbForEachCallback) error {
 	return nil
 }
 
-// Hash determines the object-ID (sha1) of a data buffer.
+// Hash determines the object-ID of a data buffer.
+//
+// The object id type follows the object database: an Odb obtained from a
+// Repository hashes with that repository's object format (so a SHA256 repository
+// yields a SHA256 id), while a standalone Odb from NewOdb uses the libgit2
+// default (SHA1). Use HashWithType to pick the type explicitly.
 func (v *Odb) Hash(data []byte, otype ObjectType) (oid *Oid, err error) {
 	oid = new(Oid)
 
@@ -263,8 +396,44 @@ func (v *Odb) Hash(data []byte, otype ObjectType) (oid *Oid, err error) {
 		size = C.size_t(0)
 	}
 
-	ret := C.git_odb_hash(oid.toC(), unsafe.Pointer(&data[0]), size, C.git_object_t(otype))
+	// Route through the typed shim using the object database's configured format.
+	ret := C._go_git_odb_hash(oid.outC(), unsafe.Pointer(&data[0]), size, C.git_object_t(otype), v.oidType)
 	runtime.KeepAlive(data)
+	runtime.KeepAlive(v)
+	if ret < 0 {
+		return nil, MakeGitError(ret)
+	}
+	return oid, nil
+}
+
+// HashFile determines the object id of the raw contents of a file using this
+// object database's configured object id type. It does not apply repository
+// filters (for example line-ending conversion).
+func (v *Odb) HashFile(path string, otype ObjectType) (*Oid, error) {
+	return v.hashFileWithOidType(path, otype, ObjectIdType(v.oidType))
+}
+
+func (v *Odb) hashFileWithOidType(path string, otype ObjectType, oidType ObjectIdType) (*Oid, error) {
+	if err := validateObjectIdType(oidType); err != nil {
+		return nil, err
+	}
+	if strings.IndexByte(path, 0) >= 0 {
+		return nil, &GitError{
+			Message: "object file path contains a NUL byte",
+			Class:   ErrorClassInvalid,
+			Code:    ErrorCodeInvalid,
+		}
+	}
+
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	oid := new(Oid)
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	ret := C._go_git_object_id_from_file(oid.outC(), cpath, C.git_object_t(otype), C.int(oidType))
+	runtime.KeepAlive(v)
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
@@ -336,8 +505,18 @@ func (v *Odb) NewWritePack(callback TransferProgressCallback) (*OdbWritepack, er
 	return writepack, nil
 }
 
+// Free releases the backend. It is safe to call more than once.
+//
+// Note that a backend added to an Odb is owned by that Odb, so this is only for
+// a backend that was never attached.
 func (v *OdbBackend) Free() {
-	C._go_git_odb_backend_free(v.ptr)
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
+	runtime.SetFinalizer(v, nil)
+	C._go_git_odb_backend_free(ptr)
 }
 
 type OdbObject struct {
@@ -346,8 +525,13 @@ type OdbObject struct {
 }
 
 func (v *OdbObject) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
 	runtime.SetFinalizer(v, nil)
-	C.git_odb_object_free(v.ptr)
+	C.git_odb_object_free(ptr)
 }
 
 func (object *OdbObject) Id() (oid *Oid) {
@@ -371,17 +555,14 @@ func (object *OdbObject) Type() ObjectType {
 // Data returns a slice pointing to the unmanaged object memory. You must make
 // sure the object is referenced for at least as long as the slice is used.
 func (object *OdbObject) Data() (data []byte) {
-	var c_blob unsafe.Pointer = C.git_odb_object_data(object.ptr)
-	var blob []byte
+	cblob := C.git_odb_object_data(object.ptr)
+	size := int(C.git_odb_object_size(object.ptr))
+	runtime.KeepAlive(object)
 
-	len := int(C.git_odb_object_size(object.ptr))
-
-	sliceHeader := (*reflect.SliceHeader)((unsafe.Pointer(&blob)))
-	sliceHeader.Cap = len
-	sliceHeader.Len = len
-	sliceHeader.Data = uintptr(c_blob)
-
-	return blob
+	if cblob == nil || size == 0 {
+		return nil
+	}
+	return unsafe.Slice((*byte)(cblob), size)
 }
 
 type OdbReadStream struct {
@@ -393,15 +574,18 @@ type OdbReadStream struct {
 
 // Read reads from the stream
 func (stream *OdbReadStream) Read(data []byte) (int, error) {
-	header := (*reflect.SliceHeader)(unsafe.Pointer(&data))
-	ptr := (*C.char)(unsafe.Pointer(header.Data))
-	size := C.size_t(header.Cap)
+	if len(data) == 0 {
+		return 0, nil
+	}
+	ptr := (*C.char)(unsafe.Pointer(&data[0]))
+	size := C.size_t(len(data))
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_odb_stream_read(stream.ptr, ptr, size)
 	runtime.KeepAlive(stream)
+	runtime.KeepAlive(data)
 	if ret < 0 {
 		return 0, MakeGitError(ret)
 	}
@@ -409,9 +593,7 @@ func (stream *OdbReadStream) Read(data []byte) (int, error) {
 		return 0, io.EOF
 	}
 
-	header.Len = int(ret)
-
-	return len(data), nil
+	return int(ret), nil
 }
 
 // Close is a dummy function in order to implement the Closer and
@@ -421,8 +603,13 @@ func (stream *OdbReadStream) Close() error {
 }
 
 func (stream *OdbReadStream) Free() {
+	if stream == nil || stream.ptr == nil {
+		return
+	}
+	ptr := stream.ptr
+	stream.ptr = nil
 	runtime.SetFinalizer(stream, nil)
-	C.git_odb_stream_free(stream.ptr)
+	C.git_odb_stream_free(ptr)
 }
 
 type OdbWriteStream struct {
@@ -433,15 +620,18 @@ type OdbWriteStream struct {
 
 // Write writes to the stream
 func (stream *OdbWriteStream) Write(data []byte) (int, error) {
-	header := (*reflect.SliceHeader)(unsafe.Pointer(&data))
-	ptr := (*C.char)(unsafe.Pointer(header.Data))
-	size := C.size_t(header.Len)
+	if len(data) == 0 {
+		return 0, nil
+	}
+	ptr := (*C.char)(unsafe.Pointer(&data[0]))
+	size := C.size_t(len(data))
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_odb_stream_write(stream.ptr, ptr, size)
 	runtime.KeepAlive(stream)
+	runtime.KeepAlive(data)
 	if ret < 0 {
 		return 0, MakeGitError(ret)
 	}
@@ -455,7 +645,7 @@ func (stream *OdbWriteStream) Close() error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ret := C.git_odb_stream_finalize_write(stream.Id.toC(), stream.ptr)
+	ret := C.git_odb_stream_finalize_write(stream.Id.outC(), stream.ptr)
 	runtime.KeepAlive(stream)
 	if ret < 0 {
 		return MakeGitError(ret)
@@ -465,28 +655,36 @@ func (stream *OdbWriteStream) Close() error {
 }
 
 func (stream *OdbWriteStream) Free() {
+	if stream == nil || stream.ptr == nil {
+		return
+	}
+	ptr := stream.ptr
+	stream.ptr = nil
 	runtime.SetFinalizer(stream, nil)
-	C.git_odb_stream_free(stream.ptr)
+	C.git_odb_stream_free(ptr)
 }
 
 // OdbWritepack is a stream to write a packfile to the ODB.
 type OdbWritepack struct {
 	doNotCompare
 	ptr        *C.git_odb_writepack
-	stats      C.git_transfer_progress
+	stats      C.git_indexer_progress
 	ccallbacks C.git_remote_callbacks
 }
 
 func (writepack *OdbWritepack) Write(data []byte) (int, error) {
-	header := (*reflect.SliceHeader)(unsafe.Pointer(&data))
-	ptr := unsafe.Pointer(header.Data)
-	size := C.size_t(header.Len)
+	if len(data) == 0 {
+		return 0, nil
+	}
+	ptr := unsafe.Pointer(&data[0])
+	size := C.size_t(len(data))
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	ret := C._go_git_odb_writepack_append(writepack.ptr, ptr, size, &writepack.stats)
 	runtime.KeepAlive(writepack)
+	runtime.KeepAlive(data)
 	if ret < 0 {
 		return 0, MakeGitError(ret)
 	}
@@ -508,7 +706,12 @@ func (writepack *OdbWritepack) Commit() error {
 }
 
 func (writepack *OdbWritepack) Free() {
+	if writepack == nil || writepack.ptr == nil {
+		return
+	}
+	ptr := writepack.ptr
+	writepack.ptr = nil
 	untrackCallbacksPayload(&writepack.ccallbacks)
 	runtime.SetFinalizer(writepack, nil)
-	C._go_git_odb_writepack_free(writepack.ptr)
+	C._go_git_odb_writepack_free(ptr)
 }

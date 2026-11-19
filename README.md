@@ -1,6 +1,6 @@
 git2go
 ======
-[![GoDoc](https://godoc.org/github.com/libgit2/git2go?status.svg)](http://godoc.org/github.com/libgit2/git2go/v34) [![Build Status](https://travis-ci.org/libgit2/git2go.svg?branch=main)](https://travis-ci.org/libgit2/git2go)
+[![GoDoc](https://godoc.org/github.com/libgit2/git2go?status.svg)](http://godoc.org/github.com/libgit2/git2go/v36) [![Build Status](https://travis-ci.org/libgit2/git2go.svg?branch=main)](https://travis-ci.org/libgit2/git2go)
 
 Go bindings for [libgit2](http://libgit2.github.com/).
 
@@ -10,7 +10,8 @@ Due to the fact that Go 1.11 module versions have semantic meaning and don't nec
 
 | libgit2 | git2go        |
 |---------|---------------|
-| main    | (will be v35) |
+| main @ `42a89d7` (`2.0.0-rc.1`, promoted SHA256) | v36-pre (`/v36`) |
+| 1.9     | v35           |
 | 1.5     | v34           |
 | 1.3     | v33           |
 | 1.2     | v32           |
@@ -20,14 +21,16 @@ Due to the fact that Go 1.11 module versions have semantic meaning and don't nec
 | 0.28    | v28           |
 | 0.27    | v27           |
 
-You can import them in your project with the version's major number as a suffix. For example, if you have libgit2 v1.2 installed, you'd import git2go v34 with:
+You can import them in your project with the version's major number as a suffix. The promoted-SHA256 baseline uses the `/v36` module path and requires **Go 1.26 or newer** (matching `go 1.26.0` in `go.mod`). Before libgit2 publishes the corresponding formal release, git2go releases are named **v36-pre** and use valid Go prerelease tags such as `v36.0.0-pre.1`:
 
 ```sh
-go get github.com/libgit2/git2go/v34
+go get github.com/libgit2/git2go/v36@v36.0.0-pre.1
 ```
 ```go
-import "github.com/libgit2/git2go/v34"
+import "github.com/libgit2/git2go/v36"
 ```
+
+Users that must link libgit2 1.9.x should remain on `github.com/libgit2/git2go/v35`.
 
 which will ensure there are no sudden changes to the API.
 
@@ -50,7 +53,7 @@ This project wraps the functionality provided by libgit2. If you're using a vers
 When linking dynamically against a released version of libgit2, install it via your system's package manager. CGo will take care of finding its pkg-config file and set up the linking. Import via Go modules, e.g. to work against libgit2 v1.2
 
 ```go
-import "github.com/libgit2/git2go/v34"
+import "github.com/libgit2/git2go/v36"
 ```
 
 ### Versioned branch, static linking
@@ -72,20 +75,140 @@ Run `go get -d github.com/libgit2/git2go` to download the code and go to your `$
 
 will compile libgit2, link it into git2go and install it. The `main` branch is set up to follow the specific libgit2 version that is vendored, so trying dynamic linking may or may not work depending on the exact versions involved.
 
-In order to let Go pass the correct flags to `pkg-config`, `-tags static` needs to be passed to all `go` commands that build any binaries. For instance:
+In order to let Go pass the correct flags to `pkg-config`, `-tags static` needs to be passed to all `go` commands that build any binaries, with `PKG_CONFIG_PATH` pointing at the bundled `static-build/install/lib/pkgconfig` directory (the `Makefile` targets set this automatically; Go ≥ 1.27.4 rejects direct `.pc` file paths in `#cgo pkg-config`). Because `vendor/` contains only the C `vendor/libgit2` submodule (no Go vendor tree), in-repo `go` invocations also pass `-mod=mod` (handled automatically by `Makefile`). For instance:
 
-    go build -tags static github.com/my/project/...
-    go test -tags static github.com/my/project/...
-    go install -tags static github.com/my/project/...
+    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go build -mod=mod -tags static github.com/my/project/...
+    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go test -mod=mod -tags static github.com/my/project/...
+    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go install -mod=mod -tags static github.com/my/project/...
 
 One thing to take into account is that since Go expects the `pkg-config` file to be within the same directory where `make install-static` was called, so the `go.mod` file may need to have a [`replace` directive](https://github.com/golang/go/wiki/Modules#when-should-i-use-the-replace-directive) so that the correct setup is achieved. So if `git2go` is checked out at `$GOPATH/src/github.com/libgit2/git2go` and your project at `$GOPATH/src/github.com/my/project`, the `go.mod` file of `github.com/my/project` might need to have a line like
 
-    replace github.com/libgit2/git2go/v34 => ../../libgit2/git2go
+    replace github.com/libgit2/git2go/v36 => ../../libgit2/git2go
+
+### SHA1 and SHA256 object IDs
+
+The vendored libgit2 `main` baseline has promoted SHA256 to a regular feature.
+Both SHA1 and SHA256 are supported in the same build; SHA1 remains the default.
+No experimental CMake option or Go build tag is required.
+
+`Oid` now mirrors libgit2's typed object-id layout and can hold either format.
+Use `Oid.Type()` to inspect the format, `Bytes()` for the raw bytes, and
+`String()` for the 40-hex (SHA1) or 64-hex (SHA256) representation. Do not index
+or slice an `Oid` directly. Prefer `IsZero()` / `Equal()` over comparing against
+a Go zero-valued `Oid{}` with `==`, and use `ZeroOid(t)` when a typed all-zero
+`Oid` (for example as a map key) is needed.
+
+Repositories still default to SHA1:
+
+    repo, err := git.InitRepository(path, false)
+
+Create a SHA256 repository explicitly:
+
+    repo, err := git.InitRepositoryWithOidType(path, false, git.ObjectIdSHA256)
+
+The type-aware APIs (`ZeroOid`, `Odb.OidType`, `NewOdbWithOidType`,
+`NewOdbForRepository`, `Repository.NewOdbBackendLoose`,
+`Repository.NewOdbBackendPack`, `Repository.NewOdbBackendOnePack`,
+`NewOdbBackendLooseWithOidType`, `NewOdbBackendPackWithOidType`,
+`NewOdbBackendOnePackWithOidType`, `HashWithType`, `HashFileWithType`,
+`NewIndexWithOidType`, `OpenIndexWithOidType`, `DiffFromBufferWithOidType`, and
+`NewIndexerForOidType`) are available in every build. `Odb.AddBackend` and
+`Odb.AddAlternate` reject backends whose `ObjectIdType` does not match the `Odb`.
+`Odb.HashFile` follows the ODB/repository object format, while `HashFileWithType`
+selects SHA1 or SHA256 explicitly; both hash raw file contents without repository
+filters. See `docs/sha256-compat-design.md` for implementation details and
+`docs/sha256-breaking-changes.md` for migration guidance.
+
+### Reference storage: files and reftable
+
+The same baseline also provides the reftable reference-storage backend. The
+bindings for it are compiled in by default; `files` remains the default backend
+for new repositories.
+
+Create a reftable repository, optionally combined with SHA256:
+
+    repo, err := git.InitRepositoryExt(path, &git.RepositoryInitOptions{
+        Flags:     git.RepositoryInitMkpath,
+        OidType:   git.ObjectIdSHA256, // optional; SHA1 is the default
+        RefdbType: git.RefdbReftable,  // optional; files is the default
+    })
+
+`InitRepositoryExt` is the single entry point for both the object format and the
+reference format, and also exposes the init flags, mode, workdir and template
+overrides, the initial HEAD branch, and an origin URL.
+
+Because libgit2 exposes no `GIT_FEATURE_REFTABLE` flag, support is detected by
+probe rather than by version comparison:
+
+    if git.IsReftableSupported() { /* ... */ }
+
+To find out which backend an existing repository uses:
+
+    format, err := repo.RefStorageFormat() // git.RefdbFiles or git.RefdbReftable
+
+This mirrors libgit2's own rule: `extensions.refStorage` is only honoured when
+`core.repositoryformatversion` is at least 1, so a version-0 repository that
+declares `reftable` is still reported as `files`.
+
+Related APIs: `Repository.Refdb`, `Repository.OpenRefdb`, `Refdb.Compress`,
+`Repository.NewRefdbBackendFs`, `Repository.NewRefdbBackendReftable`, the
+`Reflog` API, and `Repository.NewTransaction` for reference transactions.
+
+To clone directly into reftable, use `CloneOptions.RepositoryCreateCallback`
+and create the destination with `InitRepositoryExt`. Choose the object-id type
+that matches the source. The callback transfers repository ownership to libgit2
+on success; the returned Go wrapper is invalidated. Initialization followed by
+fetch remains an alternative. Local bundle clone is also supported by this
+libgit2 baseline, including SHA256 bundles.
+
+The public reference transaction API works with `files`, but its `Commit`
+applies references one by one: it does not guarantee an all-or-nothing batch,
+and `Free` cannot roll back already committed updates. The reftable backend
+has not connected its locking hooks to this API; `NewTransaction` succeeds but
+`Transaction.LockRef` fails. This is distinct from reftable's internal addition
+mechanism, which can atomically commit multiple records under a database-wide
+lock. See `docs/reftable-transaction-research.md` and
+`docs/capability-boundaries.md` for the integration limits.
+
+Go programs can also supply their own reference database by implementing
+`RefdbBackendInterface` and passing it to `NewRefdbBackendFromInterface`.
+
+When linking against a libgit2 that predates reftable, build with the
+`libgit2_no_reftable` tag to compile the files-only subset:
+
+    make test-static-no-reftable
+    # or directly:
+    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go test -mod=mod --tags "static,libgit2_no_reftable" ./...
+
+See `docs/sha256-reftable-integration-report.md` for the integration and
+verification record.
+
+### Contributing to the bindings
+
+`docs/binding-design-guidelines.md` derives the conventions this binding layer
+follows from git's and libgit2's own implementation choices: how C ownership
+rules map onto Go lifetimes, why every cgo call is wrapped in
+`runtime.LockOSThread` (libgit2 keeps its last error in thread-local storage),
+how callback errors are round-tripped without losing the original Go `error`,
+and how compile-time ABI assertions and runtime capability probes divide the
+work of version compatibility. It ends with a checklist to run through when
+adding a new binding.
+
+`docs/capability-boundaries.md` records what this binding can and cannot do,
+and why. It separates upstream limitations (the public transaction API is not
+connected to reftable; promoted typed object ids are in the v2 release candidate,
+not yet a stable release) from deliberate non-bindings (the `oid` comparison and formatting
+helpers are implemented in Go) and from genuine gaps, and lists the outstanding
+work split by whether it is breaking. Per-module coverage of the libgit2 public
+API can be reproduced with:
+
+    python3 script/audit-binding-coverage.py            # all modules
+    python3 script/audit-binding-coverage.py oid odb    # unbound symbols
 
 Parallelism and network operations
 ----------------------------------
 
-libgit2 may use OpenSSL and LibSSH2 for performing encrypted network connections. For now, git2go asks libgit2 to set locking for OpenSSL. This makes HTTPS connections thread-safe, but it is fragile and will likely stop doing it soon. This may also make SSH connections thread-safe if your copy of libssh2 is linked against OpenSSL. Check libgit2's `THREADSAFE.md` for more information.
+libgit2 may use OpenSSL and LibSSH2 for performing encrypted network connections. Starting with v36, git2go no longer calls `git_openssl_set_locking()` automatically during package initialization (avoiding process-wide OpenSSL callback mutation and spurious `git_error_last()` errors on non-OpenSSL builds). Modern OpenSSL (>= 1.1.0 / 3.x) is thread-safe without external locking callbacks; if your process links legacy OpenSSL 1.0.x, configure locking in the host application itself. Check libgit2's `THREADSAFE.md` for more information.
 
 Running the tests
 -----------------
@@ -97,7 +220,24 @@ For the stable version, `go test` will work as usual. For the `main` branch, sim
 Alternatively, you can build the library manually first and then run the tests
 
     make install-static
-    go test -v -tags static ./...
+    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go test -mod=mod -v -tags static ./...
+
+The supported test matrix also includes the race detector (the refdb backend
+bridge and the managed HTTP transport both hand memory between libgit2 threads
+and Go), the files-only degradation build, and the dynamic link:
+
+    make test-static-race
+    make test-static-no-reftable
+    make test-dynamic
+
+`make lint` runs `gofmt` and `go vet`, both of which must stay clean.
+
+A few tests clone and negotiate against `github.com` and therefore need network
+access. They are skipped under `go test -short` or when
+`GIT2GO_SKIP_NETWORK_TESTS` is set, so an offline or firewalled host can run the
+rest of the suite deterministically:
+
+    make test-static-offline
 
 License
 -------

@@ -26,8 +26,9 @@ const _Delta_name = "UnmodifiedAddedDeletedModifiedRenamedCopiedIgnoredUntracked
 var _Delta_index = [...]uint8{0, 10, 15, 22, 30, 37, 43, 50, 59, 69, 79, 89}
 
 func (i Delta) String() string {
-	if i < 0 || i >= Delta(len(_Delta_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_Delta_index)-1 {
 		return "Delta(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _Delta_name[_Delta_index[i]:_Delta_index[i+1]]
+	return _Delta_name[_Delta_index[idx]:_Delta_index[idx+1]]
 }

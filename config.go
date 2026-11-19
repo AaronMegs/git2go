@@ -12,8 +12,14 @@ import (
 type ConfigLevel int
 
 const (
-	// System-wide on Windows, for compatibility with portable git
-	ConfigLevelProgramdata ConfigLevel = C.GIT_CONFIG_LEVEL_PROGRAMDATA
+	// ConfigLevelProgramdata was system-wide configuration on Windows for
+	// compatibility with portable git. libgit2 removed this level from
+	// git_config_level_t and now ignores it; the constant is kept only so
+	// existing callers still compile, and its value is the literal that
+	// upstream retains solely in its deprecated header.
+	//
+	// Deprecated: this level is ignored by libgit2.
+	ConfigLevelProgramdata ConfigLevel = 1
 
 	// System-wide configuration file; /etc/gitconfig on Linux systems
 	ConfigLevelSystem ConfigLevel = C.GIT_CONFIG_LEVEL_SYSTEM
@@ -29,6 +35,9 @@ const (
 	// non-bare repos
 	ConfigLevelLocal ConfigLevel = C.GIT_CONFIG_LEVEL_LOCAL
 
+	// Worktree-specific configuration; typically $GIT_DIR/config.worktree
+	ConfigLevelWorktree ConfigLevel = C.GIT_CONFIG_LEVEL_WORKTREE
+
 	// Application specific configuration file; freely defined by applications
 	ConfigLevelApp ConfigLevel = C.GIT_CONFIG_LEVEL_APP
 
@@ -38,16 +47,20 @@ const (
 )
 
 type ConfigEntry struct {
-	Name  string
-	Value string
-	Level ConfigLevel
+	Name        string
+	Value       string
+	Level       ConfigLevel
+	BackendType string // The type of backend that this entry exists in (e.g. "file")
+	OriginPath  string // The path to the origin of this entry
 }
 
 func newConfigEntryFromC(centry *C.git_config_entry) *ConfigEntry {
 	return &ConfigEntry{
-		Name:  C.GoString(centry.name),
-		Value: C.GoString(centry.value),
-		Level: ConfigLevel(centry.level),
+		Name:        C.GoString(centry.name),
+		Value:       C.GoString(centry.value),
+		Level:       ConfigLevel(centry.level),
+		BackendType: C.GoString(centry.backend_type),
+		OriginPath:  C.GoString(centry.origin_path),
 	}
 }
 
@@ -237,8 +250,13 @@ func (c *Config) SetString(name, value string) (err error) {
 }
 
 func (c *Config) Free() {
+	if c == nil || c.ptr == nil {
+		return
+	}
+	ptr := c.ptr
+	c.ptr = nil
 	runtime.SetFinalizer(c, nil)
-	C.git_config_free(c.ptr)
+	C.git_config_free(ptr)
 }
 
 func (c *Config) SetInt32(name string, value int32) (err error) {
@@ -386,8 +404,13 @@ func (iter *ConfigIterator) Next() (*ConfigEntry, error) {
 }
 
 func (iter *ConfigIterator) Free() {
+	if iter == nil || iter.ptr == nil {
+		return
+	}
+	ptr := iter.ptr
+	iter.ptr = nil
 	runtime.SetFinalizer(iter, nil)
-	C.free(unsafe.Pointer(iter.ptr))
+	C.git_config_iterator_free(ptr)
 }
 
 func ConfigFindGlobal() (string, error) {
@@ -428,24 +451,6 @@ func ConfigFindXDG() (string, error) {
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_config_find_xdg(&buf)
-	if ret < 0 {
-		return "", MakeGitError(ret)
-	}
-
-	return C.GoString(buf.ptr), nil
-}
-
-// ConfigFindProgramdata locate the path to the configuration file in ProgramData.
-//
-// Look for the file in %PROGRAMDATA%\Git\config used by portable git.
-func ConfigFindProgramdata() (string, error) {
-	var buf C.git_buf
-	defer C.git_buf_dispose(&buf)
-
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	ret := C.git_config_find_programdata(&buf)
 	if ret < 0 {
 		return "", MakeGitError(ret)
 	}

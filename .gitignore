@@ -1,2 +1,7 @@
 /static-build/
 /dynamic-build/
+/system-build-promoted/
+
+.idea
+.vscode/
+.codebuddy

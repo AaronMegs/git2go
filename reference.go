@@ -12,8 +12,10 @@ import (
 type ReferenceType int
 
 const (
-	ReferenceSymbolic ReferenceType = C.GIT_REF_SYMBOLIC
-	ReferenceOid      ReferenceType = C.GIT_REF_OID
+	ReferenceInvalid  ReferenceType = C.GIT_REFERENCE_INVALID
+	ReferenceOid      ReferenceType = C.GIT_REFERENCE_DIRECT
+	ReferenceSymbolic ReferenceType = C.GIT_REFERENCE_SYMBOLIC
+	ReferenceAll      ReferenceType = C.GIT_REFERENCE_ALL
 )
 
 type Reference struct {
@@ -359,9 +361,15 @@ func (v *Reference) IsNote() bool {
 	return ret
 }
 
+// Free releases the reference handle. It is safe to call more than once.
 func (v *Reference) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
 	runtime.SetFinalizer(v, nil)
-	C.git_reference_free(v.ptr)
+	C.git_reference_free(ptr)
 }
 
 type ReferenceIterator struct {
@@ -472,8 +480,14 @@ func newReferenceIteratorFromC(ptr *C.git_reference_iterator, r *Repository) *Re
 
 // Free the reference iterator
 func (v *ReferenceIterator) Free() {
+	if v == nil || v.ptr == nil {
+		return
+	}
+	ptr := v.ptr
+	v.ptr = nil
 	runtime.SetFinalizer(v, nil)
-	C.git_reference_iterator_free(v.ptr)
+	C.git_reference_iterator_free(ptr)
+	runtime.KeepAlive(v.repo)
 }
 
 // ReferenceNameIsValid returns whether the reference name is well-formed.

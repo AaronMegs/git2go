@@ -3,15 +3,14 @@ package git
 /*
 #include <git2.h>
 
-extern const git_oid * git_indexer_hash(const git_indexer *idx);
-extern int git_indexer_append(git_indexer *idx, const void *data, size_t size, git_transfer_progress *stats);
-extern int git_indexer_commit(git_indexer *idx, git_transfer_progress *stats);
-extern int _go_git_indexer_new(git_indexer **out, const char *path, unsigned int mode, git_odb *odb, void *progress_cb_payload);
+extern const char * git_indexer_name(const git_indexer *idx);
+extern int git_indexer_append(git_indexer *idx, const void *data, size_t size, git_indexer_progress *stats);
+extern int git_indexer_commit(git_indexer *idx, git_indexer_progress *stats);
+extern int _go_git_indexer_new(git_indexer **out, const char *path, unsigned int mode, git_odb *odb, int oid_type, void *progress_cb_payload);
 extern void git_indexer_free(git_indexer *idx);
 */
 import "C"
 import (
-	"reflect"
 	"runtime"
 	"unsafe"
 )
@@ -20,19 +19,35 @@ import (
 // lookup.
 type Indexer struct {
 	doNotCompare
+	*indexerState
+	odb *Odb
+}
+
+// Keep C-facing storage in an allocation without Go pointers.
+type indexerState struct {
 	ptr        *C.git_indexer
-	stats      C.git_transfer_progress
+	stats      C.git_indexer_progress
 	ccallbacks C.git_remote_callbacks
 }
 
 // NewIndexer creates a new indexer instance.
+//
+// The object id type defaults to SHA1. To create an indexer for a SHA256
+// packfile, use NewIndexerForOidType. The optional odb supplies bases for thin
+// packs and must not be explicitly freed until the indexer is freed.
 func NewIndexer(packfilePath string, odb *Odb, callback TransferProgressCallback) (indexer *Indexer, err error) {
+	return newIndexerWithOidType(packfilePath, odb, 0, callback)
+}
+
+// newIndexerWithOidType is the shared implementation behind NewIndexer and
+// NewIndexerForOidType. oidType follows git_oid_t (0 = libgit2 default / SHA1).
+func newIndexerWithOidType(packfilePath string, odb *Odb, oidType C.int, callback TransferProgressCallback) (indexer *Indexer, err error) {
 	var odbPtr *C.git_odb = nil
 	if odb != nil {
 		odbPtr = odb.ptr
 	}
 
-	indexer = new(Indexer)
+	indexer = &Indexer{indexerState: new(indexerState), odb: odb}
 	populateRemoteCallbacks(&indexer.ccallbacks, &RemoteCallbacks{TransferProgressCallback: callback}, nil)
 
 	runtime.LockOSThread()
@@ -41,7 +56,7 @@ func NewIndexer(packfilePath string, odb *Odb, callback TransferProgressCallback
 	cstr := C.CString(packfilePath)
 	defer C.free(unsafe.Pointer(cstr))
 
-	ret := C._go_git_indexer_new(&indexer.ptr, cstr, 0, odbPtr, indexer.ccallbacks.payload)
+	ret := C._go_git_indexer_new(&indexer.ptr, cstr, 0, odbPtr, oidType, indexer.ccallbacks.payload)
 	runtime.KeepAlive(odb)
 	if ret < 0 {
 		untrackCallbacksPayload(&indexer.ccallbacks)
@@ -54,9 +69,11 @@ func NewIndexer(packfilePath string, odb *Odb, callback TransferProgressCallback
 
 // Write adds data to the indexer.
 func (indexer *Indexer) Write(data []byte) (int, error) {
-	header := (*reflect.SliceHeader)(unsafe.Pointer(&data))
-	ptr := unsafe.Pointer(header.Data)
-	size := C.size_t(header.Len)
+	if len(data) == 0 {
+		return 0, nil
+	}
+	ptr := unsafe.Pointer(&data[0])
+	size := C.size_t(len(data))
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -80,18 +97,32 @@ func (indexer *Indexer) Commit() (*Oid, error) {
 	defer runtime.UnlockOSThread()
 
 	ret := C.git_indexer_commit(indexer.ptr, &indexer.stats)
+	runtime.KeepAlive(indexer)
 	if ret < 0 {
 		return nil, MakeGitError(ret)
 	}
 
-	id := newOidFromC(C.git_indexer_hash(indexer.ptr))
+	name := C.GoString(C.git_indexer_name(indexer.ptr))
 	runtime.KeepAlive(indexer)
-	return id, nil
+
+	oid, err := NewOid(name)
+	if err != nil {
+		return nil, err
+	}
+	return oid, nil
 }
 
 // Free frees the indexer and its resources.
 func (indexer *Indexer) Free() {
-	untrackCallbacksPayload(&indexer.ccallbacks)
+	if indexer == nil || indexer.indexerState == nil || indexer.ptr == nil {
+		return
+	}
+	ptr := indexer.ptr
+	indexer.ptr = nil
+	odb := indexer.odb
+	indexer.odb = nil
 	runtime.SetFinalizer(indexer, nil)
-	C.git_indexer_free(indexer.ptr)
+	C.git_indexer_free(ptr)
+	runtime.KeepAlive(odb)
+	untrackCallbacksPayload(&indexer.ccallbacks)
 }

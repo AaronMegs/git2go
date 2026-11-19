@@ -2,13 +2,11 @@ package git
 
 /*
 #include <git2.h>
-#include <git2/sys/openssl.h>
 */
 import "C"
 import (
-	"bytes"
-	"encoding/hex"
 	"errors"
+	"fmt"
 	"runtime"
 	"strings"
 	"unsafe"
@@ -47,6 +45,11 @@ const (
 	ErrorClassCallback   ErrorClass = C.GIT_ERROR_CALLBACK
 	ErrorClassRebase     ErrorClass = C.GIT_ERROR_REBASE
 	ErrorClassPatch      ErrorClass = C.GIT_ERROR_PATCH
+	ErrorClassWorktree   ErrorClass = C.GIT_ERROR_WORKTREE
+	ErrorClassSHA        ErrorClass = C.GIT_ERROR_SHA
+	ErrorClassHTTP       ErrorClass = C.GIT_ERROR_HTTP
+	ErrorClassInternal   ErrorClass = C.GIT_ERROR_INTERNAL
+	ErrorClassGrafts     ErrorClass = C.GIT_ERROR_GRAFTS
 )
 
 //go:generate stringer -type ErrorCode -trimprefix ErrorCode -tags static
@@ -119,6 +122,16 @@ const (
 	ErrorCodeIndexDirty ErrorCode = C.GIT_EINDEXDIRTY
 	// ErrorCodeApplyFail represents that a patch application failed.
 	ErrorCodeApplyFail ErrorCode = C.GIT_EAPPLYFAIL
+	// ErrorCodeOwner represents that the object is not owned by the current user.
+	ErrorCodeOwner ErrorCode = C.GIT_EOWNER
+	// ErrorCodeTimeout represents that the operation timed out.
+	ErrorCodeTimeout ErrorCode = C.GIT_TIMEOUT
+	// ErrorCodeUnchanged represents that there were no changes.
+	ErrorCodeUnchanged ErrorCode = C.GIT_EUNCHANGED
+	// ErrorCodeNotSupported represents that an option is not supported.
+	ErrorCodeNotSupported ErrorCode = C.GIT_ENOTSUPPORTED
+	// ErrorCodeReadOnly represents that the subject is read-only.
+	ErrorCodeReadOnly ErrorCode = C.GIT_EREADONLY
 )
 
 var (
@@ -152,16 +165,17 @@ func initLibGit2() {
 		panic("libgit2 was not built with threading support")
 	}
 
+	// Same reasoning: an options struct the loaded library refused to
+	// initialize would be passed to libgit2 still holding whatever was on the
+	// stack. Checking it here turns that into an explicit failure at startup.
+	if err := checkOptionsVersions(); err != nil {
+		panic(err)
+	}
+
 	if features&FeatureHTTPS == 0 {
 		if err := registerManagedHTTP(); err != nil {
 			panic(err)
 		}
-	} else {
-		// This is not something we should be doing, as we may be stomping all over
-		// someone else's setup. The user should do this themselves or use some
-		// binding/wrapper which does it in such a way that they can be sure
-		// they're the only ones setting it up.
-		C.git_openssl_set_locking()
 	}
 	if features&FeatureSSH == 0 {
 		if err := registerManagedSSH(); err != nil {
@@ -193,98 +207,7 @@ func ReInit() {
 	initLibGit2()
 }
 
-// Oid represents the id for a Git object.
-type Oid [20]byte
-
-func newOidFromC(coid *C.git_oid) *Oid {
-	if coid == nil {
-		return nil
-	}
-
-	oid := new(Oid)
-	copy(oid[0:20], C.GoBytes(unsafe.Pointer(coid), 20))
-	return oid
-}
-
-func NewOidFromBytes(b []byte) *Oid {
-	oid := new(Oid)
-	copy(oid[0:20], b[0:20])
-	return oid
-}
-
-func (oid *Oid) toC() *C.git_oid {
-	return (*C.git_oid)(unsafe.Pointer(oid))
-}
-
-func NewOid(s string) (*Oid, error) {
-	if len(s) > C.GIT_OID_HEXSZ {
-		return nil, errors.New("string is too long for oid")
-	}
-
-	o := new(Oid)
-
-	slice, err := hex.DecodeString(s)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(slice) != 20 {
-		return nil, &GitError{"invalid oid", ErrorClassNone, ErrorCodeGeneric}
-	}
-
-	copy(o[:], slice[:20])
-	return o, nil
-}
-
-func (oid *Oid) String() string {
-	return hex.EncodeToString(oid[:])
-}
-
-func (oid *Oid) Cmp(oid2 *Oid) int {
-	return bytes.Compare(oid[:], oid2[:])
-}
-
-func (oid *Oid) Copy() *Oid {
-	ret := *oid
-	return &ret
-}
-
-func (oid *Oid) Equal(oid2 *Oid) bool {
-	return *oid == *oid2
-}
-
-func (oid *Oid) IsZero() bool {
-	return *oid == Oid{}
-}
-
-func (oid *Oid) NCmp(oid2 *Oid, n uint) int {
-	return bytes.Compare(oid[:n], oid2[:n])
-}
-
-func ShortenOids(ids []*Oid, minlen int) (int, error) {
-	shorten := C.git_oid_shorten_new(C.size_t(minlen))
-	if shorten == nil {
-		panic("Out of memory")
-	}
-	defer C.git_oid_shorten_free(shorten)
-
-	var ret C.int
-
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	for _, id := range ids {
-		buf := make([]byte, 41)
-		C.git_oid_fmt((*C.char)(unsafe.Pointer(&buf[0])), id.toC())
-		buf[40] = 0
-		ret = C.git_oid_shorten_add(shorten, (*C.char)(unsafe.Pointer(&buf[0])))
-		if ret < 0 {
-			return int(ret), MakeGitError(ret)
-		}
-	}
-	runtime.KeepAlive(ids)
-	return int(ret), nil
-}
+// Oid and its associated helpers live in oid.go and oid_typed.go.
 
 type GitError struct {
 	Message string
@@ -296,21 +219,27 @@ func (e GitError) Error() string {
 	return e.Message
 }
 
+// IsErrorClass reports whether err, or any error it wraps, is a *GitError with
+// the given class.
+//
+// It uses errors.As, so a GitError stays recognizable after being wrapped with
+// fmt.Errorf("...: %w", err).
 func IsErrorClass(err error, c ErrorClass) bool {
-	if err == nil {
-		return false
-	}
-	if gitError, ok := err.(*GitError); ok {
+	var gitError *GitError
+	if errors.As(err, &gitError) {
 		return gitError.Class == c
 	}
 	return false
 }
 
+// IsErrorCode reports whether err, or any error it wraps, is a *GitError with
+// the given code.
+//
+// It uses errors.As, so a GitError stays recognizable after being wrapped with
+// fmt.Errorf("...: %w", err).
 func IsErrorCode(err error, c ErrorCode) bool {
-	if err == nil {
-		return false
-	}
-	if gitError, ok := err.(*GitError); ok {
+	var gitError *GitError
+	if errors.As(err, &gitError) {
 		return gitError.Code == c
 	}
 	return false
@@ -362,6 +291,55 @@ func setCallbackError(errorMessage **C.char, err error) C.int {
 		return C.int(ErrorCodeUser)
 	}
 	return C.int(ErrorCodeOK)
+}
+
+// recoverCallback converts a panic raised inside a Go callback into a libgit2
+// error, and must be deferred as the first statement of every //export'ed
+// callback that returns an error code.
+//
+// A panic that unwinds across the cgo boundary is undefined behaviour: the C
+// frames in between (libgit2's own call stack) have no unwind information, so
+// the process typically dies without a usable trace and libgit2 is left
+// holding half-updated state. Converting it here keeps the failure inside
+// libgit2's normal error path, which unwinds its own frames correctly.
+//
+// It requires a named return value so that the deferred call can overwrite it:
+//
+//	//export someCallback
+//	func someCallback(errorMessage **C.char, ...) (ret C.int) {
+//		defer recoverCallback(errorMessage, &ret, "some callback")
+//		...
+//	}
+func recoverCallback(errorMessage **C.char, ret *C.int, what string) {
+	if r := recover(); r != nil {
+		*ret = setCallbackError(errorMessage, &GitError{
+			Message: fmt.Sprintf("panic in %s: %v", what, r),
+			Class:   ErrorClassCallback,
+			Code:    ErrorCodeUser,
+		})
+	}
+}
+
+// recoverVoidCallback is the counterpart of recoverCallback for //export'ed
+// callbacks that return nothing, where there is no error channel back into
+// libgit2 and the only correct action is to contain the panic.
+func recoverVoidCallback() {
+	_ = recover()
+}
+
+// recoverCallbackCode contains a panic in an //export'ed callback that reports
+// failure through its return code alone, without an errorMessage out-param
+// (these callbacks carry the original error in an errorTarget field instead).
+//
+// It returns GIT_EUSER so libgit2 aborts the enclosing operation. Returning
+// the zero value would mean "success", which would let libgit2 continue on top
+// of a callback that never completed — strictly worse than crashing.
+//
+// Like recoverCallback it requires a named return value.
+func recoverCallbackCode(ret *C.int) {
+	if recover() != nil {
+		*ret = C.int(ErrorCodeUser)
+	}
 }
 
 func Discover(start string, across_fs bool, ceiling_dirs []string) (string, error) {

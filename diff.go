@@ -7,6 +7,7 @@ extern void _go_git_populate_apply_callbacks(git_apply_options *options);
 extern int _go_git_diff_foreach(git_diff *diff, int eachFile, int eachHunk, int eachLine, void *payload);
 extern void _go_git_setup_diff_notify_callbacks(git_diff_options* opts);
 extern int _go_git_diff_blobs(git_blob *old, const char *old_path, git_blob *new, const char *new_path, git_diff_options *opts, int eachFile, int eachHunk, int eachLine, void *payload);
+extern int _go_git_diff_from_buffer(git_diff **out, const char *content, size_t content_len, int oid_type);
 */
 import "C"
 import (
@@ -178,17 +179,18 @@ func newDiffFromC(ptr *C.git_diff, repo *Repository) *Diff {
 }
 
 func (diff *Diff) Free() error {
-	if diff.ptr == nil {
+	if diff == nil || diff.ptr == nil {
 		return ErrInvalid
 	}
+	ptr := diff.ptr
+	diff.ptr = nil
 	if !diff.runFinalizer {
 		// This is the case with the Diff objects that are involved in the DiffNotifyCallback.
-		diff.ptr = nil
 		return nil
 	}
 	runtime.SetFinalizer(diff, nil)
-	C.git_diff_free(diff.ptr)
-	diff.ptr = nil
+	C.git_diff_free(ptr)
+	runtime.KeepAlive(diff.repo)
 	return nil
 }
 
@@ -225,12 +227,13 @@ type DiffStats struct {
 }
 
 func (stats *DiffStats) Free() error {
-	if stats.ptr == nil {
+	if stats == nil || stats.ptr == nil {
 		return ErrInvalid
 	}
-	runtime.SetFinalizer(stats, nil)
-	C.git_diff_stats_free(stats.ptr)
+	ptr := stats.ptr
 	stats.ptr = nil
+	runtime.SetFinalizer(stats, nil)
+	C.git_diff_stats_free(ptr)
 	return nil
 }
 
@@ -353,7 +356,8 @@ func (diff *Diff) ForEach(cbFile DiffForEachFileCallback, detail DiffDetail) err
 }
 
 //export diffForEachFileCallback
-func diffForEachFileCallback(delta *C.git_diff_delta, progress C.float, handle unsafe.Pointer) C.int {
+func diffForEachFileCallback(delta *C.git_diff_delta, progress C.float, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	payload := pointerHandles.Get(handle)
 	data, ok := payload.(*diffForEachCallbackData)
 	if !ok {
@@ -376,7 +380,8 @@ func diffForEachFileCallback(delta *C.git_diff_delta, progress C.float, handle u
 type DiffForEachHunkCallback func(DiffHunk) (DiffForEachLineCallback, error)
 
 //export diffForEachHunkCallback
-func diffForEachHunkCallback(delta *C.git_diff_delta, hunk *C.git_diff_hunk, handle unsafe.Pointer) C.int {
+func diffForEachHunkCallback(delta *C.git_diff_delta, hunk *C.git_diff_hunk, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	payload := pointerHandles.Get(handle)
 	data, ok := payload.(*diffForEachCallbackData)
 	if !ok {
@@ -399,17 +404,20 @@ func diffForEachHunkCallback(delta *C.git_diff_delta, hunk *C.git_diff_hunk, han
 type DiffForEachLineCallback func(DiffLine) error
 
 //export diffForEachLineCallback
-func diffForEachLineCallback(delta *C.git_diff_delta, hunk *C.git_diff_hunk, line *C.git_diff_line, handle unsafe.Pointer) C.int {
+func diffForEachLineCallback(delta *C.git_diff_delta, hunk *C.git_diff_hunk, line *C.git_diff_line, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	payload := pointerHandles.Get(handle)
 	data, ok := payload.(*diffForEachCallbackData)
 	if !ok {
 		panic("could not retrieve data for handle")
 	}
 
-	err := data.lineCallback(diffLineFromC(line))
-	if err != nil {
-		*data.errorTarget = err
-		return C.int(ErrorCodeUser)
+	if data.lineCallback != nil {
+		err := data.lineCallback(diffLineFromC(line))
+		if err != nil {
+			*data.errorTarget = err
+			return C.int(ErrorCodeUser)
+		}
 	}
 
 	return C.int(ErrorCodeOK)
@@ -604,7 +612,8 @@ type diffNotifyCallbackData struct {
 }
 
 //export diffNotifyCallback
-func diffNotifyCallback(_diff_so_far unsafe.Pointer, delta_to_add *C.git_diff_delta, matched_pathspec *C.char, handle unsafe.Pointer) C.int {
+func diffNotifyCallback(_diff_so_far unsafe.Pointer, delta_to_add *C.git_diff_delta, matched_pathspec *C.char, handle unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	diff_so_far := (*C.git_diff)(_diff_so_far)
 
 	payload := pointerHandles.Get(handle)
@@ -909,7 +918,8 @@ type applyCallbackData struct {
 }
 
 //export hunkApplyCallback
-func hunkApplyCallback(_hunk *C.git_diff_hunk, _payload unsafe.Pointer) C.int {
+func hunkApplyCallback(_hunk *C.git_diff_hunk, _payload unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	data, ok := pointerHandles.Get(_payload).(*applyCallbackData)
 	if !ok {
 		panic("invalid apply options payload")
@@ -934,7 +944,8 @@ func hunkApplyCallback(_hunk *C.git_diff_hunk, _payload unsafe.Pointer) C.int {
 }
 
 //export deltaApplyCallback
-func deltaApplyCallback(_delta *C.git_diff_delta, _payload unsafe.Pointer) C.int {
+func deltaApplyCallback(_delta *C.git_diff_delta, _payload unsafe.Pointer) (ret C.int) {
+	defer recoverCallbackCode(&ret)
 	data, ok := pointerHandles.Get(_payload).(*applyCallbackData)
 	if !ok {
 		panic("invalid apply options payload")
@@ -1084,7 +1095,17 @@ func (v *Repository) ApplyToTree(diff *Diff, tree *Tree, opts *ApplyOptions) (*I
 // This function will only read patch files created by a git implementation, it
 // will not read unified diffs produced by the diff program, nor any other
 // types of patch files.
+//
+// The patch is parsed using the libgit2 default object id type (SHA1). To parse
+// a SHA256 patch use DiffFromBufferWithOidType.
 func DiffFromBuffer(buffer []byte, repo *Repository) (*Diff, error) {
+	return diffFromBufferWithOidType(buffer, repo, 0)
+}
+
+// diffFromBufferWithOidType is the shared implementation behind DiffFromBuffer
+// and DiffFromBufferWithOidType. oidType follows git_oid_t (0 = libgit2
+// default).
+func diffFromBufferWithOidType(buffer []byte, repo *Repository, oidType C.int) (*Diff, error) {
 	var diff *C.git_diff
 
 	cBuffer := C.CBytes(buffer)
@@ -1093,7 +1114,7 @@ func DiffFromBuffer(buffer []byte, repo *Repository) (*Diff, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	ecode := C.git_diff_from_buffer(&diff, (*C.char)(cBuffer), C.size_t(len(buffer)))
+	ecode := C._go_git_diff_from_buffer(&diff, (*C.char)(cBuffer), C.size_t(len(buffer)), oidType)
 	if ecode < 0 {
 		return nil, MakeGitError(ecode)
 	}

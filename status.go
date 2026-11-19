@@ -75,12 +75,14 @@ func newStatusListFromC(ptr *C.git_status_list, r *Repository) *StatusList {
 }
 
 func (statusList *StatusList) Free() {
-	if statusList.ptr == nil {
+	if statusList == nil || statusList.ptr == nil {
 		return
 	}
-	runtime.SetFinalizer(statusList, nil)
-	C.git_status_list_free(statusList.ptr)
+	ptr := statusList.ptr
 	statusList.ptr = nil
+	runtime.SetFinalizer(statusList, nil)
+	C.git_status_list_free(ptr)
+	runtime.KeepAlive(statusList.r)
 }
 
 func (statusList *StatusList) ByIndex(index int) (StatusEntry, error) {
