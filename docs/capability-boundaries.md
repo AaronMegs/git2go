@@ -61,7 +61,7 @@ v1.9.7 的 `include/git2/oid.h` 中：
 
 因此 promoted typed OID **尚未进入任何正式发布**。当前只能发 `v36.0.0-pre.N`；
 本线的 ABI 守卫要求 `GIT_OID_MAX_SIZE == 32`，对 v1.9.x 会正确地编译期拒绝
-（CI 的 `reject-legacy-v1-9-4` job 覆盖）。
+（CI 的 `reject-legacy-v1-9-7` job 覆盖）。
 
 #### 1.2.3 clone 引用格式：绑定缺口已补齐
 

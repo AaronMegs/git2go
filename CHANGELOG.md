@@ -211,7 +211,7 @@ integration and verification record.
   deprecated declaration rather than merely not linking one. New jobs cover the
   reftable/refdb suite under the race detector, the `libgit2_no_reftable`
   opt-out build, `gofmt`/`go vet`, and a negative test asserting the ABI guard
-  rejects libgit2 v1.9.4.
+  rejects libgit2 v1.9.7.
 
 ### Security
 
