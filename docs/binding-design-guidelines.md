@@ -188,6 +188,11 @@ return nil
 它还做了跨仓库归属校验（`refdb.go:55-57`）——**类型系统表达不出、只能运行期检查**
 的约束，属于绑定层应主动增加的防护。
 
+2026-11-19 起，`Odb.AddBackend` / `Odb.AddAlternate`（`odb.go`）也已对齐同一模板：
+新建 `OdbBackend` 绑定 finalizer，挂载前校验 nil/已释放与 `ObjectIdType` 一致性，
+失败时不释放、成功时清空 `backend.ptr` 并解除 finalizer（由
+`TestOdbBackendTypeMismatchRejected` 与 `TestOdbAddBackendOwnershipAndGuards` 固化）。
+
 ---
 
 ## 2. 错误码与异常转换

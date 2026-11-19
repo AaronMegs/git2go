@@ -94,7 +94,9 @@ No experimental CMake option or Go build tag is required.
 `Oid` now mirrors libgit2's typed object-id layout and can hold either format.
 Use `Oid.Type()` to inspect the format, `Bytes()` for the raw bytes, and
 `String()` for the 40-hex (SHA1) or 64-hex (SHA256) representation. Do not index
-or slice an `Oid` directly.
+or slice an `Oid` directly. Prefer `IsZero()` / `Equal()` over comparing against
+a Go zero-valued `Oid{}` with `==`, and use `ZeroOid(t)` when a typed all-zero
+`Oid` (for example as a map key) is needed.
 
 Repositories still default to SHA1:
 
@@ -104,14 +106,17 @@ Create a SHA256 repository explicitly:
 
     repo, err := git.InitRepositoryWithOidType(path, false, git.ObjectIdSHA256)
 
-The type-aware APIs (`NewOdbWithOidType`,
-`NewOdbBackendLooseWithOidType`, `NewOdbBackendOnePackWithOidType`,
-`HashWithType`, `HashFileWithType`, `NewIndexWithOidType`,
-`OpenIndexWithOidType`, `DiffFromBufferWithOidType`, and
-`NewIndexerForOidType`) are available in every build. `Odb.HashFile` follows the
-ODB/repository object format, while `HashFileWithType` selects SHA1 or SHA256
-explicitly; both hash raw file contents without repository filters. See
-`docs/sha256-compat-design.md` for implementation details and
+The type-aware APIs (`ZeroOid`, `Odb.OidType`, `NewOdbWithOidType`,
+`NewOdbForRepository`, `Repository.NewOdbBackendLoose`,
+`Repository.NewOdbBackendPack`, `Repository.NewOdbBackendOnePack`,
+`NewOdbBackendLooseWithOidType`, `NewOdbBackendPackWithOidType`,
+`NewOdbBackendOnePackWithOidType`, `HashWithType`, `HashFileWithType`,
+`NewIndexWithOidType`, `OpenIndexWithOidType`, `DiffFromBufferWithOidType`, and
+`NewIndexerForOidType`) are available in every build. `Odb.AddBackend` and
+`Odb.AddAlternate` reject backends whose `ObjectIdType` does not match the `Odb`.
+`Odb.HashFile` follows the ODB/repository object format, while `HashFileWithType`
+selects SHA1 or SHA256 explicitly; both hash raw file contents without repository
+filters. See `docs/sha256-compat-design.md` for implementation details and
 `docs/sha256-breaking-changes.md` for migration guidance.
 
 ### Reference storage: files and reftable
@@ -171,7 +176,9 @@ Go programs can also supply their own reference database by implementing
 When linking against a libgit2 that predates reftable, build with the
 `libgit2_no_reftable` tag to compile the files-only subset:
 
-    go test --tags "static,libgit2_no_reftable" ./...
+    make test-static-no-reftable
+    # or directly:
+    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go test --tags "static,libgit2_no_reftable" ./...
 
 See `docs/sha256-reftable-integration-report.md` for the integration and
 verification record.
@@ -213,7 +220,7 @@ For the stable version, `go test` will work as usual. For the `main` branch, sim
 Alternatively, you can build the library manually first and then run the tests
 
     make install-static
-    go test -v -tags static ./...
+    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go test -v -tags static ./...
 
 The supported test matrix also includes the race detector (the refdb backend
 bridge and the managed HTTP transport both hand memory between libgit2 threads

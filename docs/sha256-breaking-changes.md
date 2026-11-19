@@ -70,12 +70,14 @@
 
 以下 API 不再受 build tag 门控，在每个构建中都可用：
 
-- `ObjectIdType`, `ObjectIdSHA1`, `ObjectIdSHA256`
+- `ObjectIdType`, `ObjectIdSHA1`, `ObjectIdSHA256`, `ZeroOid`
 - `(*Oid).Type()`, `(*Oid).Bytes()`
 - `NewOidFromBytesWithType`
 - `InitRepositoryWithOidType`
 - `(*Repository).OidType()`
-- `NewOdbWithOidType`, `NewOdbBackendOnePackWithOidType`, `NewOdbBackendLooseWithOidType`
+- `(*Odb).OidType()`, `NewOdbWithOidType`, `NewOdbForRepository`
+- `(*Repository).NewOdbBackendLoose`, `(*Repository).NewOdbBackendPack`, `(*Repository).NewOdbBackendOnePack`
+- `NewOdbBackendPackWithOidType`, `NewOdbBackendOnePackWithOidType`, `NewOdbBackendLooseWithOidType`
 - `(*Odb).HashWithType()`, `(*Odb).HashFile()`, `(*Odb).HashFileWithType()`
 - `NewIndexerForOidType`
 - `NewIndexWithOidType`, `OpenIndexWithOidType`
@@ -170,7 +172,9 @@ go test -tags "static git_experimental_sha256 libgit2_next" ./...
 
 ```sh
 ./script/build-libgit2.sh --static
-go test -tags static ./...
+make test-static
+# 若直接调用 go 命令（Go >= 1.27.4 拒绝在 #cgo pkg-config 中写 .pc 文件路径）：
+PKG_CONFIG_PATH="$PWD/static-build/install/lib/pkgconfig" go test -tags static ./...
 ```
 
 ## reftable 整合带来的额外破坏性变更
@@ -244,6 +248,11 @@ if oid == nil {
 
 - 三个 `Build_*.go` 改为 `#include "git2go_version_check.h"`。若下游复制过这些
   文件，需一并取得该头文件。
+- `Build_bundled_static.go` 与 `Build_system_static.go` 的静态可见性宏由
+  `-DLIBGIT2_STATIC` 更新为上游 `common.h` 现行的 `-DGIT_STATIC`。
+- `Build_bundled_static.go` 改为 `#cgo !windows pkg-config: --static libgit2`
+  并由 `Makefile` / CI 传入 `PKG_CONFIG_PATH`，以兼容 Go >= 1.27.4 的
+  `validPkgConfigName` 校验。
 - `script/build-libgit2.sh` 改用 libgit2 当前的 CMake 选项名
   (`USE_THREADS` / `USE_REGEX` / `USE_AUTH_NTLM` / `USE_AUTH_NEGOTIATE`)。
   旧名 `THREADSAFE` / `REGEX_BACKEND` / `USE_NTLMCLIENT` / `USE_GSSAPI`
@@ -252,7 +261,9 @@ if oid == nil {
   `libgit2_no_reftable` 标签退化为 files-only：
 
   ```sh
-  go test --tags "static,libgit2_no_reftable" ./...
+  make test-static-no-reftable
+  # 或直接运行：
+  PKG_CONFIG_PATH="$PWD/static-build/install/lib/pkgconfig" go test --tags "static,libgit2_no_reftable" ./...
   ```
 
 ### 新增能力入口（非破坏性，供迁移参考）

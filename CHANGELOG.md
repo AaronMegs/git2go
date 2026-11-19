@@ -28,6 +28,18 @@ Latest main compatibility updates:
 - Corrected transaction documentation: the public API is not wired to the
   reftable backend; files transactions commit references one by one, not as an
   all-or-nothing batch. The underlying reftable addition mechanism is distinct.
+- `Odb.AddBackend` and `Odb.AddAlternate` now validate that a known backend
+  `ObjectIdType` matches the target `Odb` (returning `ErrorCodeInvalid` on
+  mismatch), reject nil/freed handles, clear `backend.ptr` and detach its
+  finalizer on successful ownership transfer (making a subsequent
+  `backend.Free()` a safe no-op), and leave ownership with the caller on
+  failure (aligning with `Refdb.SetBackend`).
+- Bundled static builds (`Build_bundled_static.go`) now use
+  `#cgo !windows pkg-config: --static libgit2` with `PKG_CONFIG_PATH` set by
+  `Makefile` and CI rather than embedding a direct `.pc` file path, restoring
+  compatibility with Go 1.27.4+ (`validPkgConfigName`). Static `CFLAGS` now
+  define `-DGIT_STATIC` instead of the legacy `-DLIBGIT2_STATIC`.
+- Added Linux arm64 bundled-static CI coverage (`ubuntu-24.04-arm`).
 - Recorded an upstream pack-cache limitation: do not open the same pack path
   with conflicting OID formats in one process. See `docs/capability-boundaries.md`.
 
@@ -87,9 +99,14 @@ integration and verification record.
 - `ObjectIdTypeDefault`, plus `ObjectIdType.String()`, `.Size()` and
   `.HexSize()`.
 - `InitRepositoryWithOidType`, `Repository.OidType` and `IsSha256Supported`.
-- `Odb.HashWithType`, `Odb.HashFile`, `Odb.HashFileWithType`,
-  `NewOdbWithOidType`, `NewOdbBackendLooseWithOidType`, and
+- `Odb.OidType`, `Odb.HashWithType`, `Odb.HashFile`, `Odb.HashFileWithType`,
+  `NewOdbWithOidType`, `NewOdbForRepository`,
+  `Repository.NewOdbBackendLoose`, `Repository.NewOdbBackendPack`,
+  `Repository.NewOdbBackendOnePack`, `NewOdbBackendLooseWithOidType`,
+  `NewOdbBackendPack`, `NewOdbBackendPackWithOidType`, and
   `NewOdbBackendOnePackWithOidType`.
+- `ZeroOid(ObjectIdType)` for constructing an explicitly typed all-zero `Oid`
+  that matches `NewOid` and libgit2 under both `Equal()` and `==`/map lookups.
 - `NewIndexWithOidType`, `OpenIndexWithOidType`,
   `DiffFromBufferWithOidType`, and `NewIndexerForOidType`.
 - **Reftable reference storage.** `RefdbType` (`RefdbDefault`, `RefdbFiles`,
