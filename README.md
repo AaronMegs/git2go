@@ -75,11 +75,11 @@ Run `go get -d github.com/libgit2/git2go` to download the code and go to your `$
 
 will compile libgit2, link it into git2go and install it. The `main` branch is set up to follow the specific libgit2 version that is vendored, so trying dynamic linking may or may not work depending on the exact versions involved.
 
-In order to let Go pass the correct flags to `pkg-config`, `-tags static` needs to be passed to all `go` commands that build any binaries, with `PKG_CONFIG_PATH` pointing at the bundled `static-build/install/lib/pkgconfig` directory (the `Makefile` targets set this automatically; Go ≥ 1.27.4 rejects direct `.pc` file paths in `#cgo pkg-config`). For instance:
+In order to let Go pass the correct flags to `pkg-config`, `-tags static` needs to be passed to all `go` commands that build any binaries, with `PKG_CONFIG_PATH` pointing at the bundled `static-build/install/lib/pkgconfig` directory (the `Makefile` targets set this automatically; Go ≥ 1.27.4 rejects direct `.pc` file paths in `#cgo pkg-config`). Because `vendor/` contains only the C `vendor/libgit2` submodule (no Go vendor tree), in-repo `go` invocations also pass `-mod=mod` (handled automatically by `Makefile`). For instance:
 
-    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go build -tags static github.com/my/project/...
-    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go test -tags static github.com/my/project/...
-    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go install -tags static github.com/my/project/...
+    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go build -mod=mod -tags static github.com/my/project/...
+    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go test -mod=mod -tags static github.com/my/project/...
+    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go install -mod=mod -tags static github.com/my/project/...
 
 One thing to take into account is that since Go expects the `pkg-config` file to be within the same directory where `make install-static` was called, so the `go.mod` file may need to have a [`replace` directive](https://github.com/golang/go/wiki/Modules#when-should-i-use-the-replace-directive) so that the correct setup is achieved. So if `git2go` is checked out at `$GOPATH/src/github.com/libgit2/git2go` and your project at `$GOPATH/src/github.com/my/project`, the `go.mod` file of `github.com/my/project` might need to have a line like
 
@@ -178,7 +178,7 @@ When linking against a libgit2 that predates reftable, build with the
 
     make test-static-no-reftable
     # or directly:
-    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go test --tags "static,libgit2_no_reftable" ./...
+    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go test -mod=mod --tags "static,libgit2_no_reftable" ./...
 
 See `docs/sha256-reftable-integration-report.md` for the integration and
 verification record.
@@ -220,7 +220,7 @@ For the stable version, `go test` will work as usual. For the `main` branch, sim
 Alternatively, you can build the library manually first and then run the tests
 
     make install-static
-    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go test -v -tags static ./...
+    PKG_CONFIG_PATH=$PWD/static-build/install/lib/pkgconfig go test -mod=mod -v -tags static ./...
 
 The supported test matrix also includes the race detector (the refdb backend
 bridge and the managed HTTP transport both hand memory between libgit2 threads

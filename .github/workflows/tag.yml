@@ -18,6 +18,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # vendor/ contains only the vendored C libgit2 submodule (no Go vendor tree).
+  GOFLAGS: -mod=mod
+
 concurrency:
   group: v36-prerelease-tag
   cancel-in-progress: false

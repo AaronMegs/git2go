@@ -1,5 +1,11 @@
 TEST_ARGS ?= --count=1
 
+# vendor/ holds only the pinned C libgit2 submodule (no Go vendor/modules.txt).
+# Go 1.14+ auto-enables -mod=vendor whenever a top-level vendor/ directory exists,
+# so explicitly pass -mod=mod for in-repo commands. Downstream consumers importing
+# this module are unaffected because Go ignores vendor/ inside dependencies.
+GO_MOD_FLAG := -mod=mod
+
 STATIC_PKGCONFIG_DIR := $(CURDIR)/static-build/install/lib/pkgconfig
 STATIC_PKG_CONFIG_PATH = $(STATIC_PKGCONFIG_DIR)$(if $(PKG_CONFIG_PATH),:$(PKG_CONFIG_PATH))
 
@@ -7,16 +13,16 @@ default: test
 
 
 generate: static-build/install/lib/libgit2.a
-	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go generate --tags "static" ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go generate $(GO_MOD_FLAG) --tags "static" ./...
 
 # System library
 # ==============
 # This uses whatever version of libgit2 can be found in the system.
 test:
-	go test $(TEST_ARGS) ./...
+	go test $(GO_MOD_FLAG) $(TEST_ARGS) ./...
 
 install:
-	go install ./...
+	go install $(GO_MOD_FLAG) ./...
 
 # Bundled dynamic library
 # =======================
@@ -41,11 +47,11 @@ test-dynamic: dynamic-build/install/lib/libgit2.so
 	PKG_CONFIG_PATH=dynamic-build/install/lib/pkgconfig \
 			LD_LIBRARY_PATH=$(DYNAMIC_LIBDIR) \
 			CGO_LDFLAGS="-Wl,-rpath,$(DYNAMIC_LIBDIR)" \
-			go test $(TEST_ARGS) ./...
+			go test $(GO_MOD_FLAG) $(TEST_ARGS) ./...
 
 install-dynamic: dynamic-build/install/lib/libgit2.so
 	PKG_CONFIG_PATH=dynamic-build/install/lib/pkgconfig \
-			go install ./...
+			go install $(GO_MOD_FLAG) ./...
 
 # Bundled static library
 # ======================
@@ -59,51 +65,43 @@ static-build/install/lib/libgit2.a:
 	./script/build-libgit2-static.sh
 
 test-static: static-build/install/lib/libgit2.a
-	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go test --tags "static" $(TEST_ARGS) ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go test $(GO_MOD_FLAG) --tags "static" $(TEST_ARGS) ./...
 
 # The reference-storage bindings are compiled in by default, because the pinned
 # libgit2 baseline always carries reftable. This target proves the documented
 # opt-out still builds and passes for a libgit2 that predates reftable.
 test-static-no-reftable: static-build/install/lib/libgit2.a
-	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go test --tags "static,libgit2_no_reftable" $(TEST_ARGS) ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go test $(GO_MOD_FLAG) --tags "static,libgit2_no_reftable" $(TEST_ARGS) ./...
 
 # The refdb backend bridge and the managed HTTP transport both hand memory
 # between libgit2's threads and Go, so the race detector is part of the
 # supported test matrix rather than an optional extra.
 test-static-race: static-build/install/lib/libgit2.a
-	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go test --tags "static" -race $(TEST_ARGS) ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go test $(GO_MOD_FLAG) --tags "static" -race $(TEST_ARGS) ./...
 
 install-static: static-build/install/lib/libgit2.a
-	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go install --tags "static" ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go install $(GO_MOD_FLAG) --tags "static" ./...
 
 # Offline / firewalled environments. A handful of tests clone and negotiate
 # against github.com; they are not hermetic and fail with connection or TLS
 # timeouts that say nothing about this repository. This target runs everything
 # else deterministically.
 test-static-offline: static-build/install/lib/libgit2.a
-	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" GIT2GO_SKIP_NETWORK_TESTS=1 go test --tags "static" $(TEST_ARGS) ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" GIT2GO_SKIP_NETWORK_TESTS=1 go test $(GO_MOD_FLAG) --tags "static" $(TEST_ARGS) ./...
 
 # Static analysis that must stay clean.
 .PHONY: lint
 lint:
 	test -z "$$(gofmt -l $$(git ls-files '*.go' | grep -v '^vendor/'))" || \
 		(gofmt -l $$(git ls-files '*.go' | grep -v '^vendor/'); exit 1)
-	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go vet --tags "static" ./...
+	PKG_CONFIG_PATH="$(STATIC_PKG_CONFIG_PATH)" go vet $(GO_MOD_FLAG) --tags "static" ./...
 
 .PHONY: check-bindings test-binding-invariants
 check-bindings: test-binding-invariants
-	go run script/check-MakeGitError-thread-lock.go
-	go run script/check-binding-invariants.go
+	go run $(GO_MOD_FLAG) script/check-MakeGitError-thread-lock.go
+	go run $(GO_MOD_FLAG) script/check-binding-invariants.go
 
 test-binding-invariants:
-	go test -count=1 script/check-binding-invariants.go script/check-binding-invariants_test.go
+	go test $(GO_MOD_FLAG) -count=1 script/check-binding-invariants.go script/check-binding-invariants_test.go
 
 test test-static test-dynamic test-static-race test-static-no-reftable test-static-offline lint: check-bindings
-
-# Go dependencies and the libgit2 submodule intentionally share vendor/. The Go
-# command recreates vendor/ from scratch, so restore the pinned C submodule after
-# every dependency vendor update.
-.PHONY: vendor-go
-vendor-go:
-	go mod vendor
-	git submodule update --init --checkout vendor/libgit2

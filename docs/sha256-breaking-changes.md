@@ -174,8 +174,8 @@ go test -tags "static git_experimental_sha256 libgit2_next" ./...
 ```sh
 ./script/build-libgit2.sh --static
 make test-static
-# 若直接调用 go 命令（Go >= 1.27.4 拒绝在 #cgo pkg-config 中写 .pc 文件路径）：
-PKG_CONFIG_PATH="$PWD/static-build/install/lib/pkgconfig" go test -tags static ./...
+# 若直接调用 go 命令（vendor/ 仅保留 vendor/libgit2 子模块需 -mod=mod；Go >= 1.27.4 需 PKG_CONFIG_PATH）：
+PKG_CONFIG_PATH="$PWD/static-build/install/lib/pkgconfig" go test -mod=mod -tags static ./...
 ```
 
 ## reftable 整合带来的额外破坏性变更
@@ -264,7 +264,7 @@ if oid == nil {
   ```sh
   make test-static-no-reftable
   # 或直接运行：
-  PKG_CONFIG_PATH="$PWD/static-build/install/lib/pkgconfig" go test --tags "static,libgit2_no_reftable" ./...
+  PKG_CONFIG_PATH="$PWD/static-build/install/lib/pkgconfig" go test -mod=mod --tags "static,libgit2_no_reftable" ./...
   ```
 
 ### 新增能力入口（非破坏性，供迁移参考）

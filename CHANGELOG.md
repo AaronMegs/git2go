@@ -208,10 +208,11 @@ integration and verification record.
 
 - Upgraded `golang.org/x/crypto` from `v0.0.0-20201203163018-be400aefbc4c` to
   `v0.59.0` (and `golang.org/x/sys` to `v0.50.0`), raising the minimum Go
-  version in `go.mod` to `go 1.26.0`, refreshing the vendored Go dependency
-  tree via `make vendor-go`, and updating `TestRemoteSSH` test keys from 512-bit
-  to 2048-bit RSA. The test-only `openpgp` dependency is now tracked via
-  `golang.org/x/crypto/openpgp v0.1.0-deprecated`.
+  version in `go.mod` to `go 1.26.0`, and updating `TestRemoteSSH` test keys
+  from 512-bit to 2048-bit RSA. The test-only `openpgp` dependency is now
+  tracked via `golang.org/x/crypto/openpgp v0.1.0-deprecated`. `vendor/`
+  continues to hold only the pinned `vendor/libgit2` C submodule; in-repo
+  `Makefile` and CI invocations pass `-mod=mod`.
 - Fixed command injection in the Go-managed SSH transport. Repository paths are
   now parsed and validated before connecting, quoted as one POSIX shell argument,
   and rejected if they contain control characters or option-like forms.

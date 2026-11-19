@@ -8,6 +8,8 @@ on:
     - v*
 
 env:
+  # vendor/ contains only the vendored C libgit2 submodule (no Go vendor tree).
+  GOFLAGS: -mod=mod
   # Pin the code generator. `@latest` makes check-generate fail whenever
   # upstream changes stringer's output formatting, which is unrelated to this
   # repository's code.
