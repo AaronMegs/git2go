@@ -207,6 +207,9 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends libssh2-1-dev
+        # actions/checkout clones submodules shallowly by default, so fetch the tag first.
+        git -C vendor/libgit2 rev-parse -q --verify 'refs/tags/v1.9.4^{commit}' >/dev/null ||
+          git -C vendor/libgit2 fetch --depth=1 origin tag v1.9.4
         BUILD_LIBGIT_REF=v1.9.4 make build-libgit2-static
     - name: Verify the ABI guard rejects the legacy git_oid layout
       run: |
@@ -215,7 +218,10 @@ jobs:
           echo "expected the v36 build against libgit2 v1.9.4 to fail"
           exit 1
         fi
-        grep -q "promoted typed object ids" /tmp/legacy-build.log
+        grep -q "promoted typed object ids" /tmp/legacy-build.log || {
+          cat /tmp/legacy-build.log
+          exit 1
+        }
 
   build-static-deprecate-hard:
     name: Go (bundled static, DEPRECATE_HARD=ON)
