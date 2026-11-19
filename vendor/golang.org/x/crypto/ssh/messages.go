@@ -5,7 +5,6 @@
 package ssh
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -44,7 +43,7 @@ type disconnectMsg struct {
 }
 
 func (d *disconnectMsg) Error() string {
-	return fmt.Sprintf("ssh: disconnect, reason %d: %s", d.Reason, d.Message)
+	return fmt.Sprintf("ssh: disconnect, reason %d: %q", d.Reason, d.Message)
 }
 
 // See RFC 4253, section 7.1.
@@ -68,7 +67,7 @@ type kexInitMsg struct {
 
 // See RFC 4253, section 8.
 
-// Diffie-Helman
+// Diffie-Hellman
 const msgKexDHInit = 30
 
 type kexDHInitMsg struct {
@@ -122,9 +121,9 @@ type kexDHGexReplyMsg struct {
 const msgKexDHGexRequest = 34
 
 type kexDHGexRequestMsg struct {
-	MinBits      uint32 `sshtype:"34"`
-	PreferedBits uint32
-	MaxBits      uint32
+	MinBits       uint32 `sshtype:"34"`
+	PreferredBits uint32
+	MaxBits       uint32
 }
 
 // See RFC 4253, section 10.
@@ -139,6 +138,14 @@ const msgServiceAccept = 6
 
 type serviceAcceptMsg struct {
 	Service string `sshtype:"6"`
+}
+
+// See RFC 8308, section 2.3
+const msgExtInfo = 7
+
+type extInfoMsg struct {
+	NumExtensions uint32 `sshtype:"7"`
+	Payload       []byte `ssh:"rest"`
 }
 
 // See RFC 4252, section 5.
@@ -173,6 +180,7 @@ type userAuthBannerMsg struct {
 	Message string `sshtype:"53"`
 	// unused, but required to allow message parsing
 	Language string
+	Rest     []byte `ssh:"rest"`
 }
 
 // See RFC 4256, section 3.2
@@ -180,11 +188,11 @@ const msgUserAuthInfoRequest = 60
 const msgUserAuthInfoResponse = 61
 
 type userAuthInfoRequestMsg struct {
-	User               string `sshtype:"60"`
-	Instruction        string
-	DeprecatedLanguage string
-	NumPrompts         uint32
-	Prompts            []byte `ssh:"rest"`
+	Name        string `sshtype:"60"`
+	Instruction string
+	Language    string
+	NumPrompts  uint32
+	Prompts     []byte `ssh:"rest"`
 }
 
 // See RFC 4254, section 5.1.
@@ -339,6 +347,20 @@ type userAuthGSSAPIError struct {
 	MinorStatus uint32
 	Message     string
 	LanguageTag string
+}
+
+// Transport layer OpenSSH extension. See [PROTOCOL], section 1.9
+const msgPing = 192
+
+type pingMsg struct {
+	Data string `sshtype:"192"`
+}
+
+// Transport layer OpenSSH extension. See [PROTOCOL], section 1.9
+const msgPong = 193
+
+type pongMsg struct {
+	Data string `sshtype:"193"`
 }
 
 // typeTags returns the possible type bytes for the given reflect.Type, which
@@ -597,10 +619,7 @@ func parseString(in []byte) (out, rest []byte, ok bool) {
 	return
 }
 
-var (
-	comma         = []byte{','}
-	emptyNameList = []string{}
-)
+var emptyNameList = []string{}
 
 func parseNameList(in []byte) (out []string, rest []byte, ok bool) {
 	contents, rest, ok := parseString(in)
@@ -611,11 +630,7 @@ func parseNameList(in []byte) (out []string, rest []byte, ok bool) {
 		out = emptyNameList
 		return
 	}
-	parts := bytes.Split(contents, comma)
-	out = make([]string, len(parts))
-	for i, part := range parts {
-		out[i] = string(part)
-	}
+	out = strings.Split(string(contents), ",")
 	return
 }
 
@@ -770,7 +785,7 @@ func marshalString(to []byte, s []byte) []byte {
 	return to[len(s):]
 }
 
-var bigIntType = reflect.TypeOf((*big.Int)(nil))
+var bigIntType = reflect.TypeFor[*big.Int]()
 
 // Decode a packet into its corresponding message.
 func decode(packet []byte) (interface{}, error) {
@@ -782,6 +797,8 @@ func decode(packet []byte) (interface{}, error) {
 		msg = new(serviceRequestMsg)
 	case msgServiceAccept:
 		msg = new(serviceAcceptMsg)
+	case msgExtInfo:
+		msg = new(extInfoMsg)
 	case msgKexInit:
 		msg = new(kexInitMsg)
 	case msgKexDHInit:
@@ -794,6 +811,8 @@ func decode(packet []byte) (interface{}, error) {
 		return new(userAuthSuccessMsg), nil
 	case msgUserAuthFailure:
 		msg = new(userAuthFailureMsg)
+	case msgUserAuthBanner:
+		msg = new(userAuthBannerMsg)
 	case msgUserAuthPubKeyOk:
 		msg = new(userAuthPubKeyOkMsg)
 	case msgGlobalRequest:
@@ -843,6 +862,7 @@ var packetTypeNames = map[byte]string{
 	msgDisconnect:          "disconnectMsg",
 	msgServiceRequest:      "serviceRequestMsg",
 	msgServiceAccept:       "serviceAcceptMsg",
+	msgExtInfo:             "extInfoMsg",
 	msgKexInit:             "kexInitMsg",
 	msgKexDHInit:           "kexDHInitMsg",
 	msgKexDHReply:          "kexDHReplyMsg",

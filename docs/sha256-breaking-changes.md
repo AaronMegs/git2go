@@ -56,6 +56,7 @@
 
 ### Build and dependency compatibility
 
+- `go.mod` 最低 Go 版本已升至 **`go 1.26.0`**，同步将 `golang.org/x/crypto` 升级至 `v0.59.0`（`golang.org/x/sys` 升至 `v0.50.0`，测试专用 `openpgp` 迁移至独立子模块 `golang.org/x/crypto/openpgp v0.1.0-deprecated`），以清除 managed SSH 依赖的已知 CVE。
 - 三个 `Build_*.go` 共用 `git2go_version_check.h`：使用非弃用的 `LIBGIT2_VERSION_*`，
   检查 SHA256/object-id/index/diff options 宏及 OID 大小、字段偏移、枚举值，不是 `1.9` 精确版本锁。
   当前基线为 `42a89d7`（`2.0.0-rc.1`）；稳定版发布后还需明确兼容下限，能力与布局检查继续保留。

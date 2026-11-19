@@ -3,7 +3,14 @@
 // license that can be found in the LICENSE file.
 
 // Package errors contains common error types for the OpenPGP packages.
-package errors // import "golang.org/x/crypto/openpgp/errors"
+//
+// Deprecated: this package is unsafe by design, and has numerous known security
+// issues. It is not maintained, and should not be used. New applications should
+// consider a more focused, modern alternative to OpenPGP for their specific
+// task. If you are required to interoperate with OpenPGP systems and need a
+// maintained package, consider github.com/ProtonMail/go-crypto/openpgp, which
+// is a maintained fork that aims to be a drop-in replacement for this package.
+package errors
 
 import (
 	"strconv"

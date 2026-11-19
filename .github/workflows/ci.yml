@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: [ '1.18', 'stable' ]
+        go: [ '1.26', 'stable' ]
     name: Go ${{ matrix.go }}
 
     runs-on: ubuntu-latest

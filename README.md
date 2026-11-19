@@ -21,7 +21,7 @@ Due to the fact that Go 1.11 module versions have semantic meaning and don't nec
 | 0.28    | v28           |
 | 0.27    | v27           |
 
-You can import them in your project with the version's major number as a suffix. The promoted-SHA256 baseline uses the `/v36` module path. Before libgit2 publishes the corresponding formal release, git2go releases are named **v36-pre** and use valid Go prerelease tags such as `v36.0.0-pre.1`:
+You can import them in your project with the version's major number as a suffix. The promoted-SHA256 baseline uses the `/v36` module path and requires **Go 1.26 or newer** (matching `go 1.26.0` in `go.mod`). Before libgit2 publishes the corresponding formal release, git2go releases are named **v36-pre** and use valid Go prerelease tags such as `v36.0.0-pre.1`:
 
 ```sh
 go get github.com/libgit2/git2go/v36@v36.0.0-pre.1

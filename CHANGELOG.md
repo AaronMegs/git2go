@@ -195,8 +195,9 @@ integration and verification record.
 - Replaced `reflect.SliceHeader` and manual `uintptr` pointer arithmetic with
   `unsafe.Slice` in `merge.go`, `rebase.go`, `remote.go` and `message.go`.
   `go vet` reports no `unsafe.Pointer`/`SliceHeader` misuse.
-- CI now tests Go 1.18 and stable Go, uses current GitHub actions/runners, and
-  includes a macOS bundled-static job. The hard-deprecation job additionally
+- CI now tests Go 1.26 and stable Go (matching `go 1.26.0` in `go.mod`), uses
+  current GitHub actions/runners, and includes Linux arm64 and macOS
+  bundled-static jobs. The hard-deprecation job additionally
   compiles with `CGO_CFLAGS=-DGIT_DEPRECATE_HARD`, proving git2go references no
   deprecated declaration rather than merely not linking one. New jobs cover the
   reftable/refdb suite under the race detector, the `libgit2_no_reftable`
@@ -205,6 +206,12 @@ integration and verification record.
 
 ### Security
 
+- Upgraded `golang.org/x/crypto` from `v0.0.0-20201203163018-be400aefbc4c` to
+  `v0.59.0` (and `golang.org/x/sys` to `v0.50.0`), raising the minimum Go
+  version in `go.mod` to `go 1.26.0`, refreshing the vendored Go dependency
+  tree via `make vendor-go`, and updating `TestRemoteSSH` test keys from 512-bit
+  to 2048-bit RSA. The test-only `openpgp` dependency is now tracked via
+  `golang.org/x/crypto/openpgp v0.1.0-deprecated`.
 - Fixed command injection in the Go-managed SSH transport. Repository paths are
   now parsed and validated before connecting, quoted as one POSIX shell argument,
   and rejected if they contain control characters or option-like forms.
