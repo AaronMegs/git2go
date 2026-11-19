@@ -53,6 +53,12 @@
   无条件注册 `update_refs`，而 libgit2 只在 `update_refs` 未设置时才调用 `update_tips`，
   导致该回调**实际从未被触发**。修复后它会正常触发；若同时设置了 `UpdateRefsCallback`，
   则仅调用后者，与上游文档的优先级一致。
+- 移除包初始化阶段对 `git_openssl_set_locking()` 的自动调用。在 OpenSSL >= 1.1.0 / 3.x
+  下该调用为空操作，在非 OpenSSL 构建下会污染 `git_error_last()`，仅在已 EOL 的 OpenSSL
+  1.0.x 下会覆盖进程级回调；若宿主仍链接 OpenSSL 1.0.x，需由应用层自行设置。
+- v36 稳定边界约定：现有 `Free() error` 签名（`Diff`/`DiffStats`/`Patch`/`Blame`/`Note`/
+  `RegisteredSmartTransport`）及全部 `.Next()` 迭代器的 `ErrorCodeIterOver` 结束语义在
+  v36 保持不变，统一工作推迟至 v37。
 
 ### Build and dependency compatibility
 

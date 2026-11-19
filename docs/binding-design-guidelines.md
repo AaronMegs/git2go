@@ -705,9 +705,7 @@ func Shutdown() {
 
 得益于 C 侧引用计数，宿主程序若也调 `git_libgit2_init` 是安全的。但两点应知情：
 
-1. `Shutdown()` **不撤销** `C.git_openssl_set_locking()`（`git.go:177`）。该调用本身被自己
-   的注释批评：「we may be stomping all over someone else's setup」（`git.go:173-176`）。
-   一个库修改进程级 OpenSSL 全局状态是有争议的，长期应移除或改为可选。
+1. ~~`Shutdown()` **不撤销** `C.git_openssl_set_locking()`~~：**已于 2026-11-19 移除**（`git.go` `init()` 不再调用 `git_openssl_set_locking()`，消除 OpenSSL 1.0 全局回调覆盖及非 OpenSSL 构建启动期的 `git_error_last()` 污染）。
 2. `Shutdown()` 只清 git2go 的句柄表，**不释放调用方仍持有的对象**；前置条件
    「no references to any git2go objects are live」是纯文档约定，无强制。
 
@@ -753,13 +751,13 @@ func Shutdown() {
 | ~~8~~ | ~~`reflect.SliceHeader` 残留~~ | — | **已修复**，全仓库归零 | — |
 | ~~9~~ | ~~strarray 释放混用~~ | — | **已修复** | — |
 | ~~10~~ | ~~options init 返回值未检查~~ | — | **已修复**，启动时集中校验 | — |
-| 11 | 迭代器结束语义三种表达 | 见 §2.3 | API 一致性 | **有** |
-| 12 | `Free()` 签名两派 | 见 §4.6 | API 一致性 | **有** |
+| 11 | 迭代器结束语义三种表达 | 见 §2.3 | API 一致性（**v36 推迟至 v37**） | **有** |
+| 12 | `Free()` 签名两派 | 见 §4.6 | API 一致性（**v36 推迟至 v37**） | **有** |
 | 13 | 双表非原子 | `remote.go:674` | 结构性隐患 | 无 |
-| 14 | `git_openssl_set_locking` 改全局态 | `git.go:177` | 越界副作用 | **有** |
+| ~~14~~ | ~~`git_openssl_set_locking` 改全局态~~ | `git.go` | **已移除** 2026-11-19 | — |
 
 第 1–10 项均为非破坏性，**已于 2026-09-11 全部修复**。
-第 11、12、14 项属破坏性变更，**宜与 libgit2 v2 适配合并发布**，避免多次破坏调用方。
+第 14 项已于 **2026-11-19 在 v36 移除**；第 11、12 项已明确**推迟至 v37**，以在 v36 保持对现有调用方的低摩擦迁移。
 
 ### 6.3 与 libgit2 v2 适配的关联
 

@@ -2,7 +2,6 @@ package git
 
 /*
 #include <git2.h>
-#include <git2/sys/openssl.h>
 */
 import "C"
 import (
@@ -177,12 +176,6 @@ func initLibGit2() {
 		if err := registerManagedHTTP(); err != nil {
 			panic(err)
 		}
-	} else {
-		// This is not something we should be doing, as we may be stomping all over
-		// someone else's setup. The user should do this themselves or use some
-		// binding/wrapper which does it in such a way that they can be sure
-		// they're the only ones setting it up.
-		C.git_openssl_set_locking()
 	}
 	if features&FeatureSSH == 0 {
 		if err := registerManagedSSH(); err != nil {

@@ -87,6 +87,15 @@ github.com/libgit2/git2go/v36
 - Removed `ConfigFindProgramdata`. Upstream marks `git_config_find_programdata`
   hard-deprecated because Git 2.24 and newer no longer support ProgramData
   configuration; it is omitted when libgit2 builds with `DEPRECATE_HARD=ON`.
+- Stopped calling `git_openssl_set_locking()` automatically during package
+  `init()`. On OpenSSL >= 1.1.0 / 3.x the call is a no-op, on non-OpenSSL
+  builds it polluted `git_error_last()`, and on legacy OpenSSL 1.0.x it mutated
+  process-wide locking callbacks. Host applications that still link OpenSSL
+  1.0.x must configure OpenSSL locking themselves.
+- Stability decision for v36: existing `Free() error` signatures (`Diff`,
+  `DiffStats`, `Patch`, `Blame`, `Note`, `RegisteredSmartTransport`) and
+  iterator termination (`ErrorCodeIterOver` on `.Next()`) are intentionally
+  kept compatible in v36 (any unification is deferred to v37).
 
 See `docs/sha256-breaking-changes.md` for the complete compatibility and
 migration guide, and `docs/sha256-reftable-integration-report.md` for the

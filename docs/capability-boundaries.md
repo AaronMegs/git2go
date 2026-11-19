@@ -243,13 +243,13 @@ python3 script/audit-binding-coverage.py oid odb      # 指定模块的未绑定
 | ~~7~~ | ~~strarray 释放函数混用~~ | **已完成** |
 | ~~8~~ | ~~options init 返回值未检查~~ | **已完成**，改为启动时集中校验 |
 
-### 3.2 破坏性，建议与 libgit2 v2 适配合并
+### 3.2 破坏性统一决策（v36 边界已锁定）
 
-| # | 项 | 理由 |
+| # | 项 | 状态 / 决策 |
 | --- | --- | --- |
-| 9 | 统一迭代器结束语义（当前三种表达） | 一次性迁移，避免多次破坏调用方 |
-| 10 | 统一 `Free()` 签名（当前两派） | 同上 |
-| 11 | 移除 `git_openssl_set_locking` 的进程级副作用 | 同上 |
+| 9 | 统一迭代器结束语义（`.Next()` 统一返回 `ErrorCodeIterOver`，与 `io.Reader` 的 `io.EOF` 及高阶回调的 `nil` 分属不同抽象） | **推迟至 v37**：v36 保持兼容，避免对现有调用方制造静默运行期破坏 |
+| 10 | 统一 `Free()` 签名（5 个底层 void 的 `Free() error` 已全部幂等化；`RegisteredSmartTransport.Free() error` 需保留真实注销错误） | **推迟至 v37**：v36 保持兼容，避免无安全收益的编译期破坏 |
+| ~~11~~ | ~~移除 `git_openssl_set_locking` 的进程级副作用~~ | **已完成（2026-11-19）**：`git.go` `init()` 不再调用 `git_openssl_set_locking()` |
 
 ### 3.3 外部阻塞
 

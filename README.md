@@ -208,7 +208,7 @@ API can be reproduced with:
 Parallelism and network operations
 ----------------------------------
 
-libgit2 may use OpenSSL and LibSSH2 for performing encrypted network connections. For now, git2go asks libgit2 to set locking for OpenSSL. This makes HTTPS connections thread-safe, but it is fragile and will likely stop doing it soon. This may also make SSH connections thread-safe if your copy of libssh2 is linked against OpenSSL. Check libgit2's `THREADSAFE.md` for more information.
+libgit2 may use OpenSSL and LibSSH2 for performing encrypted network connections. Starting with v36, git2go no longer calls `git_openssl_set_locking()` automatically during package initialization (avoiding process-wide OpenSSL callback mutation and spurious `git_error_last()` errors on non-OpenSSL builds). Modern OpenSSL (>= 1.1.0 / 3.x) is thread-safe without external locking callbacks; if your process links legacy OpenSSL 1.0.x, configure locking in the host application itself. Check libgit2's `THREADSAFE.md` for more information.
 
 Running the tests
 -----------------
